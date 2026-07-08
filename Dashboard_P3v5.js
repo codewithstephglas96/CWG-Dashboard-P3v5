@@ -110,10 +110,10 @@ function getLastDrawTime(weeksData) {
   return '---';
 }
 
-// ===============================================
+// ======================================
 // SPLASH SCREEN COMPONENT
 // 3D Animated Dice Splash with Fade-out
-// ===============================================
+// ======================================
 
 function createSplashHTML() {
   return `
