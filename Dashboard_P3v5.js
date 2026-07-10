@@ -7798,7 +7798,7 @@ function getChart8Family(num) {
   const todayDrawsText = todayDraws.map(num => `${num}${spiritEmoji[num] || ''}`).join('  ');
   
   function getStars(score) {
-    if (score >= 80) return '🔥🔥🔥';
+    if (score >= 75) return '🔥🔥🔥';
     if (score >= 65) return '🔥🔥';
     if (score >= 50) return '🔥';
     return '';
@@ -7832,41 +7832,123 @@ function getChart8Family(num) {
   // Determine if there are any completed streaks
   const hasCompleted = completedDoubles.length > 0 || completedTriples.length > 0 || completedQuadruples.length > 0;
   
-  // Build all completed banners
+  // =====================================
+  // TICKER LOGIC - More Informative
+  // ====================================
   const allBanners = [];
   
-  // Quadruples (highest priority)
-  completedQuadruples.forEach(num => {
-    allBanners.push({
-      num: num,
-      category: 'QUADRUPLE',
-      color: '#ff375f',
-      priority: 3,
-      text: `✅ #${num}${spiritEmoji[num] || ''} (${spiritNames[num] || 'Unknown'}) Has Completed <span style="color:#ff375f;">QUADRUPLE</span> Play Streak!`
-    });
+  // DOUBLES: Show if a double number has played (completed) or is missing
+  doubleNumbers.forEach(num => {
+    const currCount = currWeekCounts[num] || 0;
+    const prevCount = prevWeekCounts[num] || 0;
+    const emoji = spiritEmoji[num] || '';
+    const name = spiritNames[num] || 'Unknown';
+    
+    if (currCount >= 2) {
+      // Completed DOUBLE this week
+      allBanners.push({
+        num: num,
+        category: 'DOUBLE',
+        color: '#32d74b',
+        priority: 1,
+        text: `✅ #${num} ${emoji} (${name}) Has Completed <span style="color:#32d74b;">DOUBLE</span> Play Streak This Week!`
+      });
+    } else if (currCount === 0 && prevCount >= 1) {
+      // Has played before but missing this week - show as missing
+      allBanners.push({
+        num: num,
+        category: 'DOUBLE',
+        color: '#ff375f',
+        priority: 1,
+        text: `📍 #${num} ${emoji} (${name}) is <span style="color:#ff375f;">MISSING</span> from this week's plays`
+      });
+    } else if (currCount === 0 && prevCount === 0) {
+      // Never played - show as missing
+      allBanners.push({
+        num: num,
+        category: 'DOUBLE',
+        color: '#ff375f',
+        priority: 1,
+        text: `📍 #${num} ${emoji} (${name}) is <span style="color:#ff375f;">MISSING</span> from this week's plays`
+      });
+    }
   });
   
-  // Triples
-  completedTriples.forEach(num => {
-    allBanners.push({
-      num: num,
-      category: 'TRIPLE',
-      color: '#ff9d00',
-      priority: 2,
-      text: `✅ #${num}${spiritEmoji[num] || ''} (${spiritNames[num] || 'Unknown'}) Has Completed <span style="color:#ff9d00;">TRIPLE</span> Play Streak!`
-    });
-  });
+  // TRIPLES: Show numbers that completed triple or are missing
+  for (let num = 1; num <= 36; num++) {
+    if (doubleNumbers.includes(num)) continue;
+    const currCount = currWeekCounts[num] || 0;
+    const prevCount = prevWeekCounts[num] || 0;
+    const emoji = spiritEmoji[num] || '';
+    const name = spiritNames[num] || 'Unknown';
+    
+    if (currCount >= 3) {
+      // Completed TRIPLE this week
+      allBanners.push({
+        num: num,
+        category: 'TRIPLE',
+        color: '#ff9d00',
+        priority: 2,
+        text: `✅ #${num} ${emoji} (${name}) Has Completed <span style="color:#ff9d00;">TRIPLE</span> Play Streak This Week!`
+      });
+    } else if (currCount === 0 && prevCount >= 2) {
+      // Had 2 plays last week but missing this week
+      allBanners.push({
+        num: num,
+        category: 'TRIPLE',
+        color: '#ff375f',
+        priority: 2,
+        text: `📍 #${num} ${emoji} (${name}) is <span style="color:#ff375f;">MISSING</span> from this week's plays`
+      });
+    } else if (currCount === 1 && prevCount >= 2) {
+      // Has 1 play this week and 2 last week - needs one more for triple
+      allBanners.push({
+        num: num,
+        category: 'TRIPLE',
+        color: '#ff9d00',
+        priority: 2,
+        text: `⚠️ #${num} ${emoji} (${name}) has ${currCount}x this week - needs 2 more for <span style="color:#ff9d00;">TRIPLE</span>`
+      });
+    }
+  }
   
-  // Doubles
-  completedDoubles.forEach(num => {
-    allBanners.push({
-      num: num,
-      category: 'DOUBLE',
-      color: '#32d74b',
-      priority: 1,
-      text: `✅ #${num}${spiritEmoji[num] || ''} (${spiritNames[num] || 'Unknown'}) Has Completed <span style="color:#32d74b;">DOUBLE</span> Play Streak!`
-    });
-  });
+  // QUADRUPLES: Show numbers that completed quadruple or are missing
+  for (let num = 1; num <= 36; num++) {
+    if (doubleNumbers.includes(num)) continue;
+    const currCount = currWeekCounts[num] || 0;
+    const prevCount = prevWeekCounts[num] || 0;
+    const emoji = spiritEmoji[num] || '';
+    const name = spiritNames[num] || 'Unknown';
+    
+    if (currCount >= 4) {
+      // Completed QUADRUPLE this week
+      allBanners.push({
+        num: num,
+        category: 'QUADRUPLE',
+        color: '#ff375f',
+        priority: 3,
+        text: `✅ #${num} ${emoji} (${name}) Has Completed <span style="color:#ff375f;">QUADRUPLE</span> Play Streak This Week!`
+      });
+    } else if (currCount === 0 && prevCount >= 3) {
+      // Had 3 plays last week but missing this week
+      allBanners.push({
+        num: num,
+        category: 'QUADRUPLE',
+        color: '#ff375f',
+        priority: 3,
+        text: `📍 #${num} ${emoji} (${name}) is <span style="color:#ff375f;">MISSING</span> from this week's plays`
+      });
+    } else if (currCount === 1 && prevCount >= 3) {
+      // Has 1 play this week and 3 last week - needs 3 more for quadruple
+      allBanners.push({
+        num: num,
+        category: 'QUADRUPLE',
+        color: '#ff375f',
+        priority: 3,
+        text: `⚠️ #${num} ${emoji} (${name}) has ${currCount}x this week - needs 3 more for <span style="color:#ff375f;">QUADRUPLE</span>`
+      });
+    }
+  }
   
   // Sort by priority (highest first)
   allBanners.sort((a, b) => b.priority - a.priority);
@@ -7889,7 +7971,7 @@ function getChart8Family(num) {
         animation: ${index === 0 ? 'fadeIn 0.5s ease' : 'fadeIn 0.5s ease'};
         ${index > 0 ? 'display: none;' : ''}
       ">
-        <span style="font-size: 10px; font-weight: 700; color: ${banner.color};">🔔</span>
+        <span style="font-size: 10px; font-weight: 700; color: ${banner.color};">${banner.text.includes('MISSING') ? '🆘' : '🔔'}</span>
         <span style="font-size: 10px; font-weight: 700; color: #fff;">${banner.text}</span>
       </div>
     `).join('');
@@ -7938,8 +8020,8 @@ function getChart8Family(num) {
     `;
   }
   
-  // Render category numbers - 3x3 grid
-  function renderCategoryNumbersGrid(numbers, categoryColor, label) {
+  // Render category numbers - 3x3 grid with MISSING indicator
+  function renderCategoryNumbersGrid(numbers, categoryColor, label, isDouble = false) {
     if (!numbers || numbers.length === 0) {
       return `<span style="color: #64748b; font-size: 11px;">None</span>`;
     }
@@ -7949,12 +8031,33 @@ function getChart8Family(num) {
     
     return `
       <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 3px;">
-        ${displayNumbers.map(num => `
-          <div style="display: flex; flex-direction: column; align-items: center; background: ${categoryColor}15; border-radius: 4px; padding: 2px 4px;">
-            <span style="font-size: 14px; font-weight: 900; color: ${categoryColor};">${num}</span>
-            <span style="font-size: 9px; color: #94a3b8;">${spiritEmoji[num] || ''}</span>
-          </div>
-        `).join('')}
+        ${displayNumbers.map(num => {
+          const currCount = currWeekCounts[num] || 0;
+          const isMissing = currCount === 0;
+          
+          // Check if this number should be marked as MISSING
+          let showMissing = false;
+          if (isDouble) {
+            // For doubles: missing if 0 plays this week
+            showMissing = isMissing;
+          } else {
+            // For triples/quadruples: check if it had plays last week but missing this week
+            const prevCount = prevWeekCounts[num] || 0;
+            if (categoryColor === '#ff9d00' && prevCount >= 2 && isMissing) {
+              showMissing = true; // Triple missing
+            } else if (categoryColor === '#ff375f' && prevCount >= 3 && isMissing) {
+              showMissing = true; // Quadruple missing
+            }
+          }
+          
+          return `
+            <div style="display: flex; flex-direction: column; align-items: center; background: ${showMissing ? 'rgba(255, 55, 95, 0.25)' : categoryColor + '15'}; border-radius: 4px; padding: 2px 4px; border: ${showMissing ? '2px solid #ff375f' : '1px solid transparent'};">
+              <span style="font-size: 14px; font-weight: 900; color: ${showMissing ? '#ff375f' : categoryColor};">${num}</span>
+              <span style="font-size: 9px; color: ${showMissing ? '#ff375f' : '#94a3b8'};">${spiritEmoji[num] || ''}</span>
+              ${showMissing ? '<span style="font-size: 7px; color: #ff375f; font-weight: 700;">MISSING</span>' : ''}
+            </div>
+          `;
+        }).join('')}
         ${displayNumbers.length < 9 ? Array(9 - displayNumbers.length).fill(0).map(() => `
           <div style="display: flex; flex-direction: column; align-items: center; background: rgba(255,255,255,0.02); border-radius: 4px; padding: 2px 4px; opacity: 0.3;">
             <span style="font-size: 14px; font-weight: 900; color: #64748b;">—</span>
@@ -8063,7 +8166,7 @@ function getChart8Family(num) {
           <div style="font-size: 8px; color: #64748b; margin-top: 2px;">${currentWeekRange} • Based on previous week plays</div>
         </div>
         
-        <!-- Completion Banner - Rotating Ticker -->
+        <!-- Completion Banner - Rotating Ticker (Updated with more informative messages) -->
         ${completionBannerHtml}
         
         <!-- Three Categories Side by Side with 3x3 Grid -->
@@ -8075,7 +8178,7 @@ function getChart8Family(num) {
               <span style="font-size: 10px; font-weight: 800; color: #32d74b;">♣️🔥 DOUBLES🔥♣️</span>
               <span style="font-size: 7px; color: #64748b; display: block;">1x → 2x</span>
             </div>
-            ${uniqueDoubles.length > 0 ? renderCategoryNumbersGrid(uniqueDoubles, '#32d74b', 'DOUBLE') : '<div style="text-align:center; color:#64748b; font-size:11px; padding:8px 0;">None</div>'}
+            ${uniqueDoubles.length > 0 ? renderCategoryNumbersGrid(uniqueDoubles, '#32d74b', 'DOUBLE', true) : '<div style="text-align:center; color:#64748b; font-size:11px; padding:8px 0;">All completed!</div>'}
             ${uniqueDoubles.length > 0 ? `<div style="text-align: center; font-size: 7px; color: #64748b; margin-top: 4px;">${uniqueDoubles.length} numbers</div>` : ''}
           </div>
           
@@ -8085,7 +8188,7 @@ function getChart8Family(num) {
               <span style="font-size: 10px; font-weight: 800; color: #ff9d00;">🔥 ♠️TRIPLES♠️🔥</span>
               <span style="font-size: 7px; color: #64748b; display: block;">2x → 3x</span>
             </div>
-            ${uniqueTriples.length > 0 ? renderCategoryNumbersGrid(uniqueTriples, '#ff9d00', 'TRIPLE') : '<div style="text-align:center; color:#64748b; font-size:11px; padding:8px 0;">None</div>'}
+            ${uniqueTriples.length > 0 ? renderCategoryNumbersGrid(uniqueTriples, '#ff9d00', 'TRIPLE') : '<div style="text-align:center; color:#64748b; font-size:11px; padding:8px 0;">All completed!</div>'}
             ${uniqueTriples.length > 0 ? `<div style="text-align: center; font-size: 7px; color: #64748b; margin-top: 4px;">${uniqueTriples.length} numbers</div>` : ''}
           </div>
           
@@ -8095,7 +8198,7 @@ function getChart8Family(num) {
               <span style="font-size: 10px; font-weight: 800; color: #ff375f;">♦️QUADRUPLES♦️</span>
               <span style="font-size: 7px; color: #64748b; display: block;">3x → 4x</span>
             </div>
-            ${uniqueQuadruples.length > 0 ? renderCategoryNumbersGrid(uniqueQuadruples, '#ff375f', 'QUADRUPLE') : '<div style="text-align:center; color:#64748b; font-size:11px; padding:8px 0;">None</div>'}
+            ${uniqueQuadruples.length > 0 ? renderCategoryNumbersGrid(uniqueQuadruples, '#ff375f', 'QUADRUPLE') : '<div style="text-align:center; color:#64748b; font-size:11px; padding:8px 0;">All completed!</div>'}
             ${uniqueQuadruples.length > 0 ? `<div style="text-align: center; font-size: 7px; color: #64748b; margin-top: 4px;">${uniqueQuadruples.length} numbers</div>` : ''}
           </div>
           
