@@ -1,12 +1,9 @@
 {
-  "version": "5.9.0",
+  "version": "6.0.0",
   "releaseDate": "2026-07-03",
   "minimumLoaderVersion": "9.0.0",
   "changeLog": [
-    "Fixed Hot Marks logic to exclude current week plays",
-    "Added dashboard-style timeline for hot numbers",
-    "Improved performance of shelf marks rendering",
-    "Fixed holiday handling in draw processing"
+    "Improved the Marks Streak Logic With Better Logic"
   ],
   "requiresUpdate": false,
   "forceUpdate": false,
