@@ -1,8 +1,8 @@
 // =====================================
-// NLCB CLEAN TEXT DASHBOARD: CWG WEBAPPS
+// DASHBOARD: CWG WEBAPPS
 // Theme: Electric Navy & Support Orange
-// Version 5.9 
-// Last Modified July 3 2026
+// Version 5.9.3
+// Last Modified July 19 2026
 // =====================================
 
 const BRANDING = "CODEWITHGLASGOW";
@@ -4220,7 +4220,7 @@ body.light-mode .tab.active {
             /* Carousel Styles */
       .carousel-container {
         margin-bottom: -10px;
-        background: rgba(0,0,0,0.2);
+        background: transparent;
         border-radius: 6px;
         padding: 2px 0;
       }
@@ -4414,6 +4414,15 @@ body.light-mode .tab.active {
   <div id="pw-tab" class="container active">
 
       <div class="branding">
+    <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 2px; padding: 0 2px;">
+      <span>PLAY WHE</span>
+      <span>FULL SCREEN CHART</span>
+      <span style="color: #00000; font-size: 10px;">Last: ${globalLastDraw}</span>
+    </div>
+  </div>
+  ${playWheChartOnly(allWeeksPW, "pw")}
+  <br>
+  <div class="branding">
     <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 2px; padding: 0 2px;">
       <span>PLAY WHE</span>
       <span>DAY TO DAY CHART</span>
@@ -7798,7 +7807,7 @@ function getChart8Family(num) {
   const todayDrawsText = todayDraws.map(num => `${num}${spiritEmoji[num] || ''}`).join('  ');
   
   function getStars(score) {
-    if (score >= 75) return '🔥🔥🔥';
+    if (score >= 80) return '🔥🔥🔥';
     if (score >= 65) return '🔥🔥';
     if (score >= 50) return '🔥';
     return '';
@@ -7832,123 +7841,41 @@ function getChart8Family(num) {
   // Determine if there are any completed streaks
   const hasCompleted = completedDoubles.length > 0 || completedTriples.length > 0 || completedQuadruples.length > 0;
   
-  // =====================================
-  // TICKER LOGIC - More Informative
-  // ====================================
+  // Build all completed banners
   const allBanners = [];
   
-  // DOUBLES: Show if a double number has played (completed) or is missing
-  doubleNumbers.forEach(num => {
-    const currCount = currWeekCounts[num] || 0;
-    const prevCount = prevWeekCounts[num] || 0;
-    const emoji = spiritEmoji[num] || '';
-    const name = spiritNames[num] || 'Unknown';
-    
-    if (currCount >= 2) {
-      // Completed DOUBLE this week
-      allBanners.push({
-        num: num,
-        category: 'DOUBLE',
-        color: '#32d74b',
-        priority: 1,
-        text: `✅ #${num} ${emoji} (${name}) Has Completed <span style="color:#32d74b;">DOUBLE</span> Play Streak This Week!`
-      });
-    } else if (currCount === 0 && prevCount >= 1) {
-      // Has played before but missing this week - show as missing
-      allBanners.push({
-        num: num,
-        category: 'DOUBLE',
-        color: '#ff375f',
-        priority: 1,
-        text: `📍 #${num} ${emoji} (${name}) is <span style="color:#ff375f;">MISSING</span> from this week's plays`
-      });
-    } else if (currCount === 0 && prevCount === 0) {
-      // Never played - show as missing
-      allBanners.push({
-        num: num,
-        category: 'DOUBLE',
-        color: '#ff375f',
-        priority: 1,
-        text: `📍 #${num} ${emoji} (${name}) is <span style="color:#ff375f;">MISSING</span> from this week's plays`
-      });
-    }
+  // Quadruples (highest priority)
+  completedQuadruples.forEach(num => {
+    allBanners.push({
+      num: num,
+      category: 'QUADRUPLE',
+      color: '#ff375f',
+      priority: 3,
+      text: `✅ #${num}${spiritEmoji[num] || ''} (${spiritNames[num] || 'Unknown'}) Has Completed <span style="color:#ff375f;">QUADRUPLE</span> Play Streak!`
+    });
   });
   
-  // TRIPLES: Show numbers that completed triple or are missing
-  for (let num = 1; num <= 36; num++) {
-    if (doubleNumbers.includes(num)) continue;
-    const currCount = currWeekCounts[num] || 0;
-    const prevCount = prevWeekCounts[num] || 0;
-    const emoji = spiritEmoji[num] || '';
-    const name = spiritNames[num] || 'Unknown';
-    
-    if (currCount >= 3) {
-      // Completed TRIPLE this week
-      allBanners.push({
-        num: num,
-        category: 'TRIPLE',
-        color: '#ff9d00',
-        priority: 2,
-        text: `✅ #${num} ${emoji} (${name}) Has Completed <span style="color:#ff9d00;">TRIPLE</span> Play Streak This Week!`
-      });
-    } else if (currCount === 0 && prevCount >= 2) {
-      // Had 2 plays last week but missing this week
-      allBanners.push({
-        num: num,
-        category: 'TRIPLE',
-        color: '#ff375f',
-        priority: 2,
-        text: `📍 #${num} ${emoji} (${name}) is <span style="color:#ff375f;">MISSING</span> from this week's plays`
-      });
-    } else if (currCount === 1 && prevCount >= 2) {
-      // Has 1 play this week and 2 last week - needs one more for triple
-      allBanners.push({
-        num: num,
-        category: 'TRIPLE',
-        color: '#ff9d00',
-        priority: 2,
-        text: `⚠️ #${num} ${emoji} (${name}) has ${currCount}x this week - needs 2 more for <span style="color:#ff9d00;">TRIPLE</span>`
-      });
-    }
-  }
+  // Triples
+  completedTriples.forEach(num => {
+    allBanners.push({
+      num: num,
+      category: 'TRIPLE',
+      color: '#ff9d00',
+      priority: 2,
+      text: `✅ #${num}${spiritEmoji[num] || ''} (${spiritNames[num] || 'Unknown'}) Has Completed <span style="color:#ff9d00;">TRIPLE</span> Play Streak!`
+    });
+  });
   
-  // QUADRUPLES: Show numbers that completed quadruple or are missing
-  for (let num = 1; num <= 36; num++) {
-    if (doubleNumbers.includes(num)) continue;
-    const currCount = currWeekCounts[num] || 0;
-    const prevCount = prevWeekCounts[num] || 0;
-    const emoji = spiritEmoji[num] || '';
-    const name = spiritNames[num] || 'Unknown';
-    
-    if (currCount >= 4) {
-      // Completed QUADRUPLE this week
-      allBanners.push({
-        num: num,
-        category: 'QUADRUPLE',
-        color: '#ff375f',
-        priority: 3,
-        text: `✅ #${num} ${emoji} (${name}) Has Completed <span style="color:#ff375f;">QUADRUPLE</span> Play Streak This Week!`
-      });
-    } else if (currCount === 0 && prevCount >= 3) {
-      // Had 3 plays last week but missing this week
-      allBanners.push({
-        num: num,
-        category: 'QUADRUPLE',
-        color: '#ff375f',
-        priority: 3,
-        text: `📍 #${num} ${emoji} (${name}) is <span style="color:#ff375f;">MISSING</span> from this week's plays`
-      });
-    } else if (currCount === 1 && prevCount >= 3) {
-      // Has 1 play this week and 3 last week - needs 3 more for quadruple
-      allBanners.push({
-        num: num,
-        category: 'QUADRUPLE',
-        color: '#ff375f',
-        priority: 3,
-        text: `⚠️ #${num} ${emoji} (${name}) has ${currCount}x this week - needs 3 more for <span style="color:#ff375f;">QUADRUPLE</span>`
-      });
-    }
-  }
+  // Doubles
+  completedDoubles.forEach(num => {
+    allBanners.push({
+      num: num,
+      category: 'DOUBLE',
+      color: '#32d74b',
+      priority: 1,
+      text: `✅ #${num}${spiritEmoji[num] || ''} (${spiritNames[num] || 'Unknown'}) Has Completed <span style="color:#32d74b;">DOUBLE</span> Play Streak!`
+    });
+  });
   
   // Sort by priority (highest first)
   allBanners.sort((a, b) => b.priority - a.priority);
@@ -7971,7 +7898,7 @@ function getChart8Family(num) {
         animation: ${index === 0 ? 'fadeIn 0.5s ease' : 'fadeIn 0.5s ease'};
         ${index > 0 ? 'display: none;' : ''}
       ">
-        <span style="font-size: 10px; font-weight: 700; color: ${banner.color};">${banner.text.includes('MISSING') ? '🆘' : '🔔'}</span>
+        <span style="font-size: 10px; font-weight: 700; color: ${banner.color};">🔔</span>
         <span style="font-size: 10px; font-weight: 700; color: #fff;">${banner.text}</span>
       </div>
     `).join('');
@@ -8020,8 +7947,8 @@ function getChart8Family(num) {
     `;
   }
   
-  // Render category numbers - 3x3 grid with MISSING indicator
-  function renderCategoryNumbersGrid(numbers, categoryColor, label, isDouble = false) {
+  // Render category numbers - 3x3 grid
+  function renderCategoryNumbersGrid(numbers, categoryColor, label) {
     if (!numbers || numbers.length === 0) {
       return `<span style="color: #64748b; font-size: 11px;">None</span>`;
     }
@@ -8031,33 +7958,12 @@ function getChart8Family(num) {
     
     return `
       <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 3px;">
-        ${displayNumbers.map(num => {
-          const currCount = currWeekCounts[num] || 0;
-          const isMissing = currCount === 0;
-          
-          // Check if this number should be marked as MISSING
-          let showMissing = false;
-          if (isDouble) {
-            // For doubles: missing if 0 plays this week
-            showMissing = isMissing;
-          } else {
-            // For triples/quadruples: check if it had plays last week but missing this week
-            const prevCount = prevWeekCounts[num] || 0;
-            if (categoryColor === '#ff9d00' && prevCount >= 2 && isMissing) {
-              showMissing = true; // Triple missing
-            } else if (categoryColor === '#ff375f' && prevCount >= 3 && isMissing) {
-              showMissing = true; // Quadruple missing
-            }
-          }
-          
-          return `
-            <div style="display: flex; flex-direction: column; align-items: center; background: ${showMissing ? 'rgba(255, 55, 95, 0.25)' : categoryColor + '15'}; border-radius: 4px; padding: 2px 4px; border: ${showMissing ? '2px solid #ff375f' : '1px solid transparent'};">
-              <span style="font-size: 14px; font-weight: 900; color: ${showMissing ? '#ff375f' : categoryColor};">${num}</span>
-              <span style="font-size: 9px; color: ${showMissing ? '#ff375f' : '#94a3b8'};">${spiritEmoji[num] || ''}</span>
-              ${showMissing ? '<span style="font-size: 7px; color: #ff375f; font-weight: 700;">MISSING</span>' : ''}
-            </div>
-          `;
-        }).join('')}
+        ${displayNumbers.map(num => `
+          <div style="display: flex; flex-direction: column; align-items: center; background: ${categoryColor}15; border-radius: 4px; padding: 2px 4px;">
+            <span style="font-size: 14px; font-weight: 900; color: ${categoryColor};">${num}</span>
+            <span style="font-size: 9px; color: #94a3b8;">${spiritEmoji[num] || ''}</span>
+          </div>
+        `).join('')}
         ${displayNumbers.length < 9 ? Array(9 - displayNumbers.length).fill(0).map(() => `
           <div style="display: flex; flex-direction: column; align-items: center; background: rgba(255,255,255,0.02); border-radius: 4px; padding: 2px 4px; opacity: 0.3;">
             <span style="font-size: 14px; font-weight: 900; color: #64748b;">—</span>
@@ -8166,7 +8072,7 @@ function getChart8Family(num) {
           <div style="font-size: 8px; color: #64748b; margin-top: 2px;">${currentWeekRange} • Based on previous week plays</div>
         </div>
         
-        <!-- Completion Banner - Rotating Ticker (Updated with more informative messages) -->
+        <!-- Completion Banner - Rotating Ticker -->
         ${completionBannerHtml}
         
         <!-- Three Categories Side by Side with 3x3 Grid -->
@@ -8178,7 +8084,7 @@ function getChart8Family(num) {
               <span style="font-size: 10px; font-weight: 800; color: #32d74b;">♣️🔥 DOUBLES🔥♣️</span>
               <span style="font-size: 7px; color: #64748b; display: block;">1x → 2x</span>
             </div>
-            ${uniqueDoubles.length > 0 ? renderCategoryNumbersGrid(uniqueDoubles, '#32d74b', 'DOUBLE', true) : '<div style="text-align:center; color:#64748b; font-size:11px; padding:8px 0;">All completed!</div>'}
+            ${uniqueDoubles.length > 0 ? renderCategoryNumbersGrid(uniqueDoubles, '#32d74b', 'DOUBLE') : '<div style="text-align:center; color:#64748b; font-size:11px; padding:8px 0;">None</div>'}
             ${uniqueDoubles.length > 0 ? `<div style="text-align: center; font-size: 7px; color: #64748b; margin-top: 4px;">${uniqueDoubles.length} numbers</div>` : ''}
           </div>
           
@@ -8188,7 +8094,7 @@ function getChart8Family(num) {
               <span style="font-size: 10px; font-weight: 800; color: #ff9d00;">🔥 ♠️TRIPLES♠️🔥</span>
               <span style="font-size: 7px; color: #64748b; display: block;">2x → 3x</span>
             </div>
-            ${uniqueTriples.length > 0 ? renderCategoryNumbersGrid(uniqueTriples, '#ff9d00', 'TRIPLE') : '<div style="text-align:center; color:#64748b; font-size:11px; padding:8px 0;">All completed!</div>'}
+            ${uniqueTriples.length > 0 ? renderCategoryNumbersGrid(uniqueTriples, '#ff9d00', 'TRIPLE') : '<div style="text-align:center; color:#64748b; font-size:11px; padding:8px 0;">None</div>'}
             ${uniqueTriples.length > 0 ? `<div style="text-align: center; font-size: 7px; color: #64748b; margin-top: 4px;">${uniqueTriples.length} numbers</div>` : ''}
           </div>
           
@@ -8198,7 +8104,7 @@ function getChart8Family(num) {
               <span style="font-size: 10px; font-weight: 800; color: #ff375f;">♦️QUADRUPLES♦️</span>
               <span style="font-size: 7px; color: #64748b; display: block;">3x → 4x</span>
             </div>
-            ${uniqueQuadruples.length > 0 ? renderCategoryNumbersGrid(uniqueQuadruples, '#ff375f', 'QUADRUPLE') : '<div style="text-align:center; color:#64748b; font-size:11px; padding:8px 0;">All completed!</div>'}
+            ${uniqueQuadruples.length > 0 ? renderCategoryNumbersGrid(uniqueQuadruples, '#ff375f', 'QUADRUPLE') : '<div style="text-align:center; color:#64748b; font-size:11px; padding:8px 0;">None</div>'}
             ${uniqueQuadruples.length > 0 ? `<div style="text-align: center; font-size: 7px; color: #64748b; margin-top: 4px;">${uniqueQuadruples.length} numbers</div>` : ''}
           </div>
           
@@ -10023,12 +9929,803 @@ function renderOneSixteenAnalysis(weeksData) {
 }
 
 // ======================================
-// CAROUSEL DISPLAY CHART 
+// DISPLAY CHART 
 // ======================================
-// =========================================
-// CAROUSEL RENDER FUNCTIONS FOR EACH GAME
-// =========================================
+// ======================================
+// FULL SCREEN PLAY WHE CHART VIEW 
+// ======================================
+function playWheChartOnly(weeksData) {
+    // Define variables inside the function
+    const dayShort = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
+    const daysOfWeek = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+    const timeOrder = ["MOR", "MID", "NON", "EVE"];
+    
+    if (!weeksData || weeksData.length === 0) {
+        return '<div style="text-align:center;padding:40px;color:#999;">No data available</div>';
+    }
+    
+    // Get last 45 weeks
+    const displayWeeks = weeksData.slice(-45);
+    
+  // ===================================
+  // ENHANCED LEAVING/MEETING LOGIC 
+  // This searches across multiple weeks if needed
+  // ===================================
+    function getLeavingMeetingNumbers(weeks) {
+        let leavingNumber = null;
+        let leavingSlot = null;
+        let leavingDate = null;
+        let meetingNumber = null;
+        let meetingSlot = null;
+        let meetingDate = null;
+        
+        if (!weeks || weeks.length === 0) {
+            return { leavingNumber, leavingSlot, leavingDate, meetingNumber, meetingSlot, meetingDate };
+        }
+        
+        const sortedWeeks = [...weeks].sort((a, b) => {
+            let pa = a.startDate.split(" ");
+            let pb = b.startDate.split(" ");
+            return new Date(pa[2] + "-" + pa[1] + "-" + pa[0]) - new Date(pb[2] + "-" + pb[1] + "-" + pb[0]);
+        });
+        
+        const currentWeek = sortedWeeks[sortedWeeks.length - 1];
+        const now = new Date();
+        const todayIdx = now.getDay();
+        
+        function getDraw(week, dayName, slot) {
+            if (!week) return null;
+            const day = week.days.find(d => d.dayName === dayName);
+            if (!day) return null;
+            const val = day.draws[slot];
+            return val && val !== "-" && val !== "PENDING" && val !== "HOLIDAY" ? parseInt(val, 10) : null;
+        }
+        
+        function getDateForDraw(week, dayName) {
+            if (!week || !week.startDate) return null;
+            const parts = week.startDate.split(" ");
+            const monthMap = {"Jan":0,"Feb":1,"Mar":2,"Apr":3,"May":4,"Jun":5,"Jul":6,"Aug":7,"Sep":8,"Oct":9,"Nov":10,"Dec":11};
+            const startDate = new Date(parts[2], monthMap[parts[1]], parseInt(parts[0]));
+            const dayIndex = daysOfWeek.indexOf(dayName);
+            if (dayIndex === -1) return null;
+            const drawDate = new Date(startDate);
+            drawDate.setDate(startDate.getDate() + dayIndex);
+            return drawDate;
+        }
+        
+        // STEP 1: Find LEAVING number - Search current week first
+        let leavingDayIdx = -1;
+        let leavingSlotIdx = -1;
+        
+        for (let d = todayIdx; d >= 0; d--) {
+            for (let s = timeOrder.length - 1; s >= 0; s--) {
+                const draw = getDraw(currentWeek, daysOfWeek[d], timeOrder[s]);
+                if (draw) {
+                    leavingNumber = draw;
+                    leavingDayIdx = d;
+                    leavingSlotIdx = s;
+                    leavingSlot = timeOrder[s];
+                    leavingDate = getDateForDraw(currentWeek, daysOfWeek[d]);
+                    break;
+                }
+            }
+            if (leavingNumber) break;
+        }
+        
+        // STEP 2: If no leaving number in current week, search ALL previous weeks
+        if (!leavingNumber) {
+            for (let w = sortedWeeks.length - 2; w >= 0; w--) {
+                const week = sortedWeeks[w];
+                for (let d = daysOfWeek.length - 1; d >= 0; d--) {
+                    for (let s = timeOrder.length - 1; s >= 0; s--) {
+                        const draw = getDraw(week, daysOfWeek[d], timeOrder[s]);
+                        if (draw) {
+                            leavingNumber = draw;
+                            leavingDayIdx = d;
+                            leavingSlotIdx = s;
+                            leavingSlot = timeOrder[s];
+                            leavingDate = getDateForDraw(week, daysOfWeek[d]);
+                            break;
+                        }
+                    }
+                    if (leavingNumber) break;
+                }
+                if (leavingNumber) break;
+            }
+        }
+        
+        // STEP 3: Find MEETING number (next slot after leaving)
+        if (leavingDayIdx !== -1 && leavingSlotIdx !== -1) {
+            let nextDayIdx = leavingDayIdx;
+            let nextSlotIdx = leavingSlotIdx + 1;
+            
+            if (nextSlotIdx >= timeOrder.length) {
+                nextSlotIdx = 0;
+                nextDayIdx = leavingDayIdx + 1;
+            }
+            
+            if (nextDayIdx >= daysOfWeek.length) {
+                nextDayIdx = 0;
+            }
+            
+            if (nextDayIdx >= 0 && nextDayIdx < daysOfWeek.length) {
+                const targetDay = daysOfWeek[nextDayIdx];
+                const targetSlot = timeOrder[nextSlotIdx];
+                
+                // Find the most recent non-holiday previous week with valid draws
+                let previousWeek = null;
+                for (let i = sortedWeeks.length - 2; i >= 0; i--) {
+                    const week = sortedWeeks[i];
+                    let hasValidDraw = false;
+                    if (week && week.days) {
+                        for (const day of week.days) {
+                            if (day && day.draws) {
+                                for (const slot of timeOrder) {
+                                    const val = day.draws[slot];
+                                    if (val && val !== "-" && val !== "PENDING" && val !== "HOLIDAY") {
+                                        hasValidDraw = true;
+                                        break;
+                                    }
+                                }
+                            }
+                            if (hasValidDraw) break;
+                        }
+                    }
+                    if (hasValidDraw) {
+                        previousWeek = week;
+                        break;
+                    }
+                }
+                
+                if (!previousWeek) {
+                    previousWeek = currentWeek;
+                }
+                
+                // FIRST: Try previous week (preferred source)
+                meetingNumber = getDraw(previousWeek, targetDay, targetSlot);
+                if (meetingNumber) {
+                    meetingSlot = targetSlot;
+                    meetingDate = getDateForDraw(previousWeek, targetDay);
+                }
+                
+                // SECOND: If not found in previous week, search backwards through ALL weeks
+                if (!meetingNumber) {
+                    for (let w = sortedWeeks.length - 2; w >= 0; w--) {
+                        const week = sortedWeeks[w];
+                        const draw = getDraw(week, targetDay, targetSlot);
+                        if (draw) {
+                            meetingNumber = draw;
+                            meetingSlot = targetSlot;
+                            meetingDate = getDateForDraw(week, targetDay);
+                            break;
+                        }
+                    }
+                }
+                
+                // THIRD: If still not found, try current week as absolute fallback
+                if (!meetingNumber) {
+                    const draw = getDraw(currentWeek, targetDay, targetSlot);
+                    if (draw) {
+                        meetingNumber = draw;
+                        meetingSlot = targetSlot;
+                        meetingDate = getDateForDraw(currentWeek, targetDay);
+                    }
+                }
+            }
+        }
+        
+        return { leavingNumber, leavingSlot, leavingDate, meetingNumber, meetingSlot, meetingDate };
+    }
+    
+    // Calculate leaving and meeting numbers using the enhanced logic
+    const { leavingNumber, meetingNumber, leavingSlot, meetingSlot, leavingDate, meetingDate } = getLeavingMeetingNumbers(displayWeeks);
+    
+    // Helper function to check if a day has passed
+    function isDayPassed(weekStartDate, dayIndex) {
+        if (!weekStartDate) return false;
+        const parts = weekStartDate.split(" ");
+        const monthMap = {"Jan":0,"Feb":1,"Mar":2,"Apr":3,"May":4,"Jun":5,"Jul":6,"Aug":7,"Sep":8,"Oct":9,"Nov":10,"Dec":11};
+        const startDate = new Date(parts[2], monthMap[parts[1]], parseInt(parts[0]));
+        const targetDate = new Date(startDate);
+        targetDate.setDate(startDate.getDate() + dayIndex);
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        return targetDate < today;
+    }
+    
+    // Helper function to format short date
+    function formatShortDate(dateStr) {
+        if (!dateStr) return "";
+        const parts = dateStr.split(" ");
+        const monthMap = {"Jan":1,"Feb":2,"Mar":3,"Apr":4,"May":5,"Jun":6,"Jul":7,"Aug":8,"Sep":9,"Oct":10,"Nov":11,"Dec":12};
+        const day = parseInt(parts[0]);
+        const month = monthMap[parts[1]];
+        const year = parts[2].slice(-2);
+        return `${day}/${month}/${year}`;
+    }
+    
+    // Helper function to format date display
+    function formatDateDisplay(date) {
+        if (!date) return "";
+        const days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+        const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+        return `${days[date.getDay()]} ${date.getDate()} ${months[date.getMonth()]} '${date.getFullYear().toString().slice(-2)}`;
+    }
+    
+    // Determine which day is current/highlighted
+    const now = new Date();
+    const todayIdx = now.getDay();
+    let highlightDayName = daysOfWeek[todayIdx];
+    let isAfterEvening = false;
+    
+    // Check if we're after evening for the current day
+    const currentHour = now.getHours();
+    if (currentHour >= 18) {
+        isAfterEvening = true;
+        // If after 6pm, highlight tomorrow's day
+        const nextDayIdx = (todayIdx + 1) % 7;
+        highlightDayName = daysOfWeek[nextDayIdx];
+    }
+    
+    // Build the chart HTML
+    let html = `
+    <style>
+        /* FORCE LIGHT MODE - Override any inherited dark mode styles */
+        .playwhe-chart-wrapper,
+        .playwhe-chart-wrapper * {
+            color-scheme: light !important;
+        }
+        
+        .playwhe-chart-wrapper {
+            background: #ffffff !important;
+            border-radius: 6px;
+            padding: 8px;
+            border: 1px solid #dddddd !important;
+            position: relative;
+            overflow: hidden;
+            max-width: 100%;
+            box-sizing: border-box;
+        }
+        .playwhe-chart-wrapper table {
+            width: 100%;
+            border-collapse: collapse;
+            table-layout: fixed;
+            font-size: 10px;
+            background: #ffffff !important;
+        }
+        .playwhe-chart-wrapper th,
+        .playwhe-chart-wrapper td {
+            padding: 2px 1px;
+            border: 1px solid #cccccc !important;
+            text-align: center;
+            font-weight: 700;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            box-sizing: border-box;
+            background: #ffffff !important;
+            color: #000000 !important;
+        }
+        .playwhe-chart-wrapper th {
+            padding: 3px 1px;
+            color: #000000 !important;
+            font-weight: 800;
+            font-size: 8px;
+            background: #f5f5f5 !important;
+            border: 1px solid #cccccc !important;
+        }
+        .playwhe-chart-wrapper td.week-label {
+            font-size: 8px;
+            background: #f0f0f0 !important;
+            padding: 2px 1px;
+            width: 8%;
+            border: 1px solid #cccccc !important;
+            color: #000000 !important;
+        }
+        .playwhe-chart-wrapper td.day-border {
+            border-left: 3px solid #000000 !important;
+        }
+        .playwhe-chart-wrapper td.holiday {
+            color: #ff0000 !important;
+            font-weight: bold;
+            font-size: 8px;
+            background: #fff5f5 !important;
+            text-align: center;
+            border: 1px solid #cccccc !important;
+        }
+        .playwhe-chart-wrapper .row-odd td {
+            background: #fafafa !important;
+        }
+        .playwhe-chart-wrapper .row-even td {
+            background: #ffffff !important;
+        }
+        .playwhe-chart-wrapper .row-odd td.week-label {
+            background: #f0f0f0 !important;
+        }
+        .playwhe-chart-wrapper .row-even td.week-label {
+            background: #f0f0f0 !important;
+        }
+        .playwhe-chart-wrapper .row-current td {
+            background: #fff70f !important;
+        }
+        .playwhe-chart-wrapper .row-current td.week-label {
+            background: #53f736 !important;
+            color: #000000 !important;
+        }
+        .playwhe-chart-wrapper td.leaving-highlight {
+            background: #00f2ff !important;
+            color: #000000 !important;
+            font-weight: 900 !important;
+            box-shadow: inset 0 0 20px rgba(0, 242, 255, 0.3);
+            border: 1px solid #00d4e6 !important;
+        }
+        .playwhe-chart-wrapper td.meeting-highlight {
+            background: #ff9d00 !important;
+            color: #000000 !important;
+            font-weight: 900 !important;
+            box-shadow: inset 0 0 20px rgba(255, 157, 0, 0.3);
+            border: 1px solid #e68a00 !important;
+        }
+        .playwhe-chart-wrapper .lm-container {
+            display: flex;
+            justify-content: center;
+            align-items: stretch;
+            gap: 12px;
+            margin: 4px 0 4px 0;
+            position: relative;
+            z-index: 2;
+            padding: 0 2px;
+        }
+        .playwhe-chart-wrapper .lm-box {
+            flex: 1;
+            max-width: 160px;
+            border-radius: 8px;
+            padding: 6px 8px;
+            text-align: center;
+            border: 1px solid #dddddd !important;
+            background: #fafafa !important;
+        }
+        .playwhe-chart-wrapper .lm-box .label {
+            font-size: 7px;
+            font-weight: 800;
+            color: #666666 !important;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .playwhe-chart-wrapper .lm-box .number {
+            font-size: 18px;
+            font-weight: 900;
+            margin: 2px 0;
+            color: #000000 !important;
+        }
+        .playwhe-chart-wrapper .lm-box .date {
+            font-size: 7px;
+            color: #666666 !important;
+        }
+        .playwhe-chart-wrapper .lm-box.leaving {
+            border-color: #00f2ff !important;
+            background: rgba(0, 242, 255, 0.12) !important;
+        }
+        .playwhe-chart-wrapper .lm-box.leaving .number {
+            color: #0099aa !important;
+        }
+        .playwhe-chart-wrapper .lm-box.meeting {
+            border-color: #ff9d00 !important;
+            background: rgba(255, 157, 0, 0.12) !important;
+        }
+        .playwhe-chart-wrapper .lm-box.meeting .number {
+            color: #cc7d00 !important;
+        }
+        .playwhe-chart-wrapper .lm-box.empty {
+            border-color: #eeeeee !important;
+            background: #f8f8f8 !important;
+        }
+        .playwhe-chart-wrapper .lm-box.empty .number {
+            color: #cccccc !important;
+            font-size: 14px;
+        }
+        .playwhe-chart-wrapper .chart-header {
+            text-align: center;
+            margin-bottom: 2px;
+            position: relative;
+            z-index: 2;
+        }
+        .playwhe-chart-wrapper .chart-header h1 {
+            font-size: 14px;
+            color: #000000 !important;
+            font-weight: 900;
+            letter-spacing: 1px;
+            margin: 0;
+        }
+        .playwhe-chart-wrapper .chart-header .sub-date {
+            font-size: 9px;
+            color: #666666 !important;
+            margin-top: 2px;
+        }
+        .playwhe-chart-wrapper .footer {
+            margin-top: 6px;
+            padding-top: 6px;
+            border-top: 1px solid #dddddd !important;
+            display: flex;
+            justify-content: space-between;
+            font-size: 7px;
+            color: #666666 !important;
+            position: relative;
+            z-index: 2;
+        }
+        .playwhe-chart-wrapper .watermark {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%) rotate(-30deg);
+            font-size: 24px;
+            font-weight: 900;
+            color: rgba(0,0,0,0.04) !important;
+            letter-spacing: 9px;
+            pointer-events: none;
+            white-space: nowrap;
+            z-index: 1;
+        }
+        .playwhe-chart-wrapper .table-wrap {
+            overflow-x: auto;
+            -webkit-overflow-scrolling: touch;
+            position: relative;
+            z-index: 2;
+        }
+        
+        /* RESPONSIVE BREAKPOINTS - LIGHT MODE ONLY */
+        @media (max-width: 480px) {
+            .playwhe-chart-wrapper table {
+                font-size: 7px;
+            }
+            .playwhe-chart-wrapper td {
+                padding: 1px 0px;
+                font-size: 7px;
+            }
+            .playwhe-chart-wrapper th {
+                font-size: 6px;
+                padding: 1px 0px;
+            }
+            .playwhe-chart-wrapper td.week-label {
+                font-size: 6px;
+                padding: 1px 0px;
+            }
+            .playwhe-chart-wrapper .chart-header h1 {
+                font-size: 12px;
+            }
+            .playwhe-chart-wrapper .watermark {
+                font-size: 16px;
+            }
+            .playwhe-chart-wrapper .lm-box .number {
+                font-size: 16px;
+            }
+            .playwhe-chart-wrapper .lm-box {
+                padding: 4px 6px;
+            }
+            .playwhe-chart-wrapper th.day-border,
+            .playwhe-chart-wrapper td.day-border {
+                border-left: 2px solid #000000 !important;
+            }
+        }
+        @media (max-width: 380px) {
+            .playwhe-chart-wrapper table {
+                font-size: 6px;
+            }
+            .playwhe-chart-wrapper td {
+                font-size: 6px;
+                padding: 1px 0px;
+            }
+            .playwhe-chart-wrapper th {
+                font-size: 5px;
+                padding: 1px 0px;
+            }
+        }
+        @media (min-width: 768px) {
+            .playwhe-chart-wrapper table {
+                font-size: 11px;
+            }
+            .playwhe-chart-wrapper td {
+                padding: 4px 2px;
+                font-size: 12px;
+            }
+            .playwhe-chart-wrapper th {
+                font-size: 9px;
+                padding: 4px 2px;
+            }
+            .playwhe-chart-wrapper td.week-label {
+                font-size: 9px;
+                padding: 4px 2px;
+            }
+            .playwhe-chart-wrapper .lm-box .number {
+                font-size: 24px;
+            }
+        }
+    </style>
+    
+    <div class="playwhe-chart-wrapper">
+        <div class="watermark">CODEWITHGLASGOW</div>
+        
+        <div class="chart-header">
+            <h1>♠️ PLAY WHE CHART</h1>
+            <div class="sub-date">${new Date().toLocaleDateString('en-US', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })}</div>
+        </div>
+        
+        <!-- Leaving/Meeting Boxes -->
+        <div class="lm-container">
+            <div class="lm-box leaving">
+                <div class="label">LEAVING • ${leavingSlot || ''}</div>
+                <div class="number">${leavingNumber ? `#${leavingNumber}` : '—'}</div>
+                <div class="date">${leavingDate ? formatDateDisplay(leavingDate) : 'No data available'}</div>
+            </div>
+            <div class="lm-box meeting">
+                <div class="label">MEETING • ${meetingSlot || ''}</div>
+                <div class="number">${meetingNumber ? `#${meetingNumber}` : '—'}</div>
+                <div class="date">${meetingDate ? formatDateDisplay(meetingDate) : 'No data available'}</div>
+            </div>
+        </div>
+        
+        <!-- Chart Table -->
+        <div class="table-wrap">
+            <table>
+                <thead>
+                    <tr>
+                        <th style="width: 8%;"></th>
+    `;
+    
+    // Day headers
+    for (let i = 0; i < dayShort.length; i++) {
+        const borderClass = i > 0 ? 'day-border' : '';
+        html += `<th colspan="4" class="${borderClass}">${dayShort[i]}</th>`;
+    }
+    
+    html += `</tr></thead><tbody>`;
+    
+    // Loop through weeks
+    displayWeeks.forEach((week, weekIndex) => {
+        const isCurrent = week.isCurrentWeek === true;
+        const rowClass = isCurrent ? 'row-current' : (weekIndex % 2 === 0 ? 'row-odd' : 'row-even');
+        const weekDate = formatShortDate(week.startDate);
+        
+        html += `<tr class="${rowClass}">`;
+        html += `<td class="week-label">${weekDate}</td>`;
+        
+        for (let d = 0; d < daysOfWeek.length; d++) {
+            const dayName = daysOfWeek[d];
+            const day = week.days.find(dy => dy.dayName === dayName);
+            
+            const borderClass = d > 0 ? 'day-border' : '';
+            
+            // Check if day is a holiday or has no draws
+            let isHoliday = false;
+            let hasDraw = false;
+            if (day) {
+                hasDraw = timeOrder.some(slot => {
+                    const val = day.draws[slot];
+                    return val && val !== "-" && val !== "PENDING";
+                });
+            }
+            if (!hasDraw && isDayPassed(week.startDate, d)) {
+                isHoliday = true;
+            }
+            
+            if (isHoliday) {
+                html += `<td colspan="4" class="holiday ${borderClass}">HOLIDAY</td>`;
+                continue;
+            }
+            
+            for (let s = 0; s < timeOrder.length; s++) {
+                const slot = timeOrder[s];
+                const val = day ? day.draws[slot] : null;
+                const isValid = val && val !== "-" && val !== "PENDING";
+                
+                // Check for Leaving/Meeting highlight
+                let highlightClass = "";
+                if (isValid) {
+                    const valStr = val.toString().trim();
+                    if (valStr === (leavingNumber ? leavingNumber.toString() : "")) {
+                        highlightClass = 'leaving-highlight';
+                    } else if (valStr === (meetingNumber ? meetingNumber.toString() : "")) {
+                        highlightClass = 'meeting-highlight';
+                    }
+                }
+                
+                const cellClass = s === 0 && d > 0 ? borderClass : '';
+                const combinedClass = [cellClass, highlightClass].filter(c => c).join(' ');
+                
+                if (isCurrent && !isValid) {
+                    if (isDayPassed(week.startDate, d)) {
+                        html += `<td class="${combinedClass}" style="color:#999999;">...</td>`;
+                    } else {
+                        html += `<td class="${combinedClass}" style="color:#dddddd;">—</td>`;
+                    }
+                } else if (isValid) {
+                    const display = val;
+                    html += `<td class="${combinedClass}">${display}</td>`;
+                } else {
+                    html += `<td class="${combinedClass}" style="color:#dddddd;">—</td>`;
+                }
+            }
+        }
+        html += `</tr>`;
+    });
+    
+    html += `
+                    </tbody>
+                </table>
+            </div>
+            
+            <div class="footer">
+                <span>♠️ ${displayWeeks.length} weeks</span>
+                <span>CODEWITHGLASGOW ©️ CWG Charts Analysis</span>
+            </div>
+        </div>
+    `;
+    
+    return html;
+}
 
+// ======================================
+// HELPER FOR PLAY WHE CHART ONLY
+// ======================================
+function getLeavingMeetingNumbers(weeksData) {
+    let leavingNumber = null;
+    let leavingSlot = null;
+    let leavingDate = null;
+    let meetingNumber = null;
+    let meetingSlot = null;
+    let meetingDate = null;
+    
+    if (!weeksData || weeksData.length === 0) {
+        return { leavingNumber, leavingSlot, leavingDate, meetingNumber, meetingSlot, meetingDate };
+    }
+    
+    const sortedWeeks = [...weeksData].sort((a, b) => {
+        let pa = a.startDate.split(" ");
+        let pb = b.startDate.split(" ");
+        return new Date(pa[2] + "-" + pa[1] + "-" + pa[0]) - new Date(pb[2] + "-" + pb[1] + "-" + pb[0]);
+    });
+    
+    const currentWeek = sortedWeeks[sortedWeeks.length - 1];
+    const now = new Date();
+    const todayIdx = now.getDay();
+    
+    function getDraw(week, dayName, slot) {
+        if (!week) return null;
+        const day = week.days.find(d => d.dayName === dayName);
+        if (!day) return null;
+        const val = day.draws[slot];
+        return val && val !== "-" && val !== "PENDING" && val !== "HOLIDAY" ? parseInt(val, 10) : null;
+    }
+    
+    function getDateForDraw(week, dayName) {
+        if (!week || !week.startDate) return null;
+        const parts = week.startDate.split(" ");
+        const monthMap = {"Jan":0,"Feb":1,"Mar":2,"Apr":3,"May":4,"Jun":5,"Jul":6,"Aug":7,"Sep":8,"Oct":9,"Nov":10,"Dec":11};
+        const startDate = new Date(parts[2], monthMap[parts[1]], parseInt(parts[0]));
+        const dayIndex = daysOfWeek.indexOf(dayName);
+        if (dayIndex === -1) return null;
+        const drawDate = new Date(startDate);
+        drawDate.setDate(startDate.getDate() + dayIndex);
+        return drawDate;
+    }
+    
+    // Find leaving number - search current week first
+    let leavingDayIdx = -1;
+    let leavingSlotIdx = -1;
+    
+    for (let d = todayIdx; d >= 0; d--) {
+        for (let s = timeOrder.length - 1; s >= 0; s--) {
+            const draw = getDraw(currentWeek, daysOfWeek[d], timeOrder[s]);
+            if (draw) {
+                leavingNumber = draw;
+                leavingDayIdx = d;
+                leavingSlotIdx = s;
+                leavingSlot = timeOrder[s];
+                leavingDate = getDateForDraw(currentWeek, daysOfWeek[d]);
+                break;
+            }
+        }
+        if (leavingNumber) break;
+    }
+    
+    // Find meeting number - next slot after leaving
+    if (leavingDayIdx !== -1 && leavingSlotIdx !== -1) {
+        let nextDayIdx = leavingDayIdx;
+        let nextSlotIdx = leavingSlotIdx + 1;
+        
+        if (nextSlotIdx >= timeOrder.length) {
+            nextSlotIdx = 0;
+            nextDayIdx = leavingDayIdx + 1;
+        }
+        
+        if (nextDayIdx >= daysOfWeek.length) {
+            nextDayIdx = 0;
+        }
+        
+        if (nextDayIdx >= 0 && nextDayIdx < daysOfWeek.length) {
+            const targetDay = daysOfWeek[nextDayIdx];
+            const targetSlot = timeOrder[nextSlotIdx];
+            
+            // Try previous week first
+            let previousWeek = null;
+            for (let i = sortedWeeks.length - 2; i >= 0; i--) {
+                const week = sortedWeeks[i];
+                let hasValidDraw = false;
+                if (week && week.days) {
+                    for (const day of week.days) {
+                        if (day && day.draws) {
+                            for (const slot of timeOrder) {
+                                const val = day.draws[slot];
+                                if (val && val !== "-" && val !== "PENDING" && val !== "HOLIDAY") {
+                                    hasValidDraw = true;
+                                    break;
+                                }
+                            }
+                        }
+                        if (hasValidDraw) break;
+                    }
+                }
+                if (hasValidDraw) {
+                    previousWeek = week;
+                    break;
+                }
+            }
+            
+            if (previousWeek) {
+                meetingNumber = getDraw(previousWeek, targetDay, targetSlot);
+                if (meetingNumber) {
+                    meetingSlot = targetSlot;
+                    meetingDate = getDateForDraw(previousWeek, targetDay);
+                }
+            }
+            
+            // Try current week as fallback
+            if (!meetingNumber) {
+                meetingNumber = getDraw(currentWeek, targetDay, targetSlot);
+                if (meetingNumber) {
+                    meetingSlot = targetSlot;
+                    meetingDate = getDateForDraw(currentWeek, targetDay);
+                }
+            }
+        }
+    }
+    
+    return { leavingNumber, leavingSlot, leavingDate, meetingNumber, meetingSlot, meetingDate };
+}
+
+function formatShortDate(dateStr) {
+    if (!dateStr) return "";
+    const parts = dateStr.split(" ");
+    const monthMap = {"Jan":1,"Feb":2,"Mar":3,"Apr":4,"May":5,"Jun":6,"Jul":7,"Aug":8,"Sep":9,"Oct":10,"Nov":11,"Dec":12};
+    const day = parseInt(parts[0]);
+    const month = monthMap[parts[1]];
+    const year = parts[2].slice(-2);
+    return `${day}/${month}/${year}`;
+}
+
+function formatDateDisplay(date) {
+    if (!date) return "";
+    const days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    return `${days[date.getDay()]} ${date.getDate()} ${months[date.getMonth()]} '${date.getFullYear().toString().slice(-2)}`;
+}
+
+function isDayPassed(weekStartDate, dayIndex) {
+    if (!weekStartDate) return false;
+    const parts = weekStartDate.split(" ");
+    const monthMap = {"Jan":0,"Feb":1,"Mar":2,"Apr":3,"May":4,"Jun":5,"Jul":6,"Aug":7,"Sep":8,"Oct":9,"Nov":10,"Dec":11};
+    const startDate = new Date(parts[2], monthMap[parts[1]], parseInt(parts[0]));
+    const targetDate = new Date(startDate);
+    targetDate.setDate(startDate.getDate() + dayIndex);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    return targetDate < today;
+}
+
+///////////////////////////////////////////
+// ======================================
+// CAROUSEL RENDER FUNCTIONS FOR EACH GAME
+// ======================================
 function renderCarouselWithCurrentPW(weeks, containerId) {
   if (!weeks || weeks.length === 0) return "";
   
