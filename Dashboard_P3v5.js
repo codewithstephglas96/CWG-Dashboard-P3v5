@@ -1,8 +1,8 @@
 // =====================================
 // DASHBOARD: CWG WEBAPPS
 // Theme: Electric Navy & Support Orange
-// Version 5.9.3
-// Last Modified July 19 2026
+// Version 6.3.1
+// Last Modified Sept 18 2026 11:11 am
 // =====================================
 
 const BRANDING = "CODEWITHGLASGOW";
@@ -25,6 +25,416 @@ https://script.google.com/macros/s/AKfycbwyr-M_ZzIscNgxJmR_UYHgZqmamn62Np4msDFaC
 const TICKER_URL = "https://script.google.com/macros/s/AKfycbymSUZ3cuBP7wZSKkxs8QmjMkKP6q3j-LOW_CVpY3n6Sw1EzsdwPu6yTEkpOmiAJz95/exec?action=ticker";
 
 const spirits = {1:"Centipede",2:"Old Lady",3:"Carriage",4:"Dead Man",5:"Parson Man",6:"Belly",7:"Hog",8:"Tiger",9:"Cattle",10:"Monkey",11:"Corbeau",12:"King",13:"Crapaud",14:"Money",15:"Sick Woman",16:"Jamette",17:"Pigeon",18:"Water Boat",19:"Horse",20:"Dog",21:"Mouth",22:"Rat",23:"House",24:"Queen",25:"Morrocoy",26:"Fowl",27:"Little Snake",28:"Red Fish",29:"Opium Man",30:"House Cat",31:"Parson Wife",32:"Shrimp",33:"Spider",34:"Blind Man",35:"Big Snake",36:"Donkey"}
+
+// ======================================
+// STATISTICAL ENGINE MODULES
+// ======================================
+
+// --- Module 1: Data Extraction & Caching ---
+const DataExtractor = {
+  cache: {},
+  getDraw(week, dayName, slot) {
+    const key = `${week.startDate}-${dayName}-${slot}`;
+    if (this.cache[key]) return this.cache[key];
+    if (!week) return null;
+    const day = week.days.find(d => d.dayName === dayName);
+    if (!day) return null;
+    const val = day.draws[slot];
+    const result = val && val !== "-" && val !== "PENDING" && val !== "HOLIDAY" ? val.toString() : null;
+    this.cache[key] = result;
+    return result;
+  },
+  getDrawNumbers(week, dayName, slot) {
+    const draw = this.getDraw(week, dayName, slot);
+    if (!draw) return [];
+    const numbers = draw.split(/[,/ ]+/).map(n => parseInt(n, 10)).filter(n => !isNaN(n) && n >= 1 && n <= 36);
+    return numbers;
+  },
+  getDrawPair(week, dayName, slot) {
+    const draw = this.getDraw(week, dayName, slot);
+    if (!draw) return null;
+    const nums = this.getDrawNumbers(week, dayName, slot);
+    if (nums.length >= 2) {
+      return { first: nums[0], second: nums[1], full: draw, isDouble: nums[0] === nums[1] };
+    }
+    return null;
+  },
+  clearCache() {
+    this.cache = {};
+  }
+};
+
+// --- Module 2: Lines & Suites Mapping ---
+const LinesSuitesMapper = {
+  linesChart: {
+    1: [1, 10, 19, 28], 2: [2, 11, 20, 29], 3: [3, 12, 21, 30],
+    4: [4, 13, 22, 31], 5: [5, 14, 23, 32], 6: [6, 15, 24, 33],
+    7: [7, 16, 25, 34], 8: [8, 17, 26, 35], 9: [9, 18, 27, 36]
+  },
+  suitsChart: {
+    0: [10, 20, 30], 1: [1, 11, 21, 31], 2: [2, 12, 22, 32],
+    3: [3, 13, 23, 33], 4: [4, 14, 24, 34], 5: [5, 15, 25, 35],
+    6: [6, 16, 26, 36], 7: [7, 17, 27], 8: [8, 18, 28], 9: [9, 19, 29]
+  },
+  lineCache: {},
+  suitCache: {},
+  getLineForNumber(num) {
+    if (!num) return null;
+    if (this.lineCache[num]) return this.lineCache[num];
+    for (const [line, nums] of Object.entries(this.linesChart)) {
+      if (nums.includes(num)) {
+        this.lineCache[num] = parseInt(line, 10);
+        return this.lineCache[num];
+      }
+    }
+    return null;
+  },
+  getLineNumbers(line) {
+    return this.linesChart[line] || [];
+  },
+  getSuitForNumber(num) {
+    if (!num) return null;
+    if (this.suitCache[num]) return this.suitCache[num];
+    for (const [suit, nums] of Object.entries(this.suitsChart)) {
+      if (nums.includes(num)) {
+        this.suitCache[num] = parseInt(suit, 10);
+        return this.suitCache[num];
+      }
+    }
+    return null;
+  },
+  getSuitNumbers(suit) {
+    return this.suitsChart[suit] || [];
+  },
+  clearCache() {
+    this.lineCache = {};
+    this.suitCache = {};
+  }
+};
+
+// --- Module 3: Time Decay Engine ---
+const TimeDecayEngine = {
+  decayFactor: 0.95,
+  calculateWeight(weeksAgo) {
+    return Math.pow(this.decayFactor, weeksAgo);
+  },
+  applyDecay(entries, getAgeFn) {
+    return entries.map((entry, index) => {
+      const age = getAgeFn ? getAgeFn(entry, index) : index;
+      return { ...entry, weight: this.calculateWeight(age) };
+    });
+  },
+  getDecayedFrequency(entries, valueExtractor) {
+    const weighted = {};
+    let totalWeight = 0;
+    entries.forEach((entry, index) => {
+      const value = valueExtractor(entry);
+      const weight = this.calculateWeight(index);
+      weighted[value] = (weighted[value] || 0) + weight;
+      totalWeight += weight;
+    });
+    return { frequencies: weighted, totalWeight };
+  }
+};
+
+// --- Module 4: Markov Chain Transition Engine ---
+const MarkovChainEngine = {
+  transitionCache: {},
+  buildTransitions(sequence, maxOrder = 2) {
+    const transitions = {};
+    for (let i = 0; i < sequence.length - maxOrder; i++) {
+      const state = sequence.slice(i, i + maxOrder);
+      const next = sequence[i + maxOrder];
+      const key = state.join('|');
+      if (!transitions[key]) {
+        transitions[key] = {};
+      }
+      transitions[key][next] = (transitions[key][next] || 0) + 1;
+    }
+    for (const [key, nextStates] of Object.entries(transitions)) {
+      const total = Object.values(nextStates).reduce((a, b) => a + b, 0);
+      for (const [next, count] of Object.entries(nextStates)) {
+        nextStates[next] = count / total;
+      }
+    }
+    return transitions;
+  },
+  getTransitionProbability(transitions, currentState, nextValue) {
+    const key = currentState.join('|');
+    if (!transitions[key]) return 0;
+    return transitions[key][nextValue] || 0;
+  },
+  clearCache() {
+    this.transitionCache = {};
+  }
+};
+
+// --- Module 5: Gap Distribution Engine ---
+const GapDistributionEngine = {
+  gapCache: {},
+  calculateGaps(timeline, valueExtractor) {
+    const gaps = {};
+    const lastSeen = {};
+    timeline.forEach((entry, index) => {
+      const value = valueExtractor(entry);
+      if (lastSeen[value] !== undefined) {
+        const gap = index - lastSeen[value];
+        if (!gaps[value]) gaps[value] = [];
+        gaps[value].push(gap);
+      }
+      lastSeen[value] = index;
+    });
+    return gaps;
+  },
+  getGapStatistics(gaps) {
+    const stats = {};
+    for (const [value, gapList] of Object.entries(gaps)) {
+      if (gapList.length === 0) continue;
+      const sorted = [...gapList].sort((a, b) => a - b);
+      const sum = sorted.reduce((a, b) => a + b, 0);
+      const mean = sum / sorted.length;
+      const median = sorted.length % 2 === 0 ? 
+        (sorted[sorted.length / 2 - 1] + sorted[sorted.length / 2]) / 2 : 
+        sorted[Math.floor(sorted.length / 2)];
+      const min = sorted[0];
+      const max = sorted[sorted.length - 1];
+      const variance = sorted.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / sorted.length;
+      const stdDev = Math.sqrt(variance);
+      stats[value] = { mean, median, min, max, variance, stdDev, count: sorted.length, currentGap: sorted[sorted.length - 1] || 0 };
+    }
+    return stats;
+  },
+  calculateZScore(gap, mean, stdDev) {
+    if (stdDev === 0) return 0;
+    return (gap - mean) / stdDev;
+  },
+  clearCache() {
+    this.gapCache = {};
+  }
+};
+
+// --- Module 6: Bayesian Probability Engine ---
+const BayesianEngine = {
+  updateProbability(prior, likelihood, evidence) {
+    if (evidence === 0) return prior;
+    return (likelihood * prior) / evidence;
+  },
+  smoothProbability(count, total, alpha = 1) {
+    return (count + alpha) / (total + alpha * 36);
+  },
+  calculatePosterior(prior, factorLikelihoods, evidenceWeight = 1) {
+    let posterior = prior;
+    for (const likelihood of factorLikelihoods) {
+      posterior = this.updateProbability(posterior, likelihood, evidenceWeight);
+    }
+    return posterior;
+  }
+};
+
+// --- Module 7: Monte Carlo Simulation Engine ---
+const MonteCarloEngine = {
+  simulationCount: 10000,
+  runSimulation(distribution, samples = this.simulationCount) {
+    const results = [];
+    const cumulative = [];
+    let total = 0;
+    for (const [key, prob] of Object.entries(distribution)) {
+      total += prob;
+      cumulative.push({ key, cumulative: total });
+    }
+    for (let i = 0; i < samples; i++) {
+      const rand = Math.random() * total;
+      for (const item of cumulative) {
+        if (rand <= item.cumulative) {
+          results.push(item.key);
+          break;
+        }
+      }
+    }
+    const frequencies = {};
+    results.forEach(key => {
+      frequencies[key] = (frequencies[key] || 0) + 1;
+    });
+    const probabilities = {};
+    for (const [key, count] of Object.entries(frequencies)) {
+      probabilities[key] = count / samples;
+    }
+    return probabilities;
+  },
+  setSimulationCount(count) {
+    this.simulationCount = count;
+  }
+};
+
+// --- Module 8: Event Memory & Similarity Engine ---
+const EventMemoryEngine = {
+  memory: [],
+  maxMemorySize: 1000,
+  storeEvent(event) {
+    this.memory.push(event);
+    if (this.memory.length > this.maxMemorySize) {
+      this.memory.shift();
+    }
+  },
+  calculateSimilarity(event1, event2) {
+    let score = 0;
+    let total = 0;
+    if (event1.leavingNumber && event2.leavingNumber) {
+      score += event1.leavingNumber === event2.leavingNumber ? 1 : 0;
+      total++;
+    }
+    if (event1.meetingNumber && event2.meetingNumber) {
+      score += event1.meetingNumber === event2.meetingNumber ? 1 : 0;
+      total++;
+    }
+    if (event1.slot && event2.slot) {
+      score += event1.slot === event2.slot ? 1 : 0;
+      total++;
+    }
+    if (event1.day && event2.day) {
+      score += event1.day === event2.day ? 1 : 0;
+      total++;
+    }
+    if (event1.line && event2.line) {
+      score += event1.line === event2.line ? 1 : 0;
+      total++;
+    }
+    return total > 0 ? score / total : 0;
+  },
+  findSimilarEvents(currentEvent) {
+    const similarities = [];
+    for (const event of this.memory) {
+      const similarity = this.calculateSimilarity(currentEvent, event);
+      if (similarity > 0.5) {
+        similarities.push({ event, similarity });
+      }
+    }
+    similarities.sort((a, b) => b.similarity - a.similarity);
+    return similarities.slice(0, 10);
+  },
+  clearMemory() {
+    this.memory = [];
+  }
+};
+
+// --- Module 9: Correlation Engine ---
+const CorrelationEngine = {
+  correlations: {},
+  calculateCorrelation(factor1, factor2, data) {
+    const n = data.length;
+    const sum1 = data.reduce((a, d) => a + d[factor1], 0);
+    const sum2 = data.reduce((a, d) => a + d[factor2], 0);
+    const sum1Sq = data.reduce((a, d) => a + Math.pow(d[factor1], 2), 0);
+    const sum2Sq = data.reduce((a, d) => a + Math.pow(d[factor2], 2), 0);
+    const sum12 = data.reduce((a, d) => a + d[factor1] * d[factor2], 0);
+    const numerator = n * sum12 - sum1 * sum2;
+    const denominator = Math.sqrt((n * sum1Sq - Math.pow(sum1, 2)) * (n * sum2Sq - Math.pow(sum2, 2)));
+    return denominator === 0 ? 0 : numerator / denominator;
+  },
+  getCorrelation(factor1, factor2, data) {
+    const key = `${factor1}|${factor2}`;
+    if (this.correlations[key]) return this.correlations[key];
+    const correlation = this.calculateCorrelation(factor1, factor2, data);
+    this.correlations[key] = correlation;
+    return correlation;
+  },
+  clearCache() {
+    this.correlations = {};
+  }
+};
+
+// --- Module 10: Historical Performance Dashboard ---
+const PerformanceDashboard = {
+  factorPerformance: {},
+  trackPerformance(factor, prediction, actual) {
+    if (!this.factorPerformance[factor]) {
+      this.factorPerformance[factor] = { correct: 0, total: 0, accuracy: 0, weight: 1 };
+    }
+    this.factorPerformance[factor].total++;
+    if (prediction === actual) {
+      this.factorPerformance[factor].correct++;
+    }
+    this.factorPerformance[factor].accuracy = 
+      this.factorPerformance[factor].correct / this.factorPerformance[factor].total;
+  },
+  getFactorWeight(factor) {
+    if (!this.factorPerformance[factor]) return 1;
+    const perf = this.factorPerformance[factor];
+    return 0.5 + (perf.accuracy * 0.5);
+  },
+  getAllWeights(factors) {
+    const weights = {};
+    for (const factor of factors) {
+      weights[factor] = this.getFactorWeight(factor);
+    }
+    return weights;
+  },
+  normalizeWeights(weights) {
+    const total = Object.values(weights).reduce((a, b) => a + b, 0);
+    if (total === 0) return weights;
+    const normalized = {};
+    for (const [key, weight] of Object.entries(weights)) {
+      normalized[key] = weight / total;
+    }
+    return normalized;
+  },
+  reset() {
+    this.factorPerformance = {};
+  }
+};
+
+// ======================================
+// STATISTICAL NORMALISATION FUNCTIONS
+// ======================================
+const StatisticalNormalisation = {
+  zScore(value, mean, stdDev) {
+    if (stdDev === 0) return 0;
+    return (value - mean) / stdDev;
+  },
+  minMaxScale(value, min, max) {
+    if (max === min) return 0.5;
+    return (value - min) / (max - min);
+  },
+  softmax(values) {
+    const expValues = values.map(v => Math.exp(v));
+    const sum = expValues.reduce((a, b) => a + b, 0);
+    return expValues.map(v => v / sum);
+  },
+  normalizeProbabilities(probs) {
+    const sum = probs.reduce((a, b) => a + b, 0);
+    return sum === 0 ? probs.map(() => 1 / probs.length) : probs.map(p => p / sum);
+  }
+};
+
+// ======================================
+// STATISTICAL ENGINE - CACHE MANAGEMENT
+// ======================================
+const StatisticalEngine = {
+  clearAllCaches: function() {
+    DataExtractor.clearCache();
+    LinesSuitesMapper.clearCache();
+    MarkovChainEngine.clearCache();
+    GapDistributionEngine.clearCache();
+    CorrelationEngine.clearCache();
+    PerformanceDashboard.reset();
+    EventMemoryEngine.clearMemory();
+  },
+  modules: {
+    DataExtractor: DataExtractor,
+    LinesSuitesMapper: LinesSuitesMapper,
+    TimeDecayEngine: TimeDecayEngine,
+    MarkovChainEngine: MarkovChainEngine,
+    GapDistributionEngine: GapDistributionEngine,
+    BayesianEngine: BayesianEngine,
+    MonteCarloEngine: MonteCarloEngine,
+    EventMemoryEngine: EventMemoryEngine,
+    CorrelationEngine: CorrelationEngine,
+    PerformanceDashboard: PerformanceDashboard,
+    StatisticalNormalisation: StatisticalNormalisation
+  }
+};
+
+
 
 let globalTrackingCode = '';
 let globalLastDraw = '';
@@ -1135,14 +1545,13 @@ function renderChartPlayMapping(weeksData) {
   `;
 }
 
-// =======================================
+// =====================================
 // PLAY WHE ANALYSIS READOUT (Intelligent - Previous Week + Current Week Updates)
-// FIXED: Handles HOLIDAY in previous weeks correctly
-// =======================================
+// =====================================
 function generatePlayWheReadout(weeksData) {
   // Check if we have valid data
   if (!weeksData || weeksData.length === 0) {
-    return '<div class="analysis-readout" style="background: linear-gradient(135deg, #0f172a, #1e293b); border-radius: 20px; padding: 16px; margin-bottom: 15px; border: 1px solid #ff9d00; text-align:center;">📊 Waiting for Play Whe data to load...</div>';
+    return '<div class="analysis-readout" style="background: linear-gradient(135deg, #0f172a, #1e293b); border-radius: 20px; padding: 16px; margin-bottom: 15px; border: 1px solid #ff9d00; text-align:center;">⏳ Waiting for Play Whe data to load...</div>';
   }
   
   const now = new Date();
@@ -1156,38 +1565,9 @@ function generatePlayWheReadout(weeksData) {
   });
   
   const currentWeek = sortedWeeks[sortedWeeks.length - 1];
+  const previousWeek = sortedWeeks.length >= 2 ? sortedWeeks[sortedWeeks.length - 2] : currentWeek;
   
-  // Find the most recent non-holiday previous week with valid draws
-  let previousWeek = null;
-  for (let i = sortedWeeks.length - 2; i >= 0; i--) {
-    const week = sortedWeeks[i];
-    let hasValidDraw = false;
-    if (week && week.days) {
-      for (const day of week.days) {
-        if (day && day.draws) {
-          for (const slot of ["MOR", "MID", "NON", "EVE"]) {
-            const val = day.draws[slot];
-            if (val && val !== "-" && val !== "PENDING" && val !== "HOLIDAY") {
-              hasValidDraw = true;
-              break;
-            }
-          }
-        }
-        if (hasValidDraw) break;
-      }
-    }
-    if (hasValidDraw) {
-      previousWeek = week;
-      break;
-    }
-  }
-  
-  // If no valid previous week found, use current week as fallback
-  if (!previousWeek) {
-    previousWeek = currentWeek;
-  }
-  
-  // Format current week date range
+  // Format current week date range (e.g., "3 May '26 - 9 May '26")
   function formatWeekRange(week) {
     if (!week || !week.startDate) return "Current Week";
     const startDate = new Date(week.startDate);
@@ -1224,10 +1604,10 @@ function generatePlayWheReadout(weeksData) {
   
   // Spirit Emoji mapping
   const spiritEmoji = {
-    1: "🔪", 2: "👵🏾", 3: "🚕", 4: "⚰️", 5: "👨🏾‍🦳", 6: "🤰🏽", 7: "🐗", 8: "🐯",
+    1: "🔪", 2: "👵🏾", 3: "🚕", 4: "💀", 5: "👨🏾‍🦳", 6: "🤰🏽", 7: "🐗", 8: "🐯",
     9: "🐮", 10: "🐒", 11: "🦅", 12: "🤴🏽", 13: "🐸", 14: "💰", 15: "🤧", 16: "💃🏽",
     17: "🐦‍⬛", 18: "🚤", 19: "🐎", 20: "🐶", 21: "👄", 22: "🐀", 23: "🏡", 24: "🫅🏽",
-    25: "🐢", 26: "🐔", 27: "🐍", 28: "🐟", 29: "🍻", 30: "🐈‍⬛", 31: "👵🏾", 32: "🦐",
+    25: "🐢", 26: "🐔", 27: "🐍", 28: "🐟", 29: "🍻", 30: "🐯", 31: "👵🏾", 32: "🦐",
     33: "🕷️", 34: "👨🏾‍🦯", 35: "🐍", 36: "🫏"
   };
   
@@ -1236,7 +1616,7 @@ function generatePlayWheReadout(weeksData) {
     const day = week.days.find(d => d.dayName === dayName);
     if (!day) return null;
     const val = day.draws[slot];
-    return val && val !== "-" && val !== "PENDING" && val !== "HOLIDAY" ? parseInt(val, 10) : null;
+    return val && val !== "-" && val !== "PENDING" ? parseInt(val, 10) : null;
   }
   
   // Enhanced function to get draws from multiple weeks
@@ -1251,13 +1631,15 @@ function generatePlayWheReadout(weeksData) {
     return null;
   }
   
-  // Enhanced deep search function that skips holidays
+  // Enhanced deep search function that skips holidays and searches across all weeks
   function findDeepDraw(sortedWeeks, startWeekIndex, targetDayIdx, targetSlot) {
     const targetDayName = dayNames[targetDayIdx];
     
+    // First try the standard approach (skip holidays)
     for (let w = startWeekIndex; w >= 0; w--) {
       const week = sortedWeeks[w];
       
+      // Special handling for Monday holidays
       if (targetDayIdx === 1) {
         const checkDay = week.days.find(d => d.dayName === "Monday");
         const isHoliday = !checkDay || slots.every(s => {
@@ -1272,7 +1654,29 @@ function generatePlayWheReadout(weeksData) {
         return { value: val, week: week, date: new Date(week.startDate) };
       }
     }
-    return null;
+    
+    // FALLBACK: If no valid draw found, scan ALL weeks for ANY draw
+    // This ensures we always find a number, even if we have to go back further
+    for (let w = sortedWeeks.length - 1; w >= 0; w--) {
+      const week = sortedWeeks[w];
+      // Skip the current week if we're in the middle of it
+      if (w === sortedWeeks.length - 1 && week.isCurrentWeek) continue;
+      
+      // Try all days and slots to find the most recent draw
+      for (let d = dayNames.length - 1; d >= 0; d--) {
+        for (let s = slots.length - 1; s >= 0; s--) {
+          const val = getDraw(week, dayNames[d], slots[s]);
+          if (val) {
+            const date = new Date(week.startDate);
+            date.setDate(date.getDate() + d);
+            return { value: val, week: week, date: date };
+          }
+        }
+      }
+    }
+    
+    // ULTIMATE FALLBACK: Return a default number if no draws found anywhere
+    return { value: 1, week: sortedWeeks[sortedWeeks.length - 1], date: new Date() };
   }
   
   function formatDate(date) {
@@ -1289,60 +1693,33 @@ function generatePlayWheReadout(weeksData) {
     return `${numbersCopy.join(", ")} and ${last}`;
   }
   
-  // Get today's draws from previous week (skip holidays)
-  let todayDraws = [];
-  for (const slot of slots) {
+  // Get today's draws from previous week (the carousel display)
+  const todayDraws = [];
+  slots.forEach(slot => {
     const draw = getDraw(previousWeek, todayName, slot);
     if (draw) todayDraws.push(draw);
-  }
-  
-  // If no draws in previous week, search across all weeks
-  if (todayDraws.length === 0) {
-    for (const slot of slots) {
-      const result = getDrawFromMultipleWeeks(sortedWeeks, todayName, slot);
-      if (result && result.value) {
-        todayDraws.push(result.value);
-      }
-    }
-  }
-  
-  // If still no draws, get the most recent draws from any day
-  if (todayDraws.length === 0) {
-    let drawCount = 0;
-    for (let w = sortedWeeks.length - 1; w >= 0 && drawCount < 4; w--) {
-      const week = sortedWeeks[w];
-      for (let d = dayNames.length - 1; d >= 0 && drawCount < 4; d--) {
-        for (let s = slots.length - 1; s >= 0 && drawCount < 4; s--) {
-          const draw = getDraw(week, dayNames[d], slots[s]);
-          if (draw) {
-            todayDraws.push(draw);
-            drawCount++;
-          }
-        }
-      }
-    }
-  }
+  });
   
   if (todayDraws.length === 0) {
-    return '<div class="analysis-readout" style="background: linear-gradient(135deg, #0f172a, #1e293b); border-radius: 20px; padding: 16px; margin-bottom: 15px; border: 1px solid #ff9d00; text-align:center;">📊 No previous week data available for today\'s analysis</div>';
+    return '<div class="analysis-readout" style="background: linear-gradient(135deg, #0f172a, #1e293b); border-radius: 20px; padding: 16px; margin-bottom: 15px; border: 1px solid #ff9d00; text-align:center;">❌ No previous week data available for today\'s analysis</div>';
   }
   
-  // Get all draws from previous week for baseline analysis (skip holidays)
+  // Get all draws from previous week for baseline analysis
   const previousWeekDraws = [];
-  for (const day of dayNames) {
-    for (const slot of slots) {
+  dayNames.forEach(day => {
+    slots.forEach(slot => {
       const draw = getDraw(previousWeek, day, slot);
       if (draw) previousWeekDraws.push(draw);
-    }
-  }
+    });
+  });
   
   // Get all draws from current week so far (up to today)
   const currentWeekDraws = [];
   for (let d = 0; d <= todayIdx; d++) {
-    for (const slot of slots) {
+    slots.forEach(slot => {
       const draw = getDraw(currentWeek, dayNames[d], slot);
       if (draw) currentWeekDraws.push(draw);
-    }
+    });
   }
   
   // Count occurrences for previous week and current week
@@ -1356,7 +1733,7 @@ function generatePlayWheReadout(weeksData) {
     currentWeekCounts[draw] = (currentWeekCounts[draw] || 0) + 1;
   });
   
-  // Lines analysis
+  // Lines analysis - start with previous week missing, then remove if played in current week
   const lines = {
     1: [1,10,19,28], 2: [2,11,20,29], 3: [3,12,21,30],
     4: [4,13,22,31], 5: [5,14,23,32], 6: [6,15,24,33],
@@ -1379,7 +1756,7 @@ function generatePlayWheReadout(weeksData) {
     }
   }
   
-  // Suites analysis
+  // Suites analysis - start with previous week missing, then remove if played in current week
   const suites = {
     0: [10,20,30], 1: [1,11,21,31], 2: [2,12,22,32],
     3: [3,13,23,33], 4: [4,14,24,34], 5: [5,15,25,35],
@@ -1402,7 +1779,7 @@ function generatePlayWheReadout(weeksData) {
     }
   }
   
-  // Build timeline
+  // Build timeline for PREVIOUS WEEK + CURRENT WEEK (for tracking events)
   const timeline = [];
   const prevWeekStart = new Date(previousWeek.startDate);
   const currWeekStart = new Date(currentWeek.startDate);
@@ -1411,14 +1788,14 @@ function generatePlayWheReadout(weeksData) {
   for (let d = 0; d < dayNames.length; d++) {
     const drawDate = new Date(prevWeekStart);
     drawDate.setDate(prevWeekStart.getDate() + d);
-    for (const slot of slots) {
-      const draw = getDraw(previousWeek, dayNames[d], slot);
+    for (let s = 0; s < slots.length; s++) {
+      const draw = getDraw(previousWeek, dayNames[d], slots[s]);
       if (draw) {
         timeline.push({ 
           num: draw, 
           date: drawDate, 
           day: dayNames[d], 
-          slot: slot,
+          slot: slots[s],
           timestamp: drawDate.getTime(),
           week: "prev"
         });
@@ -1430,14 +1807,14 @@ function generatePlayWheReadout(weeksData) {
   for (let d = 0; d <= todayIdx; d++) {
     const drawDate = new Date(currWeekStart);
     drawDate.setDate(currWeekStart.getDate() + d);
-    for (const slot of slots) {
-      const draw = getDraw(currentWeek, dayNames[d], slot);
+    for (let s = 0; s < slots.length; s++) {
+      const draw = getDraw(currentWeek, dayNames[d], slots[s]);
       if (draw) {
         timeline.push({ 
           num: draw, 
           date: drawDate, 
           day: dayNames[d], 
-          slot: slot,
+          slot: slots[s],
           timestamp: drawDate.getTime(),
           week: "curr"
         });
@@ -1445,35 +1822,9 @@ function generatePlayWheReadout(weeksData) {
     }
   }
   
-  // If no timeline entries, search across all weeks
-  if (timeline.length === 0) {
-    for (let w = sortedWeeks.length - 1; w >= 0; w--) {
-      const week = sortedWeeks[w];
-      const weekStart = new Date(week.startDate);
-      for (let d = 0; d < dayNames.length; d++) {
-        const drawDate = new Date(weekStart);
-        drawDate.setDate(weekStart.getDate() + d);
-        for (const slot of slots) {
-          const draw = getDraw(week, dayNames[d], slot);
-          if (draw) {
-            timeline.push({ 
-              num: draw, 
-              date: drawDate, 
-              day: dayNames[d], 
-              slot: slot,
-              timestamp: drawDate.getTime(),
-              week: "prev"
-            });
-          }
-        }
-      }
-      if (timeline.length > 0) break;
-    }
-  }
-  
   timeline.sort((a, b) => a.timestamp - b.timestamp);
   
-  // LAST DATE PLAY
+  // LAST DATE PLAY - most recent draw from timeline
   let lastPlayDate = null;
   let lastPlayNumbers = [];
   if (timeline.length > 0) {
@@ -1490,7 +1841,7 @@ function generatePlayWheReadout(weeksData) {
     }
   }
   
-  // LAST FLIP
+  // LAST FLIP - scan backwards (includes current week)
   let lastFlip = { num1: null, num2: null, date: null };
   const partners = {};
   for (let i = 1; i <= 18; i++) {
@@ -1507,40 +1858,68 @@ function generatePlayWheReadout(weeksData) {
     }
   }
   
-  // DOUBLE/TRIPLE/QUADRUPLE LOGIC
+  // ENHANCED DOUBLE/TRIPLE/QUADRUPLE LOGIC
+  
+  // Double numbers are ONLY 8, 11, 22, 33
   const doubleNumbers = [8, 11, 22, 33];
   
-  const toDoubleMissing = doubleNumbers.filter(num => !previousWeekDraws.includes(num) && !currentWeekDraws.includes(num));
+  // TO DOUBLE (Missing) - Double numbers that haven't played in previous week OR current week
+  const toDoubleMissing = [];
+  doubleNumbers.forEach(num => {
+    if (!previousWeekDraws.includes(num) && !currentWeekDraws.includes(num)) {
+      toDoubleMissing.push(num);
+    }
+  });
   
-  const toDoubleCurrent = doubleNumbers.filter(num => (currentWeekCounts[num] || 0) === 1);
+  // TO DOUBLE (Current Week) - ONLY double numbers (11,22,33) that have played once in current week
+  const toDoubleCurrent = [];
+  doubleNumbers.forEach(num => {
+    const currCount = currentWeekCounts[num] || 0;
+    if (currCount === 1) {
+      toDoubleCurrent.push(num);
+    }
+  });
   
+  // TO TRIPLE (Missing from previous week) - Numbers that played twice in previous week and haven't played in current week
   const toTripleMissing = [];
   for (let num = 1; num <= 36; num++) {
     const prevCount = previousWeekCounts[num] || 0;
     const currCount = currentWeekCounts[num] || 0;
-    if (prevCount === 2 && currCount === 0) toTripleMissing.push(num);
+    if (prevCount === 2 && currCount === 0) {
+      toTripleMissing.push(num);
+    }
   }
   
+  // TO TRIPLE (Current Week) - Numbers that have played twice in current week so far (need one more for triple)
   const toTripleCurrent = [];
   for (let num = 1; num <= 36; num++) {
     const currCount = currentWeekCounts[num] || 0;
-    if (currCount === 2) toTripleCurrent.push(num);
+    if (currCount === 2) {
+      toTripleCurrent.push(num);
+    }
   }
   
+  // TO QUADRUPLE (Missing from previous week) - Numbers that played three times in previous week and haven't played in current week
   const toQuadrupleMissing = [];
   for (let num = 1; num <= 36; num++) {
     const prevCount = previousWeekCounts[num] || 0;
     const currCount = currentWeekCounts[num] || 0;
-    if (prevCount === 3 && currCount === 0) toQuadrupleMissing.push(num);
+    if (prevCount === 3 && currCount === 0) {
+      toQuadrupleMissing.push(num);
+    }
   }
   
+  // TO QUADRUPLE (Current Week) - Numbers that have played three times in current week so far (need one more for quadruple)
   const toQuadrupleCurrent = [];
   for (let num = 1; num <= 36; num++) {
     const currCount = currentWeekCounts[num] || 0;
-    if (currCount === 3) toQuadrupleCurrent.push(num);
+    if (currCount === 3) {
+      toQuadrupleCurrent.push(num);
+    }
   }
   
-  // WAPPI, DAMBALAY, PULL BACK
+  // WAPPI: number repeats in same day (MOR→MID, MID→NON, NON→EVE, EVE→next day MOR)
+  // Includes both previous week and current week
   const wappiList = [];
   for (let i = timeline.length - 1; i >= 1; i--) {
     const curr = timeline[i];
@@ -1568,6 +1947,8 @@ function generatePlayWheReadout(weeksData) {
     }
   }
   
+  // DAMBALAY: MOR→NON, MID→EVE, or cross-day repeats
+  // Includes both previous week and current week
   const dambalayList = [];
   for (let i = timeline.length - 1; i >= 0; i--) {
     for (let j = i - 1; j >= 0; j--) {
@@ -1594,6 +1975,8 @@ function generatePlayWheReadout(weeksData) {
     }
   }
   
+  // PULL BACK: number played on a day and again 2+ days later
+  // Includes both previous week and current week
   const pullBackList = [];
   for (let i = timeline.length - 1; i >= 0; i--) {
     for (let j = i - 1; j >= 0; j--) {
@@ -1614,30 +1997,49 @@ function generatePlayWheReadout(weeksData) {
     }
   }
   
-  // LEAVING & MEETING Containers
+  // ====================================
+  // ENHANCED LEAVING & MEETING CONTAINERS WITH FALLBACKS
+  // =====================================
+  
+  // Helper to get Line and Suit for a number
   function getLineAndSuitForNumber(num) {
-    const linesChartLocal = {
+    const linesChart = {
       1: [1,10,19,28], 2: [2,11,20,29], 3: [3,12,21,30],
       4: [4,13,22,31], 5: [5,14,23,32], 6: [6,15,24,33],
       7: [7,16,25,34], 8: [8,17,26,35], 9: [9,18,27,36]
     };
-    const suitsChartLocal = {
+    const suitsChart = {
       0: [10,20,30], 1: [1,11,21,31], 2: [2,12,22,32],
       3: [3,13,23,33], 4: [4,14,24,34], 5: [5,15,25,35],
       6: [6,16,26,36], 7: [7,17,27], 8: [8,18,28], 9: [9,19,29]
     };
     
-    let line = null, suit = null;
-    for (const [key, group] of Object.entries(linesChartLocal)) {
-      if (group.includes(num)) { line = key; break; }
+    let line = null;
+    let suit = null;
+    for (let [key, group] of Object.entries(linesChart)) {
+      if (group.includes(num)) {
+        line = key;
+        break;
+      }
     }
-    for (const [key, group] of Object.entries(suitsChartLocal)) {
-      if (group.includes(num)) { suit = key; break; }
+    for (let [key, group] of Object.entries(suitsChart)) {
+      if (group.includes(num)) {
+        suit = key;
+        break;
+      }
     }
     return { line, suit };
   }
   
-  function formatLineSuitLocal(line, suit) {
+  // Helper to format day and slot (e.g., "Wed # • EVE")
+  function formatDaySlot(day, slot, date) {
+    const dayShort = day.slice(0,3).toUpperCase();
+    const dayNum = date ? date.getDate() : '';
+    return `${dayShort} ${dayNum} • ${slot}`;
+  }
+  
+  // Helper to format line/suit string
+  function formatLineSuit(line, suit) {
     if (line === null && suit === null) return "—";
     const lineStr = line !== null ? `${line} Line` : "";
     const suitStr = suit !== null ? `${suit} Suit` : "";
@@ -1645,13 +2047,11 @@ function generatePlayWheReadout(weeksData) {
     return lineStr || suitStr;
   }
   
-  function formatDaySlotLocal(day, slot, date) {
-    const dayShort = day.slice(0,3).toUpperCase();
-    const dayNum = date ? date.getDate() : '';
-    return `${dayShort} ${dayNum} • ${slot}`;
-  }
+  // ==================================
+  // LEAVING/MEETING LOGIC WITH FALLBACK
+  // ===================================
   
-  // Find leaving number - search across weeks if needed
+  // Find last played number - search current week first
   let leavingNumber = null;
   let leavingDate = null;
   let leavingDay = null;
@@ -1662,7 +2062,7 @@ function generatePlayWheReadout(weeksData) {
   const currWeekStartDate = new Date(currentWeek.startDate);
   const todayIdxLocal = now.getDay();
   
-  // First try current week
+  // First, try to find a draw in the current week
   for (let d = todayIdxLocal; d >= 0; d--) {
     for (let s = slots.length - 1; s >= 0; s--) {
       const draw = getDraw(currentWeek, dayNames[d], slots[s]);
@@ -1680,11 +2080,12 @@ function generatePlayWheReadout(weeksData) {
     if (leavingNumber) break;
   }
   
-  // If no leaving number in current week, search previous weeks
+  // If no draw in current week, search ALL previous weeks
   if (!leavingNumber) {
     for (let w = sortedWeeks.length - 2; w >= 0; w--) {
       const week = sortedWeeks[w];
       const weekStart = new Date(week.startDate);
+      let found = false;
       for (let d = dayNames.length - 1; d >= 0; d--) {
         for (let s = slots.length - 1; s >= 0; s--) {
           const draw = getDraw(week, dayNames[d], slots[s]);
@@ -1696,16 +2097,27 @@ function generatePlayWheReadout(weeksData) {
             leavingSlot = slots[s];
             leavingDayIdx = d;
             leavingSlotIdx = s;
+            found = true;
             break;
           }
         }
-        if (leavingNumber) break;
+        if (found) break;
       }
-      if (leavingNumber) break;
+      if (found) break;
     }
   }
   
-  // Find meeting number with holiday skipping
+  // ULTIMATE FALLBACK: If still no leaving number, use default number 1
+  if (!leavingNumber) {
+    leavingNumber = 1;
+    leavingDate = new Date();
+    leavingDay = "Today";
+    leavingSlot = "MOR";
+    leavingDayIdx = 0;
+    leavingSlotIdx = 0;
+  }
+  
+  // NOW find the MEETING number using enhanced deep search
   let meetingNumber = null;
   let meetingDay = null;
   let meetingSlot = null;
@@ -1725,6 +2137,7 @@ function generatePlayWheReadout(weeksData) {
     }
     
     if (nextDayIdx < dayNames.length) {
+      // Use the enhanced findDeepDraw function (which now has a fallback)
       const result = findDeepDraw(sortedWeeks, sortedWeeks.length - 2, nextDayIdx, slots[nextSlotIdx]);
       if (result && result.value) {
         meetingNumber = result.value;
@@ -1738,39 +2151,55 @@ function generatePlayWheReadout(weeksData) {
     }
   }
   
-  const leavingLineSuit = getLineAndSuitForNumber(leavingNumber);
-  const meetingLineSuit = getLineAndSuitForNumber(meetingNumber);
+  // ULTIMATE FALLBACK: If no meeting number found, use partner or default
+  if (!meetingNumber) {
+    // Use the partner of the leaving number as a fallback
+    const partnerMap = {
+      1: 36, 2: 35, 3: 34, 4: 33, 5: 32, 6: 31, 7: 30, 8: 29, 9: 28,
+      10: 27, 11: 26, 12: 25, 13: 24, 14: 23, 15: 22, 16: 21, 17: 20, 18: 19,
+      19: 18, 20: 17, 21: 16, 22: 15, 23: 14, 24: 13, 25: 12, 26: 11, 27: 10,
+      28: 9, 29: 8, 30: 7, 31: 6, 32: 5, 33: 4, 34: 3, 35: 2, 36: 1
+    };
+    if (leavingNumber && partnerMap[leavingNumber]) {
+      meetingNumber = partnerMap[leavingNumber];
+      meetingDay = "Next Draw";
+      meetingSlot = "Upcoming";
+      meetingDate = new Date();
+      meetingDate.setDate(now.getDate() + 1);
+    } else {
+      // Last resort: use number 1
+      meetingNumber = 1;
+      meetingDay = "Next Draw";
+      meetingSlot = "Upcoming";
+      meetingDate = new Date();
+      meetingDate.setDate(now.getDate() + 1);
+    }
+  }
   
-  const leavingHtml = leavingNumber ? `
+  // Get Line/Suit for both numbers
+  const leavingLineSuit = leavingNumber ? getLineAndSuitForNumber(leavingNumber) : { line: null, suit: null };
+  const meetingLineSuit = meetingNumber ? getLineAndSuitForNumber(meetingNumber) : { line: null, suit: null };
+  
+  // Build the two containers in a 2x2 grid
+  const leavingHtml = `
     <div style="background: linear-gradient(135deg, #0f172a, #1e293b); border-radius: 16px; padding: 5px; text-align: center; border-left: 3px solid #58a6ff;">
       <div style="font-size: 14px; color: #58a6ff; font-weight: bold; letter-spacing: 1px; margin-bottom: 2px;">LEAVING</div>
       <div style="font-size: 36px; font-weight: 900; color: #58a6ff; line-height: 1;">${leavingNumber}${spiritEmoji[leavingNumber] || ''}</div>
-      <div style="font-size: 10px; color: #aaa; margin-top: 2px;">${formatDaySlotLocal(leavingDay, leavingSlot, leavingDate)}</div>
-      <div style="font-size: 9px; color: #ff9d00; margin-top: 2px; font-weight: 600;">${formatLineSuitLocal(leavingLineSuit.line, leavingLineSuit.suit)}</div>
-    </div>
-  ` : `
-    <div style="background: linear-gradient(135deg, #0f172a, #1e293b); border-radius: 16px; padding: 5px; text-align: center; border-left: 3px solid #58a6ff;">
-      <div style="font-size: 14px; color: #58a6ff; font-weight: bold; margin-bottom: 2px;">LEAVING</div>
-      <div style="font-size: 24px; font-weight: 900; color: #555;">—</div>
-      <div style="font-size: 9px; color: #888; margin-top: 2px;">No data yet</div>
+      <div style="font-size: 10px; color: #aaa; margin-top: 2px;">${leavingDay ? formatDaySlot(leavingDay, leavingSlot, leavingDate) : 'No data yet'}</div>
+      <div style="font-size: 9px; color: #ff9d00; margin-top: 2px; font-weight: 600;">${formatLineSuit(leavingLineSuit.line, leavingLineSuit.suit)}</div>
     </div>
   `;
   
-  const meetingHtml = meetingNumber ? `
+  const meetingHtml = `
     <div style="background: linear-gradient(135deg, #0f172a, #1e293b); border-radius: 16px; padding: 5px; text-align: center; border-left: 3px solid #ff9d00;">
       <div style="font-size: 14px; color: #ff9d00; font-weight: bold; letter-spacing: 1px; margin-bottom: 2px;">MEETING</div>
       <div style="font-size: 36px; font-weight: 900; color: #ff9d00; line-height: 1;">${meetingNumber}${spiritEmoji[meetingNumber] || ''}</div>
-      <div style="font-size: 10px; color: #aaa; margin-top: 2px;">${formatDaySlotLocal(meetingDay, meetingSlot, meetingDate)}</div>
-      <div style="font-size: 9px; color: #58a6ff; margin-top: 2px; font-weight: 600;">${formatLineSuitLocal(meetingLineSuit.line, meetingLineSuit.suit)}</div>
-    </div>
-  ` : `
-    <div style="background: linear-gradient(135deg, #0f172a, #1e293b); border-radius: 16px; padding: 5px; text-align: center; border-left: 3px solid #ff9d00;">
-      <div style="font-size: 14px; color: #ff9d00; font-weight: bold; margin-bottom: 4px;">MEETING</div>
-      <div style="font-size: 24px; font-weight: 900; color: #555;">—</div>
-      <div style="font-size: 9px; color: #888; margin-top: 3px;">Waiting for next draw</div>
+      <div style="font-size: 10px; color: #aaa; margin-top: 2px;">${meetingDay ? formatDaySlot(meetingDay, meetingSlot, meetingDate) : 'Next Draw'}</div>
+      <div style="font-size: 9px; color: #58a6ff; margin-top: 2px; font-weight: 600;">${formatLineSuit(meetingLineSuit.line, meetingLineSuit.suit)}</div>
     </div>
   `;
   
+  // 2x2 Grid Layout
   const leavingMeetingHtml = `
   <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin: 6px 0;">
     ${leavingHtml}
@@ -1778,182 +2207,406 @@ function generatePlayWheReadout(weeksData) {
   </div>
   `;
   
-  // TREND ALERT
-  const trendNumbers = [4, 12, 16, 29];
-  
-  const flipPartners = {
-    4: 33, 33: 4,
-    12: 25, 25: 12,
-    16: 21, 21: 16,
-    29: 8, 8: 29
+// ========== TREND ALERT - Dynamic Trigger Tracking (FULLY CORRECTED) ==========
+// Numbers to track: 4, 12, 16, 29
+const trendNumbers = [4, 12, 16, 29];
+
+// Define flip partners (mirror numbers)
+const flipPartners = {
+  4: 33, 33: 4,
+  12: 25, 25: 12,
+  16: 21, 21: 16,
+  29: 8, 8: 29
+};
+
+// Helper: Format date for display (e.g., "Fri 2 May")
+function formatShortDate(date) {
+  if (!date) return null;
+  return date.toLocaleDateString('en-US', { weekday: 'short', day: 'numeric', month: 'short' }).replace(/,/g, '');
+}
+
+// Helper: Format time slot (MOR, MID, NON, EVE)
+function formatSlot(slot) {
+  if (!slot) return "";
+  const slotNames = { MOR: "🌅", MID: "☀️", NON: "🌤️", EVE: "🌙" };
+  return `${slotNames[slot] || ""} ${slot}`;
+}
+
+// Helper: Get spirit emoji
+function getSpiritEmoji(num) {
+  const spiritEmoji = {
+    1: "🔪", 2: "👵🏾", 3: "🚕", 4: "💀", 5: "👨🏾‍🦳", 6: "🤰🏽", 7: "🐗", 8: "🐯",
+    9: "🐮", 10: "🐒", 11: "🦅", 12: "🤴🏽", 13: "🐸", 14: "💰", 15: "🤧", 16: "💃🏽",
+    17: "🐦‍⬛", 18: "🚤", 19: "🐎", 20: "🐶", 21: "👄", 22: "🐀", 23: "🏡", 24: "🫅🏽",
+    25: "🐢", 26: "🐔", 27: "🐍", 28: "🐟", 29: "🍻", 30: "🐈‍⬛", 31: "👵🏾", 32: "🦐",
+    33: "🕷️", 34: "👨🏾‍🦯", 35: "🐍", 36: "🫏"
   };
+  return spiritEmoji[num] || '';
+}
+
+// ====================================
+// BUILD COMPLETE TIMELINE FROM CURRENT WEEK
+// NOTE: currWeekStart is already defined earlier in the function
+// ====================================
+const triggerTimeline = [];
+
+// Collect ALL draws from current week with timestamps
+for (let d = 0; d <= todayIdx; d++) {
+  for (let s = 0; s < slots.length; s++) {
+    const draw = getDraw(currentWeek, dayNames[d], slots[s]);
+    if (draw) {
+      const drawDate = new Date(currWeekStart);
+      drawDate.setDate(currWeekStart.getDate() + d);
+      triggerTimeline.push({
+        num: draw,
+        date: drawDate,
+        day: dayNames[d],
+        slot: slots[s],
+        timestamp: drawDate.getTime()
+      });
+    }
+  }
+}
+
+// Sort by timestamp (chronological - oldest first)
+triggerTimeline.sort((a, b) => a.timestamp - b.timestamp);
+
+// ====================================
+// TRACK ALL TRIGGER EVENTS (Including Mirrors)
+// This tracks EVERY time a main number OR its mirror is drawn
+// ====================================
+const allTriggerEvents = [];
+const triggeredMainNumbers = new Set();
+
+// Go through timeline and track EVERY trigger event
+for (const draw of triggerTimeline) {
+  const num = draw.num;
+  const isMain = trendNumbers.includes(num);
+  const isMirror = Object.values(flipPartners).includes(num) && !trendNumbers.includes(num);
   
-  let triggerNumber = null;
-  let triggerDate = null;
-  let triggerDay = null;
-  let triggerSlot = null;
+  let mainNumber = null;
+  if (isMain) {
+    mainNumber = num;
+  } else if (isMirror) {
+    for (const [key, value] of Object.entries(flipPartners)) {
+      if (value === num) {
+        mainNumber = parseInt(key);
+        break;
+      }
+    }
+  }
+  
+  // If this is a trigger (main or mirror)
+  if (mainNumber) {
+    // Track which main numbers have been triggered (first time only)
+    if (!triggeredMainNumbers.has(mainNumber)) {
+      triggeredMainNumbers.add(mainNumber);
+    }
+    
+    const mirrorNum = flipPartners[mainNumber];
+    const mirrorPlayed = triggerTimeline.some(d => d.num === mirrorNum);
+    
+    // Store EVERY trigger event (including mirrors after the first trigger)
+    allTriggerEvents.push({
+      mainNumber: mainNumber,
+      mirrorNumber: mirrorNum,
+      triggeredNumber: num, // The ACTUAL number drawn
+      date: draw.date,
+      day: draw.day,
+      slot: draw.slot,
+      isMirror: isMirror,
+      mirrorPlayed: mirrorPlayed,
+      timestamp: draw.timestamp,
+      formattedDate: formatShortDate(draw.date),
+      formattedSlot: formatSlot(draw.slot)
+    });
+  }
+}
+
+// Sort all trigger events by timestamp (newest first for display)
+allTriggerEvents.sort((a, b) => b.timestamp - a.timestamp);
+
+// The absolute latest trigger is the first one in the sorted array
+const absoluteLatestTrigger = allTriggerEvents.length > 0 ? allTriggerEvents[0] : null;
+
+// ====================================
+// BUILD COMPLETE TRIGGER HISTORY
+// This shows ALL trigger events in order (newest first)
+// ====================================
+const completeTriggerHistory = allTriggerEvents.map(event => ({
+  mainNumber: event.mainNumber,
+  mirrorNumber: event.mirrorNumber,
+  triggeredNumber: event.triggeredNumber,
+  date: event.date,
+  day: event.day,
+  slot: event.slot,
+  isMirror: event.isMirror,
+  mirrorPlayed: event.mirrorPlayed,
+  timestamp: event.timestamp,
+  formattedDate: event.formattedDate,
+  formattedSlot: event.formattedSlot
+}));
+
+// ====================================
+// BUILD TREND ALERT DATA FOR DISPLAY
+// ====================================
+const trendAlertData = [];
+for (let num of trendNumbers) {
+  let playedDate = null;
+  let playedDay = null;
+  let playedSlot = null;
+  let playedCount = 0;
   
   for (let d = 0; d <= todayIdx; d++) {
     for (let s = 0; s < slots.length; s++) {
       const draw = getDraw(currentWeek, dayNames[d], slots[s]);
-      if (draw && trendNumbers.includes(draw)) {
-        triggerNumber = draw;
-        triggerDate = new Date(currWeekStart);
-        triggerDate.setDate(currWeekStart.getDate() + d);
-        triggerDay = dayNames[d];
-        triggerSlot = slots[s];
-        break;
+      if (draw === num) {
+        playedCount++;
+        if (!playedDate) {
+          playedDate = new Date(currWeekStart);
+          playedDate.setDate(currWeekStart.getDate() + d);
+          playedDay = dayNames[d];
+          playedSlot = slots[s];
+        }
       }
     }
-    if (triggerNumber) break;
   }
   
-  const trendAlertData = [];
-  for (const num of trendNumbers) {
-    let playedDate = null;
-    let playedDay = null;
-    let playedSlot = null;
-    let playedCount = 0;
-    
+  const flipNum = flipPartners[num];
+  let flipPlayedDate = null;
+  let flipPlayedDay = null;
+  let flipPlayedSlot = null;
+  let flipPlayedCount = 0;
+  
+  if (flipNum) {
     for (let d = 0; d <= todayIdx; d++) {
       for (let s = 0; s < slots.length; s++) {
         const draw = getDraw(currentWeek, dayNames[d], slots[s]);
-        if (draw === num) {
-          playedCount++;
-          if (!playedDate) {
-            playedDate = new Date(currWeekStart);
-            playedDate.setDate(currWeekStart.getDate() + d);
-            playedDay = dayNames[d];
-            playedSlot = slots[s];
+        if (draw === flipNum) {
+          flipPlayedCount++;
+          if (!flipPlayedDate) {
+            flipPlayedDate = new Date(currWeekStart);
+            flipPlayedDate.setDate(currWeekStart.getDate() + d);
+            flipPlayedDay = dayNames[d];
+            flipPlayedSlot = slots[s];
           }
         }
       }
     }
-    
-    const flipNum = flipPartners[num];
-    let flipPlayedDate = null;
-    let flipPlayedDay = null;
-    let flipPlayedSlot = null;
-    let flipPlayedCount = 0;
-    
-    if (flipNum) {
-      for (let d = 0; d <= todayIdx; d++) {
-        for (let s = 0; s < slots.length; s++) {
-          const draw = getDraw(currentWeek, dayNames[d], slots[s]);
-          if (draw === flipNum) {
-            flipPlayedCount++;
-            if (!flipPlayedDate) {
-              flipPlayedDate = new Date(currWeekStart);
-              flipPlayedDate.setDate(currWeekStart.getDate() + d);
-              flipPlayedDay = dayNames[d];
-              flipPlayedSlot = slots[s];
-            }
-          }
-        }
-      }
-    }
-    
-    trendAlertData.push({
-      num: num,
-      playedCount: playedCount,
-      playedDate: playedDate,
-      playedDay: playedDay,
-      playedSlot: playedSlot,
-      flipNum: flipNum,
-      flipPlayedCount: flipPlayedCount,
-      flipPlayedDate: flipPlayedDate,
-      flipPlayedDay: flipPlayedDay,
-      flipPlayedSlot: flipPlayedSlot
-    });
   }
   
-  function formatShortDate(date) {
-    if (!date) return null;
-    return date.toLocaleDateString('en-US', { weekday: 'short', day: 'numeric', month: 'short' }).replace(/,/g, '');
-  }
+  trendAlertData.push({
+    num: num,
+    playedCount: playedCount,
+    playedDate: playedDate,
+    playedDay: playedDay,
+    playedSlot: playedSlot,
+    flipNum: flipNum,
+    flipPlayedCount: flipPlayedCount,
+    flipPlayedDate: flipPlayedDate,
+    flipPlayedDay: flipPlayedDay,
+    flipPlayedSlot: flipPlayedSlot,
+    isTriggered: triggeredMainNumbers.has(num)
+  });
+}
+
+// ====================================
+// CHECK STATUS
+// ====================================
+const allTriggered = triggeredMainNumbers.size === 4;
+const remainingNumbers = trendNumbers.filter(n => !triggeredMainNumbers.has(n));
+
+// ====================================
+// BUILD MODERN TREND ALERT HTML
+// ====================================
+let trendAlertHtml = '';
+
+if (completeTriggerHistory.length > 0) {
+  // --- Progress Ring ---
+  const progressPercent = Math.round((triggeredMainNumbers.size / 4) * 100);
   
-  function formatSlot(slot) {
-    if (!slot) return "";
-    const slotNames = { MOR: "🌅", MID: "☀️", NON: "🌤️", EVE: "🌙" };
-    return `${slotNames[slot] || ""} ${slot}`;
-  }
-  
-  let trendAlertHtml = '';
-  const hasAnyPlayed = trendAlertData.some(item => item.playedCount > 0);
-  
-  if (hasAnyPlayed) {
-    const trendRows = trendAlertData.map(item => {
-      const mainDisplay = item.playedCount > 0 
-        ? `<span style="font-size: 18px; font-weight: 900; color: #ff9d00;">${item.num}${spiritEmoji[item.num] || ''} 🔥</span>`
-        : `<span style="font-size: 18px; font-weight: 900; opacity: 0.5;">${item.num}${spiritEmoji[item.num] || ''}</span>`;
-      
-      const mainDate = item.playedDate ? `${formatShortDate(item.playedDate)} ${formatSlot(item.playedSlot)}` : 'pending';
-      
-      const flipDisplay = item.flipPlayedCount > 0
-        ? `<span style="font-size: 16px; font-weight: 700; color: #58a6ff;">🪞${item.flipNum}${spiritEmoji[item.flipNum] || ''}</span>`
-        : `<span style="font-size: 14px; font-weight: 500; opacity: 0.5;">🪞${item.flipNum}${spiritEmoji[item.flipNum] || ''}</span>`;
-      
-      const flipDate = item.flipPlayedDate ? `${formatShortDate(item.flipPlayedDate)} ${formatSlot(item.flipPlayedSlot)}` : 'pending';
-      
-      return `
-        <div style="display: flex; align-items: center; justify-content: space-between; background: rgba(255,157,0,0.1); border-radius: 8px; padding: 8px 12px; margin-bottom: 4px;">
-          <div style="display: flex; align-items: center; gap: 12px; min-width: 100px;">
-            ${mainDisplay}
-            <div style="display: flex; flex-direction: column;">
-              <span style="font-size: 9px; color: #888;">Played</span>
-              <span style="font-size: 10px; font-weight: 500;">${mainDate}</span>
-            </div>
-          </div>
-          <div style="display: flex; align-items: center; gap: 12px;">
-            <div style="display: flex; flex-direction: column; align-items: flex-end;">
-              <span style="font-size: 9px; color: #888;">Mirror</span>
-              <span style="font-size: 10px; font-weight: 500;">${flipDate}</span>
-            </div>
-            ${flipDisplay}
-          </div>
-        </div>
-      `;
-    }).join('');
-    
-    let triggerInfoHtml = '';
-    if (triggerNumber) {
-      const triggerDateFormatted = formatShortDate(triggerDate);
-      triggerInfoHtml = `
-        <div style="background: rgba(255,157,0,0.2); border-radius: 8px; padding: 6px 10px; margin-bottom: 10px; text-align: center;">
-          <span style="font-size: 11px; font-weight: bold;">⚡️TRIGGERED BY</span>
-          <span style="font-size: 14px; font-weight: 900; color: #ff9d00; margin-left: 8px;">${triggerNumber}${spiritEmoji[triggerNumber] || ''} 🔥</span>
-          <span style="font-size: 11px; margin-left: 8px;">• ${triggerDateFormatted}</span>
-          <span style="font-size: 11px; margin-left: 4px;">${formatSlot(triggerSlot)}</span>
-<br>⚠️▶️ 4⚰️, 12🤴🏽, 16💃🏽, 29🍻 ◀️⚠️
-        </div>
-      `;
-    }
-    
-    trendAlertHtml = `
-      <div style="background: rgba(255,157,0,0.08); border-radius: 12px; padding: 10px; margin-bottom: 7px; border-left: 3px solid #ff9d00;">
-        <div style="font-size: 11px; color: #ff9d00; font-weight: bold; margin-bottom: 8px; text-align: center;">
-          🆘 PLAY ALL 4 🆘
-        </div>
-        ${triggerInfoHtml}
-        <div style="display: flex; flex-direction: column; gap: 6px;">
-          ${trendRows}
-        </div>
-        <div style="font-size: 8px; color: #666; margin-top: 4px; text-align: center; padding-top: 4px; border-top: 1px solid rgba(255,157,0,0.2);">
-          Play any of these 4 numbers - when one hits, along with the mirror of the triggered number
-        </div>
+  // --- Status Badge ---
+  let statusBadge = '';
+  if (allTriggered) {
+    statusBadge = `
+      <div style="background: linear-gradient(135deg, #32d74b, #28a745); border-radius: 20px; padding: 4px 16px; display: inline-block;">
+        <span style="color: #fff; font-weight: 800; font-size: 11px; letter-spacing: 0.5px;">🎉 COMPLETE</span>
       </div>
-      <div style="padding: 6px; text-align: center; border-top: 1px solid #e0e0e0; font-size: 7px; color: #333; background: #fafafa;">
-  <div style="display: flex; justify-content: center; align-items: center; gap: 8px; flex-wrap: wrap;">
-    <span>PLAY WHE STATS</span>
-    <span style="color: #ff9d00; font-weight: bold; font-size: 7px;">${globalTrackingCode}</span>
-    <span style="color: #666; font-size: 7px;">Last: ${globalLastDraw}</span>
-  </div>
-  <div style="font-size: 6px; color: #888;">CODEWITHGLASGOW CHART ANALYSIS ©️ CWG</div>
-</div>
-</div>
+    `;
+  } else {
+    statusBadge = `
+      <div style="background: rgba(255,215,0,0.15); border: 1px solid rgba(255,215,0,0.3); border-radius: 20px; padding: 4px 16px; display: inline-block;">
+        <span style="color: #ffd700; font-weight: 800; font-size: 11px; letter-spacing: 0.5px;">⚡ ${triggeredMainNumbers.size}/4 ACTIVE</span>
+      </div>
     `;
   }
+
+  // --- Trigger History Cards (NEWEST FIRST - shows ALL trigger events) ---
+  const historyCards = completeTriggerHistory.map((trigger, index) => {
+    const isLatest = index === 0;
+    const emoji = getSpiritEmoji(trigger.triggeredNumber);
+    const mainEmoji = getSpiritEmoji(trigger.mainNumber);
+    const borderColor = isLatest ? '#ffd700' : 'rgba(255,255,255,0.1)';
+    const bgGradient = isLatest ? 'rgba(255,215,0,0.08)' : 'rgba(255,255,255,0.02)';
+    const rank = index + 1;
+    const isMirrorTrigger = trigger.isMirror;
+    
+    // Determine if this is a mirror trigger
+    const mirrorLabel = isMirrorTrigger ? 
+      `<span style="font-size: 8px; color: #58a6ff; font-weight: 600; background: rgba(88,166,255,0.15); padding: 1px 8px; border-radius: 10px;">MIRROR</span>` : 
+      `<span style="font-size: 8px; color: #32d74b; font-weight: 600; background: rgba(50,215,75,0.15); padding: 1px 8px; border-radius: 10px;">MARK</span>`;
+    
+    return `
+      <div style="display: flex; align-items: center; gap: 10px; background: ${bgGradient}; border-radius: 8px; padding: 6px 12px; border-left: 3px solid ${borderColor}; margin-bottom: 4px;">
+        <div style="display: flex; align-items: center; gap: 6px; min-width: 60px;">
+          <span style="font-size: 9px; color: #64748b; font-weight: 600; min-width: 20px;">#${rank}</span>
+          <span style="font-size: 18px; font-weight: 900; color: ${isLatest ? '#ffd700' : '#94a3b8'};">
+            ${trigger.triggeredNumber}${emoji}
+          </span>
+          ${mirrorLabel}
+        </div>
+        <div style="flex: 1; display: flex; align-items: center; gap: 8px; justify-content: flex-end;">
+          <span style="font-size: 8px; color: #94a3b8;">#${trigger.mainNumber}${mainEmoji}</span>
+          <span style="font-size: 8px; color: #64748b;">${trigger.formattedDate}</span>
+          <span style="font-size: 8px; color: #64748b;">${trigger.formattedSlot}</span>
+          ${trigger.mirrorPlayed ? `<span style="font-size: 7px; color: #32d74b;">🪞${trigger.mirrorNumber}</span>` : ''}
+          ${isLatest ? `<span style="font-size: 7px; background: #ffd700; color: #000; padding: 1px 8px; border-radius: 10px; font-weight: 700;">NEWEST</span>` : ''}
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  // --- Number Status Grid ---
+  const numberStatusGrid = trendAlertData.map(item => {
+    const isTriggered = item.isTriggered;
+    const emoji = getSpiritEmoji(item.num);
+    const bgColor = isTriggered ? 'rgba(50,215,75,0.12)' : 'rgba(255,255,255,0.03)';
+    const borderColor = isTriggered ? '#32d74b' : 'rgba(255,255,255,0.06)';
+    const textColor = isTriggered ? '#32d74b' : '#666';
+    
+    return `
+      <div style="background: ${bgColor}; border: 1px solid ${borderColor}; border-radius: 8px; padding: 6px 8px; text-align: center; flex: 1;">
+        <div style="display: flex; align-items: center; justify-content: center; gap: 4px;">
+          <span style="font-size: 16px; font-weight: 900; color: ${textColor};">${item.num}</span>
+          <span style="font-size: 12px;">${emoji}</span>
+          ${isTriggered ? `<span style="font-size: 10px; color: #32d74b;">✅</span>` : `<span style="font-size: 10px; color: #666;">⏳</span>`}
+        </div>
+        <div style="font-size: 7px; color: #64748b; margin-top: 2px;">
+          ${item.playedDate ? formatShortDate(item.playedDate) : '—'}
+          ${item.flipPlayedDate ? `🪞${item.flipNum}` : ''}
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  // --- Screenshot Graphic ---
+  const screenshotGraphic = `
+    <div style="background: linear-gradient(135deg, #ffd700, #f5a623); border-radius: 12px; padding: 16px; text-align: center; margin: 6px 0 10px 0; border: 2px solid rgba(255,215,0,0.3);">
+      <div style="font-size: clamp(1.4rem, 3vw, 2.2rem); font-weight: 900; color: #1b4d3e; letter-spacing: 1px;">
+        4, 12, 16, 29
+      </div>
+      <div style="font-size: clamp(1rem, 2vw, 1.6rem); font-weight: 700; color: #1b4d3e; margin: 4px 0;">
+        Wen u c 1... play all
+      </div>
+      <div style="font-size: clamp(1.2rem, 2.5vw, 1.8rem); font-weight: 900; color: #1b4d3e;">
+        4
+      </div>
+    </div>
+  `;
+
+  // --- Latest Trigger Banner ---
+  let latestBanner = '';
+  if (absoluteLatestTrigger) {
+    const emoji = getSpiritEmoji(absoluteLatestTrigger.triggeredNumber);
+    const triggerType = absoluteLatestTrigger.isMirror ? 'MIRROR' : 'MARK';
+    const triggerIcon = absoluteLatestTrigger.isMirror ? '🪞' : '✅';
+    
+    latestBanner = `
+      <div style="background: linear-gradient(135deg, rgba(255,215,0,0.15), rgba(255,215,0,0.05)); border-radius: 10px; padding: 10px 14px; border: 1px solid rgba(255,215,0,0.25); margin-bottom: 8px;">
+        <div style="display: flex; align-items: center; justify-content: center; gap: 8px; flex-wrap: wrap;">
+          <span style="font-size: 9px; font-weight: 700; color: #ffd700; letter-spacing: 0.5px;">⚡️ LATEST TRIGGER</span>
+          <span style="font-size: 22px; font-weight: 900; color: #ffd700;">${absoluteLatestTrigger.triggeredNumber}${emoji}</span>
+          <span style="font-size: 9px; color: #58a6ff; font-weight: 600; background: rgba(88,166,255,0.1); padding: 2px 10px; border-radius: 12px;">${triggerIcon} ${triggerType}</span>
+          <span style="font-size: 9px; color: #94a3b8;">${absoluteLatestTrigger.formattedDate}</span>
+          <span style="font-size: 9px; color: #94a3b8;">${absoluteLatestTrigger.formattedSlot}</span>
+          <span style="font-size: 8px; color: #64748b; background: rgba(255,255,255,0.05); padding: 2px 8px; border-radius: 10px;">
+            #${absoluteLatestTrigger.mainNumber}
+          </span>
+          ${absoluteLatestTrigger.mirrorPlayed ? 
+            `<span style="font-size: 8px; color: #32d74b; background: rgba(50,215,75,0.12); padding: 2px 12px; border-radius: 12px;">🪞${absoluteLatestTrigger.mirrorNumber} ✅</span>` : 
+            `<span style="font-size: 8px; color: #ff9d00; background: rgba(255,157,0,0.1); padding: 2px 12px; border-radius: 12px;">⏳ Mirror ${absoluteLatestTrigger.mirrorNumber}</span>`
+          }
+        </div>
+      </div>
+    `;
+  }
+
+  // --- Build Final HTML ---
+  trendAlertHtml = `
+    <div style="background: linear-gradient(145deg, #0f172a, #1a2332); border-radius: 16px; padding: 14px; margin-bottom: 8px; border: 1px solid rgba(255,215,0,0.15);">
+      
+      <!-- Header -->
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; flex-wrap: wrap; gap: 6px;">
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <span style="font-size: 14px; font-weight: 800; color: #ffd700;">🆘 PLAY ALL 4</span>
+          ${statusBadge}
+        </div>
+        <div style="display: flex; align-items: center; gap: 6px;">
+          <div style="width: 60px; height: 4px; background: rgba(255,255,255,0.1); border-radius: 4px; overflow: hidden;">
+            <div style="width: ${progressPercent}%; height: 100%; background: linear-gradient(90deg, #ffd700, #32d74b); border-radius: 4px; transition: width 0.5s ease;"></div>
+          </div>
+          <span style="font-size: 10px; font-weight: 700; color: #94a3b8;">${progressPercent}%</span>
+        </div>
+      </div>
+      
+      <!-- Screenshot Graphic -->
+      ${screenshotGraphic}
+      
+      <!-- Latest Trigger -->
+      ${latestBanner}
+      
+      <!-- Number Status Grid -->
+      <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; margin-bottom: 8px;">
+        ${numberStatusGrid}
+      </div>
+      
+      <!-- Trigger History (ALL trigger events - NEWEST FIRST) -->
+      <div style="margin-top: 6px;">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+          <span style="font-size: 8px; font-weight: 700; color: #64748b; letter-spacing: 0.5px;">📜 TRIGGER HISTORY</span>
+          <span style="font-size: 7px; color: #64748b;">${completeTriggerHistory.length} total</span>
+        </div>
+        <div style="max-height: 150px; overflow-y: auto; padding-right: 4px;">
+          ${historyCards}
+        </div>
+      </div>
+      
+      <!-- Remaining / Complete -->
+      ${remainingNumbers.length > 0 ? `
+        <div style="margin-top: 6px; padding: 6px 10px; background: rgba(255,255,255,0.02); border-radius: 8px; border: 1px solid rgba(255,255,255,0.04);">
+          <span style="font-size: 8px; color: #64748b;">⏳ Waiting for:</span>
+          <span style="font-size: 9px; font-weight: 600; color: #94a3b8; margin-left: 4px;">
+            ${remainingNumbers.map(n => `${n}${getSpiritEmoji(n) || ''}`).join(', ')}
+          </span>
+        </div>
+      ` : `
+        <div style="margin-top: 6px; padding: 6px 10px; background: rgba(50,215,75,0.08); border-radius: 8px; border: 1px solid rgba(50,215,75,0.15); text-align: center;">
+          <span style="font-size: 10px; font-weight: 700; color: #32d74b;">🎉 ALL 4 NUMBERS TRIGGERED! Play all!</span>
+        </div>
+      `}
+      
+      <!-- Footer -->
+      <div style="font-size: 6px; color: #fffff; text-align: center; margin-top: 8px; padding-top: 6px; border-top: 1px solid rgba(255,255,255,0.03); letter-spacing: 0.5px;">
+    CODEWITHGLASGOW ©️ CWG CHARTS ANALYSIS   <br>
+    CHARTS & READOUTS WHATSAPP CHANNEL
+<br>
+${completeTriggerHistory.length} trigger${completeTriggerHistory.length > 1 ? 's' : ''} • ${triggeredMainNumbers.size}/4 activated
+      </div>
+    </div>
+  `;
+}
   
+  // Format numbers with emojis
   const formatNumbersWithEmoji = (numbers) => {
     if (!numbers || numbers.length === 0) return "";
     const formatted = numbers.map(n => `${n}${spiritEmoji[n] || ''}`);
@@ -1984,105 +2637,162 @@ function generatePlayWheReadout(weeksData) {
   const todayDrawsText = todayDraws.map(num => `${num}${spiritEmoji[num] || ''}`).join('  ');
   
   return `
-    <div class="analysis-readout" style="background: linear-gradient(135deg, #0f172a, #1e293b); border-radius: 20px; padding: 8px; margin-bottom: 5px; border: 1px solid #ff9d00;">
+    <div class="analysis-readout" style="background: linear-gradient(135deg, #0f172a, #1e293b); border-radius: 20px; padding: 16px; margin-bottom: 6px; border: 1px solid #ff9d00;">
       <div style="font-size: 14px; font-weight: 800; color: #ff9d00; margin-bottom: 3px;">📅 UNDER TODAY • ${today} • CWG ©️</div>
-      <div style="font-size: 20px; font-weight: 900; text-align: center; margin-bottom: 3px; background: rgba(255,157,0,0.15); padding: 4px; border-radius: 12px;">
+      <div style="font-size: 20px; font-weight: 900; text-align: center; margin-bottom: 3px; background: rgba(255,157,0,0.15); padding: 6px; border-radius: 12px;">
         ${todayDrawsText}
       </div>
       ${leavingMeetingHtml}
-      <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin-bottom: 3px;">
+      <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; margin-bottom: 6px;">
         <div style="background: rgba(255,255,255,0.05); border-radius: 12px; padding: 10px;">
           <div style="font-size: 10px; color: #888;">♠️ LINES MISSING</div>
-          <div style="font-size: 11px; font-weight: bold; color: #ff9d00;">${linesHtml}</div>
+          <div style="font-size: 10px; font-weight: bold; color: #ff9d00;">${linesHtml}</div>
         </div>
         <div style="background: rgba(255,255,255,0.05); border-radius: 12px; padding: 10px;">
           <div style="font-size: 10px; color: #888;">♠️ SUITS MISSING</div>
-          <div style="font-size: 11px; font-weight: bold; color: #ff9d00;">${suitesHtml}</div>
+          <div style="font-size: 10px; font-weight: bold; color: #ff9d00;">${suitesHtml}</div>
         </div>
       </div>
-      <div style="background: rgba(255,255,255,0.05); border-radius: 12px; padding: 9px; margin-bottom: 3px;">
+      <div style="background: rgba(255,255,255,0.05); border-radius: 12px; padding: 6px; margin-bottom: 3px;">
         <div style="font-size: 10px; color: #888;">🗓️ LAST DATE PLAY</div>
         <div style="font-size: 13px; font-weight: bold;">${lastPlayText}</div>
       </div>
       ${lastFlipText ? `
-      <div style="background: rgba(255,255,255,0.05); border-radius: 12px; padding: 9px; margin-bottom: 3px;">
+      <div style="background: rgba(255,255,255,0.05); border-radius: 12px; padding: 6px; margin-bottom: 3px;">
         <div style="font-size: 10px; color: #888;">🔄 LAST FLIP</div>
         <div style="font-size: 13px; font-weight: bold;">${lastFlipText}</div>
       </div>` : ''}
       
+      <!-- TO DOUBLE SECTION - ONLY 11,22,33 -->
       ${toDoubleMissingHtml ? `
-      <div style="background: rgba(255,255,255,0.05); border-radius: 12px; padding: 9px; margin-bottom: 3px;">
+      <div style="background: rgba(255,255,255,0.05); border-radius: 12px; padding: 6px; margin-bottom: 3px;">
         <div style="font-size: 10px; color: #888;">♠️ TO DOUBLE (MISSING)</div>
         <div style="font-size: 13px; font-weight: bold; color: #ff9d00;">${toDoubleMissingHtml}</div>
         <div style="font-size: 9px; color: #888; margin-top: 2px;">Double numbers that haven't played</div>
       </div>` : ''}
       ${toDoubleCurrentHtml ? `
-      <div style="background: rgba(255,255,255,0.05); border-radius: 12px; padding: 9px; margin-bottom: 3px;">
+      <div style="background: rgba(255,255,255,0.05); border-radius: 12px; padding: 6px; margin-bottom: 3px;">
         <div style="font-size: 10px; color: #888;">♠️ TO DOUBLE x2 (CURRENT WEEK • ${currentWeekRange})</div>
         <div style="font-size: 13px; font-weight: bold; color: #ff9d00;">${toDoubleCurrentHtml}</div>
         <div style="font-size: 9px; color: #888; margin-top: 2px;">Played once this week - could double</div>
       </div>` : ''}
       
+      <!-- TO TRIPLE SECTION -->
       ${toTripleMissingHtml ? `
-      <div style="background: rgba(255,255,255,0.05); border-radius: 12px; padding: 9px; margin-bottom: 3px;">
+      <div style="background: rgba(255,255,255,0.05); border-radius: 12px; padding: 6px; margin-bottom: 3px;">
         <div style="font-size: 10px; color: #888;">♠️ TO TRIPLE x3 (FROM LAST WEEK • ${previousWeekRange})</div>
         <div style="font-size: 13px; font-weight: bold; color: #ff9d00;">${toTripleMissingHtml}</div>
         <div style="font-size: 9px; color: #888; margin-top: 2px;">Had 2 plays last week - needs 1 more</div>
       </div>` : ''}
       ${toTripleCurrentHtml ? `
-      <div style="background: rgba(255,255,255,0.05); border-radius: 12px; padding: 9px; margin-bottom: 3px;">
+      <div style="background: rgba(255,255,255,0.05); border-radius: 12px; padding: 6px; margin-bottom: 3px;">
         <div style="font-size: 10px; color: #888;">♠️ TO TRIPLE x3 (CURRENT WEEK • ${currentWeekRange})</div>
         <div style="font-size: 13px; font-weight: bold; color: #ff9d00;">${toTripleCurrentHtml}</div>
         <div style="font-size: 9px; color: #888; margin-top: 2px;">Already has 2 plays this week - needs 1 more for triple</div>
       </div>` : ''}
       
+      <!-- TO QUADRUPLE SECTION -->
       ${toQuadrupleMissingHtml ? `
-      <div style="background: rgba(255,255,255,0.05); border-radius: 12px; padding: 9px; margin-bottom: 3px;">
+      <div style="background: rgba(255,255,255,0.05); border-radius: 12px; padding: 6px; margin-bottom: 3px;">
         <div style="font-size: 10px; color: #888;">♠️ TO QUADRUPLE x4 (FROM LAST WEEK • ${previousWeekRange})</div>
         <div style="font-size: 13px; font-weight: bold; color: #ff9d00;">${toQuadrupleMissingHtml}</div>
         <div style="font-size: 9px; color: #888; margin-top: 2px;">Had 3 plays last week - needs 1 more</div>
       </div>` : ''}
       ${toQuadrupleCurrentHtml ? `
-      <div style="background: rgba(255,255,255,0.05); border-radius: 12px; padding: 9px; margin-bottom: 3px;">
+      <div style="background: rgba(255,255,255,0.05); border-radius: 12px; padding: 6px; margin-bottom: 6px;">
         <div style="font-size: 10px; color: #888;">♠️ TO QUADRUPLE x4 (CURRENT WEEK • ${currentWeekRange})</div>
         <div style="font-size: 13px; font-weight: bold; color: #ff9d00;">${toQuadrupleCurrentHtml}</div>
         <div style="font-size: 9px; color: #888; margin-top: 2px;">Already has 3 plays this week - needs 1 more for quadruple</div>
       </div>` : ''}
       
       ${wappiHtml ? `
-      <div style="background: rgba(255,255,255,0.05); border-radius: 12px; padding: 9px; margin-bottom: 3px;">
+      <div style="background: rgba(255,255,255,0.05); border-radius: 12px; padding: 6px; margin-bottom: 3px;">
         <div style="font-size: 10px; color: #888;">🔥🔥🔥 LAST THREE WAPPI</div>
         <div style="font-size: 11px;">${wappiHtml}</div>
       </div>` : ''}
       ${dambalayHtml ? `
-      <div style="background: rgba(255,255,255,0.05); border-radius: 12px; padding: 9px; margin-bottom: 3px;">
+      <div style="background: rgba(255,255,255,0.05); border-radius: 12px; padding: 6px; margin-bottom: 3px;">
         <div style="font-size: 10px; color: #888;">🪵🪵🪵 LAST THREE DAMBALAY</div>
         <div style="font-size: 11px;">${dambalayHtml}</div>
       </div>` : ''}
       ${pullBackHtml ? `
-      <div style="background: rgba(255,255,255,0.05); border-radius: 12px; padding: 7px;">
+      <div style="background: rgba(255,255,255,0.05); border-radius: 12px; padding: 6px;">
         <div style="font-size: 10px; color: #888;">🪵🪵🪵 LAST THREE PULL BACK</div>
         <div style="font-size: 11px;">${pullBackHtml}</div>
       </div>` : ''}
-
-      <div style="padding: 6px; text-align: center; border-top: 1px solid #e0e0e0; font-size: 7px; color: #333; background: #fafafa;">
+          <div style="padding: 6px; text-align: center; border-top: 1px solid #e0e0e0; font-size: 7px; color: #333; background: #fafafa;">
       <div style="display: flex; justify-content: center; align-items: center; gap: 8px; flex-wrap: wrap;">
         <span>PLAY WHE STATS</span>
         <span style="color: #ff9d00; font-weight: bold; font-size: 7px;">${globalTrackingCode}</span>
         <span style="color: #666; font-size: 7px;">Last: ${globalLastDraw}</span>
       </div>
-      <div style="font-size: 6px; color: #888;">CODEWITHGLASGOW CHARTS ANALYSIS ©️ CWG</div>
+      <div style="font-size: 6px; color: #888;">CODEWITHGLASGOW ©️ CWG CHARTS ANALYSIS</div>
     </div>
-    <br>
+      <br>
       ${trendAlertHtml}
     </div>
   `;
+}
+
+// Play All Four Rule Display
+function renderScreenshotGraphic() {
+    const container = document.getElementById('custom-graphic-container');
+    
+    // Create the main wrapper styled with the gradient/solid yellow background
+    const wrapper = document.createElement('div');
+    wrapper.style.backgroundColor = '#ffd700';
+    wrapper.style.backgroundImage = 'radial-gradient(circle, #ffe44d 0%, #ffcc00 100%)';
+    wrapper.style.width = '100%';
+    wrapper.style.maxWidth = '600px';
+    wrapper.style.aspectRatio = '16 / 9';
+    wrapper.style.display = 'flex';
+    wrapper.style.flexDirection = 'column';
+    wrapper.style.justifyContent = 'center';
+    wrapper.style.alignItems = 'center';
+    wrapper.style.textAlign = 'center';
+    wrapper.style.padding = '20px';
+    wrapper.style.boxSizing = 'border-box';
+    wrapper.style.fontFamily = '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif';
+    wrapper.style.fontWeight = '700';
+    wrapper.style.color = '#1b4d3e'; // Dark greenish-teal text color from screenshot
+    wrapper.style.userSelect = 'none';
+
+    // Numbers Line: 4, 12, 16, 29
+    const numbersEl = document.createElement('div');
+    numbersEl.textContent = '4, 12, 16, 29';
+    numbersEl.style.fontSize = 'clamp(2rem, 5vw, 3.5rem)';
+    numbersEl.style.letterSpacing = '1px';
+    numbersEl.style.marginBottom = '10px';
+
+    // Text Line 1: Wen u c 1... play all
+    const text1El = document.createElement('div');
+    text1El.textContent = 'Wen u c 1... play all';
+    text1El.style.fontSize = 'clamp(1.5rem, 4vw, 2.8rem)';
+    text1El.style.marginBottom = '5px';
+
+    // Text Line 2: 4
+    const text2El = document.createElement('div');
+    text2El.textContent = '4';
+    text2El.style.fontSize = 'clamp(1.8rem, 4.5vw, 3.2rem)';
+
+    // Append elements together
+    wrapper.appendChild(numbersEl);
+    wrapper.appendChild(text1El);
+    wrapper.appendChild(text2El);
+
+    // Clear container and insert
+    container.innerHTML = '';
+    container.appendChild(wrapper);
+}
+
+if (typeof document !== 'undefined') {
+    renderScreenshotGraphic();
 }
 //////////////////////////////////////////
 
 /////////////////DRAWS DISPLAY////////////
 // =======================================
-// DRAW PREVIEW CONTAINER - Shows Next Draw
+// DRAW PREVIEW CONTAINER - Side by Side with Meeting (Responsive)
 // =======================================
 function renderDrawPreview(weeksData) {
   if (!weeksData || weeksData.length === 0) {
@@ -2162,7 +2872,6 @@ function renderDrawPreview(weeksData) {
     33: "🕷️", 34: "👨🏾‍🦯", 35: "🐍", 36: "🫏"
   };
   
-  // Determine which day to show 
   // Determine current slot
   let currentSlot = "EVE";
   if (currentHour >= 5 && currentHour < 10) currentSlot = "MOR";
@@ -2170,7 +2879,7 @@ function renderDrawPreview(weeksData) {
   else if (currentHour >= 14 && currentHour < 18) currentSlot = "NON";
   else currentSlot = "EVE";
   
-  // Find the next slot to display
+  // Find the next slot to display (this will be Tomorrow's day if after EVE)
   let displayDayIdx = todayIdx;
   let displaySlotIdx = slots.indexOf(currentSlot) + 1;
   let isTomorrow = false;
@@ -2184,26 +2893,34 @@ function renderDrawPreview(weeksData) {
   const displayDayName = dayNames[displayDayIdx];
   const displaySlot = slots[displaySlotIdx];
   
-  // Get the draws for the display day from previous week (for historical data)
+  // ======================================
+  // CREATE DISPLAY DATE
+  // ======================================
+  const displayDate = new Date(now);
+  const dayOffset = isTomorrow ? 1 : 0;
+  displayDate.setDate(now.getDate() + dayOffset);
+  
+  // ======================================
+  // GET DRAWS FOR THE DISPLAY DAY (4 draws: MOR, MID, NON, EVE)
+  // ======================================
   let displayDraws = [];
+  let displayDrawSlots = [];
   
-  // First try to get draws from previous week
   for (const slot of slots) {
-    const draw = getDraw(previousWeek, displayDayName, slot);
-    if (draw) displayDraws.push(draw);
-  }
-  
-  // If no draws in previous week, search across all weeks
-  if (displayDraws.length === 0) {
-    for (const slot of slots) {
+    let draw = getDraw(previousWeek, displayDayName, slot);
+    if (!draw) {
       const result = getDrawFromMultipleWeeks(sortedWeeks, displayDayName, slot);
       if (result && result.value) {
-        displayDraws.push(result.value);
+        draw = result.value;
       }
+    }
+    if (draw) {
+      displayDraws.push(draw);
+      displayDrawSlots.push(slot);
     }
   }
   
-  // If still no draws, get most recent draws from any day
+  // If no draws found for the display day, try to get any recent draws
   if (displayDraws.length === 0) {
     let drawCount = 0;
     for (let w = sortedWeeks.length - 1; w >= 0 && drawCount < 4; w--) {
@@ -2213,6 +2930,7 @@ function renderDrawPreview(weeksData) {
           const draw = getDraw(week, dayNames[d], slots[s]);
           if (draw) {
             displayDraws.push(draw);
+            displayDrawSlots.push(slots[s]);
             drawCount++;
           }
         }
@@ -2220,65 +2938,270 @@ function renderDrawPreview(weeksData) {
     }
   }
   
-  // Format date for display
-  const displayDate = new Date(now);
-  const dayOffset = isTomorrow ? 1 : 0;
-  displayDate.setDate(now.getDate() + dayOffset);
+  // ======================================
+  // GET MEETING NUMBER (Next day's MOR after the display day)
+  // ======================================
+  let meetingNumber = null;
+  let meetingDay = null;
+  let meetingSlot = null;
   
-  const formattedDate = displayDate.toLocaleDateString('en-US', { 
-    weekday: 'long', 
-    month: 'short', 
-    day: 'numeric', 
-    year: 'numeric' 
-  });
+  // Meeting is the day after the display day's MOR
+  let meetingDayIdx = (displayDayIdx + 1) % 7;
+  const meetingDayName = dayNames[meetingDayIdx];
+  const meetingSlotName = "MOR";
   
-  // Generate draws HTML with emojis
-  const drawsHtml = displayDraws.map((num, idx) => `
-    <span style="display: inline-flex; align-items: center; gap: 2px; background: rgba(255,255,255,0.05); padding: 2px 8px; border-radius: 12px; margin: 0 2px;">
-      <span style="font-size: 14px; font-weight: 900; color: #ffd700;">${num}</span>
-      <span style="font-size: 14px;">${spiritEmoji[num] || ''}</span>
-    </span>
-  `).join('');
+  let meetingDraw = getDraw(previousWeek, meetingDayName, meetingSlotName);
   
-  // Create the text to copy
-  const copyText = displayDraws.map(num => `${num}${spiritEmoji[num] || ''}`).join(' ');
+  if (!meetingDraw) {
+    for (let i = sortedWeeks.length - 2; i >= 0; i--) {
+      const week = sortedWeeks[i];
+      const draw = getDraw(week, meetingDayName, meetingSlotName);
+      if (draw) {
+        meetingDraw = draw;
+        break;
+      }
+    }
+  }
   
-  // Determine header text
-  const headerText = isTomorrow ? "⏳ TOMORROW'S DRAWS" : "📅 TODAY'S DRAWS";
-  const headerColor = isTomorrow ? "#58a6ff" : "#ff9d00";
+  if (meetingDraw) {
+    meetingNumber = meetingDraw;
+    meetingDay = meetingDayName;
+    meetingSlot = meetingSlotName;
+  }
   
-  // Copy button function
-  const copyButtonId = `copy-btn-${Date.now()}`;
+  // ======================================
+  // GET TOMORROW'S DRAWS (if not already the display day)
+  // ======================================
+  let tomorrowDraws = [];
+  let tomorrowSlots = [];
+  let tomorrowDayName = null;
+  let tomorrowDate = null;
   
-  return `
-    <div style="background: linear-gradient(135deg, #0f172a, #1e293b); border-radius: 16px; padding: 12px; margin-bottom: 7px; border: 1px solid ${headerColor};">
-      
-      <!-- Header -->
-      <div style="text-align: center; margin-bottom: 6px;">
-        <span style="font-size: 13px; font-weight: 800; color: ${headerColor}; letter-spacing: 1px;">${headerText}</span>
-        <span style="font-size: 10px; color: #64748b; margin-left: 8px;">${displaySlot}</span>
+  // If the display day is already tomorrow, use those draws
+  if (isTomorrow) {
+    tomorrowDraws = displayDraws;
+    tomorrowSlots = displayDrawSlots;
+    tomorrowDayName = displayDayName;
+    tomorrowDate = displayDate;
+  } else {
+    // Otherwise, get tomorrow's draws (next day)
+    const tomorrowIdx = (todayIdx + 1) % 7;
+    tomorrowDayName = dayNames[tomorrowIdx];
+    
+    const tomorrowDateObj = new Date(now);
+    tomorrowDateObj.setDate(now.getDate() + 1);
+    tomorrowDate = tomorrowDateObj;
+    
+    for (const slot of slots) {
+      let draw = getDraw(previousWeek, tomorrowDayName, slot);
+      if (!draw) {
+        const result = getDrawFromMultipleWeeks(sortedWeeks, tomorrowDayName, slot);
+        if (result && result.value) {
+          draw = result.value;
+        }
+      }
+      if (draw) {
+        tomorrowDraws.push(draw);
+        tomorrowSlots.push(slot);
+      }
+    }
+  }
+  
+  // If still no tomorrow draws, use any recent draws
+  if (tomorrowDraws.length === 0) {
+    let drawCount = 0;
+    for (let w = sortedWeeks.length - 1; w >= 0 && drawCount < 4; w--) {
+      const week = sortedWeeks[w];
+      for (let d = dayNames.length - 1; d >= 0 && drawCount < 4; d--) {
+        for (let s = slots.length - 1; s >= 0 && drawCount < 4; s--) {
+          const draw = getDraw(week, dayNames[d], slots[s]);
+          if (draw) {
+            tomorrowDraws.push(draw);
+            tomorrowSlots.push(slots[s]);
+            drawCount++;
+          }
+        }
+      }
+    }
+  }
+  
+  // ======================================
+  // GET MEETING FOR TOMORROW (day after tomorrow's MOR)
+  // ======================================
+  let tomorrowMeetingNumber = null;
+  let tomorrowMeetingDay = null;
+  
+  if (tomorrowDayName) {
+    const tomorrowIdx = dayNames.indexOf(tomorrowDayName);
+    const tomorrowMeetingIdx = (tomorrowIdx + 1) % 7;
+    const tomorrowMeetingDayName = dayNames[tomorrowMeetingIdx];
+    
+    let meetingDraw = getDraw(previousWeek, tomorrowMeetingDayName, "MOR");
+    if (!meetingDraw) {
+      for (let i = sortedWeeks.length - 2; i >= 0; i--) {
+        const week = sortedWeeks[i];
+        const draw = getDraw(week, tomorrowMeetingDayName, "MOR");
+        if (draw) {
+          meetingDraw = draw;
+          break;
+        }
+      }
+    }
+    if (meetingDraw) {
+      tomorrowMeetingNumber = meetingDraw;
+      tomorrowMeetingDay = tomorrowMeetingDayName;
+    }
+  }
+  
+  // ======================================
+  // RENDER FUNCTIONS
+  // ======================================
+  
+  function renderDrawCard(slotName, num, emoji) {
+    return `
+      <div style="display: flex; flex-direction: column; align-items: center; min-width: 28px; padding: 1px 2px; flex: 0 1 auto;">
+        <span style="font-size: 6px; color: #64748b; font-weight: 600; letter-spacing: 0.2px;">${slotName}</span>
+        <span style="font-size: 14px; font-weight: 900; color: #ffd700; line-height: 1.2;">${num}</span>
+        <span style="font-size: 10px; line-height: 1;">${emoji}</span>
       </div>
-      
-      <!-- Date and Draws Row -->
-      <div style="display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px; background: rgba(255,255,255,0.02); border-radius: 12px; padding: 8px 12px; border: 1px solid rgba(255,255,255,0.05);">
+    `;
+  }
+  
+  function renderMeetingCard(slotName, num, emoji, dayName) {
+    return `
+      <div style="display: flex; flex-direction: column; align-items: center; min-width: 28px; padding: 1px 4px; background: rgba(255,157,0,0.08); border-radius: 4px; border: 1px solid rgba(255,157,0,0.12); flex: 0 1 auto;">
+        <span style="font-size: 5px; color: #ff9d00; font-weight: 700; letter-spacing: 0.2px;">MEETING</span>
+        <span style="font-size: 12px; font-weight: 900; color: #ff9d00; line-height: 1.2;">${num}</span>
+        <span style="font-size: 9px; line-height: 1;">${emoji}</span>
+        <span style="font-size: 4px; color: #64748b;">${dayName} MOR</span>
+      </div>
+    `;
+  }
+  
+  function renderDrawsPanel(draws, slots, date, dayName, title, titleColor, isTomorrowDraw = false, meetingNum = null, meetingDayName = null) {
+    if (!draws || draws.length === 0) {
+      return `
+        <div style="background: linear-gradient(135deg, #0f172a, #1e293b); border-radius: 16px; padding: 10px; border: 1px solid ${titleColor}; flex: 1; min-width: 0;">
+          <div style="text-align: center; padding: 10px; color: #64748b; font-size: 11px;">No draws available</div>
+        </div>
+      `;
+    }
+    
+    const formattedDateDisplay = date ? date.toLocaleDateString('en-US', { 
+      weekday: 'short', 
+      month: 'short', 
+      day: 'numeric' 
+    }) : '';
+    
+    // Build draw cards
+    let drawCardsHtml = '';
+    for (let i = 0; i < draws.length && i < slots.length; i++) {
+      const num = draws[i];
+      const slotName = slots[i] || '';
+      const emoji = spiritEmoji[num] || '';
+      drawCardsHtml += renderDrawCard(slotName, num, emoji);
+    }
+    
+    // Add meeting card if it's the tomorrow section
+    let meetingCardHtml = '';
+    if (isTomorrowDraw && meetingNum) {
+      meetingCardHtml = renderMeetingCard('MEETING', meetingNum, spiritEmoji[meetingNum] || '', meetingDayName || '');
+    }
+    
+    // Build copy text - include Meeting if it's the tomorrow section
+    let copyText = draws.map(num => `${num}${spiritEmoji[num] || ''}`).join(' ');
+    if (isTomorrowDraw && meetingNum) {
+      copyText += ` Meeting ${meetingNum}${spiritEmoji[meetingNum] || ''}`;
+    }
+    
+    const copyButtonId = `copy-btn-${Date.now()}-${isTomorrowDraw ? 'tomorrow' : 'today'}`;
+    
+    return `
+      <div style="background: linear-gradient(135deg, #0f172a, #1e293b); border-radius: 16px; padding: 8px; border: 1px solid ${titleColor}; flex: 1; min-width: 0;">
         
-        <!-- Date -->
-        <div style="display: flex; align-items: center; gap: 6px;">
-          <span style="font-size: 11px; color: #94a3b8; font-weight: 600;">📆</span>
-          <span style="font-size: 11px; color: #e2e8f0; font-weight: 600;">${formattedDate}</span>
+        <!-- Header -->
+        <div style="text-align: center; margin-bottom: 3px;">
+          <span style="font-size: 11px; font-weight: 800; color: ${titleColor}; letter-spacing: 0.5px;">${title}</span>
         </div>
         
-        <!-- Draws with Emojis -->
-        <div style="display: flex; align-items: center; gap: 4px; flex-wrap: wrap;">
-          ${displayDraws.length > 0 ? drawsHtml : '<span style="font-size: 11px; color: #64748b;">No draws available</span>'}
+        <!-- Date -->
+        <div style="text-align: center; margin-bottom: 4px;">
+          <span style="font-size: 8px; color: #94a3b8; font-weight: 600;">📆 ${formattedDateDisplay}</span>
+        </div>
+        
+        <!-- Draws and Meeting Cards - Centered, no wrap, very tight gap -->
+        <div style="display: flex; justify-content: center; align-items: center; gap: 1px; flex-wrap: nowrap; background: rgba(255,255,255,0.02); border-radius: 8px; padding: 3px 4px; border: 1px solid rgba(255,255,255,0.05); min-height: 50px;">
+          ${drawCardsHtml}
+          ${meetingCardHtml}
         </div>
         
         <!-- Copy Button -->
-        <button id="${copyButtonId}" 
-                onclick="copyDraws('${copyText.replace(/'/g, "\\'")}', '${copyButtonId}')"
-                style="background: ${headerColor}; border: none; border-radius: 8px; padding: 4px 10px; font-size: 10px; font-weight: 700; color: #000; cursor: pointer; display: flex; align-items: center; gap: 4px;">
-          📋 Copy
-        </button>
+        <div style="text-align: center; margin-top: 4px;">
+          <button id="${copyButtonId}" 
+                  onclick="copyDraws('${copyText.replace(/'/g, "\\'")}', '${copyButtonId}')"
+                  style="background: ${titleColor}; border: none; border-radius: 4px; padding: 2px 10px; font-size: 8px; font-weight: 700; color: #000; cursor: pointer; display: inline-flex; align-items: center; gap: 2px;">
+            📋 Copy
+          </button>
+        </div>
+        
+      </div>
+    `;
+  }
+  
+  // ======================================
+  // BUILD THE MAIN HTML
+  // ======================================
+  
+  const todayTitle = isTomorrow ? "⏳ TOMORROW'S DRAWS" : "📅 TODAY'S DRAWS";
+  const todayColor = isTomorrow ? "#58a6ff" : "#ff9d00";
+  
+  const tomorrowTitle = "⏳ TOMORROW'S DRAWS";
+  const tomorrowColor = "#ff9d00";
+  
+  // Today/Tomorrow panel (left)
+  const todayPanel = renderDrawsPanel(
+    displayDraws, 
+    displayDrawSlots, 
+    displayDate, 
+    displayDayName,
+    todayTitle,
+    todayColor,
+    false,
+    null,
+    null
+  );
+  
+  // Tomorrow panel with Meeting (right)
+  const tomorrowPanel = renderDrawsPanel(
+    tomorrowDraws,
+    tomorrowSlots,
+    tomorrowDate,
+    tomorrowDayName,
+    tomorrowTitle,
+    tomorrowColor,
+    true,
+    tomorrowMeetingNumber,
+    tomorrowMeetingDay
+  );
+  
+  return `
+    <div style="margin-bottom: 7px;">
+      
+      <!-- Side by Side Container -->
+      <div style="display: flex; gap: 0; align-items: stretch; border-radius: 16px; overflow: hidden; border: 1px solid rgba(255,255,255,0.08);">
+        
+        <!-- Left Panel -->
+        <div style="flex: 1; min-width: 0;">
+          ${todayPanel}
+        </div>
+        
+        <!-- Solid Separator -->
+        <div style="width: 2px; background: linear-gradient(180deg, transparent, #ff9d00, transparent); flex-shrink: 0;"></div>
+        
+        <!-- Right Panel -->
+        <div style="flex: 1; min-width: 0;">
+          ${tomorrowPanel}
+        </div>
         
       </div>
       
@@ -2293,7 +3216,6 @@ function renderDrawPreview(weeksData) {
               btn.innerText = '✅ Copied!';
               setTimeout(() => { btn.innerText = originalText; }, 2000);
             }).catch(() => {
-              // Fallback
               const textArea = document.createElement('textarea');
               textArea.value = text;
               document.body.appendChild(textArea);
@@ -2309,7 +3231,6 @@ function renderDrawPreview(weeksData) {
               document.body.removeChild(textArea);
             });
           } else {
-            // Fallback for older browsers
             const textArea = document.createElement('textarea');
             textArea.value = text;
             document.body.appendChild(textArea);
@@ -2329,8 +3250,8 @@ function renderDrawPreview(weeksData) {
       
       <!-- Footer -->
       <div style="margin-top: 4px; padding-top: 4px; border-top: 1px solid rgba(255,255,255,0.03); display: flex; justify-content: center; align-items: center; gap: 8px; flex-wrap: wrap;">
-  <span style="font-size: 12px; color: #fffff;">CodeWithGlasgow Chart Analysis • CWG ©️</span>
-        <span style="font-size: 12px; color: #fffff;">${isTomorrow ? 'Based on previous week data' : 'Current Week Data'}</span>
+        <span style="font-size: 10px; color: #94a3b8;">CodeWithGlasgow Chart Analysis • CWG ©️</span>
+        <span style="font-size: 10px; color: #94a3b8;">Based on previous week data</span>
       </div>
       
     </div>
@@ -2463,7 +3384,7 @@ function renderPick2CurrentWeekPlays(weeksData) {
   
   // Convert to array for pagination
   const allPlays = Array.from(uniquePlays.values());
-  const itemsPerPage = 8;
+  const itemsPerPage = 4;// page items
   const totalPages = Math.ceil(allPlays.length / itemsPerPage);
   
   // Build all pages HTML
@@ -2636,7 +3557,11 @@ function renderPick2CurrentWeekPlays(weeksData) {
 // ======================================
 function renderPick4CurrentWeekPlays(weeksData) {
   if (!weeksData || weeksData.length === 0) {
-    return '<div class="pick4-current-plays" style="background: linear-gradient(135deg, #0f172a, #1e293b); border-radius: 20px; padding: 16px; margin-bottom: 15px; border: 1px solid #58a6ff; text-align:center;">📊 Loading Pick 4 data...</div>';
+    return `
+      <div class="pick4-container" style="background: linear-gradient(145deg, #0f172a, #1a2332); border-radius: 16px; padding: 24px; border: 1px solid rgba(88,166,255,0.15); text-align:center;">
+        <div style="font-size: 14px; color: #58a6ff; font-weight: 600;">⏳ Loading Pick 4 data...</div>
+      </div>
+    `;
   }
   
   const now = new Date();
@@ -2653,10 +3578,10 @@ function renderPick4CurrentWeekPlays(weeksData) {
   
   const currentWeek = sortedWeeks[sortedWeeks.length - 1];
   const allWeeks = sortedWeeks;
-  
   const currWeekStart = new Date(currentWeek.startDate);
   const todayIdx = now.getDay();
   
+  // --- Helper Functions ---
   function getDraw(week, dayName, slot) {
     if (!week) return null;
     const day = week.days.find(d => d.dayName === dayName);
@@ -2671,20 +3596,15 @@ function renderPick4CurrentWeekPlays(weeksData) {
     return `${date.toLocaleDateString('en-US', options).replace(/,/g, '')} ${slotDisplay[slot] || ''}`;
   }
   
-  // Helper to get the 4-digit number from a draw
   function getPick4Number(draw) {
     if (!draw) return null;
     const cleanDraw = draw.toString().replace(/[^0-9]/g, '');
-    if (cleanDraw.length === 8) {
-      return cleanDraw;
-    }
+    if (cleanDraw.length === 8) return cleanDraw;
     return cleanDraw.padStart(4, '0');
   }
   
-  // Helper to generate all unique permutations of 4 digits
   function getAllPermutations(digits) {
     const results = new Set();
-    
     function permute(arr, start) {
       if (start === arr.length - 1) {
         results.add(arr.join(''));
@@ -2696,15 +3616,12 @@ function renderPick4CurrentWeekPlays(weeksData) {
         [arr[start], arr[i]] = [arr[i], arr[start]];
       }
     }
-    
     permute([...digits], 0);
     return Array.from(results);
   }
   
-  // Build history map from ALL weeks (for hit counts and last played)
-  const historyMap = new Map(); // key: "4-digit number" -> { hits, lastDate, lastSlot, occurrences }
-  
-  // Scan ALL weeks for historical data
+  // --- Build History Map ---
+  const historyMap = new Map();
   allWeeks.forEach(week => {
     const weekStart = new Date(week.startDate);
     for (let d = 0; d < dayNames.length; d++) {
@@ -2715,7 +3632,6 @@ function renderPick4CurrentWeekPlays(weeksData) {
           if (number && number.length === 4) {
             const drawDate = new Date(weekStart);
             drawDate.setDate(weekStart.getDate() + d);
-            
             if (!historyMap.has(number)) {
               historyMap.set(number, { hits: 0, lastDate: null, lastSlot: null, occurrences: [] });
             }
@@ -2732,7 +3648,7 @@ function renderPick4CurrentWeekPlays(weeksData) {
     }
   });
   
-  // Collect all Pick 4 draws from current week and their permutations
+  // --- Collect Current Week Draws ---
   const currentWeekDraws = [];
   for (let d = 0; d <= todayIdx; d++) {
     for (let s = 0; s < slots.length; s++) {
@@ -2755,23 +3671,18 @@ function renderPick4CurrentWeekPlays(weeksData) {
     }
   }
   
-  // Build a map of all permutations for each unique draw
-  const drawPermutationsMap = new Map(); // key: original number, value: { original, permutations[], plays }
-  
+  // --- Build Permutations Map ---
+  const drawPermutationsMap = new Map();
   currentWeekDraws.forEach(draw => {
     const key = draw.original;
     if (!drawPermutationsMap.has(key)) {
-      // Generate all unique permutations of the digits
       const allPerms = getAllPermutations(draw.digits);
-      // Filter to only permutations that have actually been played in history
       const playedPermutations = allPerms.filter(perm => historyMap.has(perm));
-      // Sort by hit count (most frequent first)
       playedPermutations.sort((a, b) => {
         const hitsA = historyMap.get(a)?.hits || 0;
         const hitsB = historyMap.get(b)?.hits || 0;
         return hitsB - hitsA;
       });
-      
       drawPermutationsMap.set(key, {
         original: draw.original,
         permutations: playedPermutations,
@@ -2783,23 +3694,99 @@ function renderPick4CurrentWeekPlays(weeksData) {
     }
   });
   
-  // Convert to array for pagination
   const allDraws = Array.from(drawPermutationsMap.values());
-  const itemsPerPage = 5; // 5 draws per page (each with its permutations)
+  const itemsPerPage = 1;
   const totalPages = Math.ceil(allDraws.length / itemsPerPage);
   
-  // Function to format permutation with styling
-  function formatPermutation(perm, isOriginal = false, highlightColor = null) {
-    if (isOriginal) {
-      return `<span style="font-weight: bold; font-size: 16px; color: #ff9d00; background: rgba(255,157,0,0.2); padding: 4px 8px; border-radius: 8px;">${perm}</span>`;
-    }
-    if (highlightColor) {
-      return `<span style="color: ${highlightColor}; border: 1px solid ${highlightColor}; background: ${highlightColor}15; border-radius: 6px; padding: 4px 8px; font-weight: 500; display: inline-block;">${perm}</span>`;
-    }
-    return `<span style="font-family: monospace; font-size: 13px; padding: 4px 8px;">${perm}</span>`;
+  if (allDraws.length === 0) {
+    return `
+      <div class="pick4-container" style="background: linear-gradient(145deg, #0f172a, #1a2332); border-radius: 16px; padding: 24px; border: 1px solid rgba(88,166,255,0.15); text-align:center;">
+        <div style="font-size: 14px; color: #58a6ff; font-weight: 600;">♠️ PICK 4 PERMUTATION ANALYSIS</div>
+        <div style="color: #64748b; margin-top: 8px; font-size: 13px;">No Pick 4 plays recorded in current week yet</div>
+      </div>
+    `;
   }
   
-  // Build all pages HTML
+  // --- Render Functions ---
+  function renderDigitChips(digits, highlightIndex = -1) {
+    const colors = ['#ef4444', '#f59e0b', '#22c55e', '#3b82f6'];
+    return digits.map((d, i) => `
+      <span style="
+        display: inline-block;
+        width: 32px;
+        height: 32px;
+        line-height: 32px;
+        text-align: center;
+        background: ${i === highlightIndex ? 'rgba(255,215,0,0.25)' : 'rgba(255,255,255,0.06)'};
+        border-radius: 8px;
+        font-size: 16px;
+        font-weight: 700;
+        color: ${colors[i] || '#94a3b8'};
+        border: ${i === highlightIndex ? '2px solid #ffd700' : '1px solid rgba(255,255,255,0.06)'};
+        margin: 0 2px;
+      ">${d}</span>
+    `).join('');
+  }
+  
+  function renderPermutationItem(perm, isOriginal, hitCount, lastDate, isPlayedThisWeek) {
+    const bgColor = isOriginal ? 'rgba(255,157,0,0.12)' : 'rgba(255,255,255,0.03)';
+    const borderColor = isOriginal ? '#ff9d00' : (isPlayedThisWeek ? '#58a6ff' : 'rgba(255,255,255,0.06)');
+    const textColor = isOriginal ? '#ff9d00' : (isPlayedThisWeek ? '#58a6ff' : '#e2e8f0');
+    const badge = isOriginal ? '⚜️' : (isPlayedThisWeek ? '🔄' : '');
+    
+    // Split permutation into individual digits for display
+    const digits = perm.split('');
+    const digitColors = ['#ef4444', '#f59e0b', '#22c55e', '#3b82f6'];
+    
+    return `
+      <div style="
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        background: ${bgColor};
+        border: 1px solid ${borderColor};
+        border-radius: 10px;
+        padding: 8px 14px;
+        margin-bottom: 6px;
+        transition: all 0.2s ease;
+      ">
+        <div style="display: flex; align-items: center; gap: 10px;">
+          ${badge ? `<span style="font-size: 12px;">${badge}</span>` : ''}
+          <div style="display: flex; gap: 3px;">
+            ${digits.map((d, i) => `
+              <span style="
+                display: inline-block;
+                width: 26px;
+                height: 26px;
+                line-height: 26px;
+                text-align: center;
+                background: rgba(255,255,255,0.05);
+                border-radius: 6px;
+                font-size: 14px;
+                font-weight: 700;
+                color: ${digitColors[i] || '#94a3b8'};
+                border: 1px solid rgba(255,255,255,0.05);
+              ">${d}</span>
+            `).join('')}
+          </div>
+          <span style="
+            font-size: 11px;
+            font-weight: 600;
+            color: #32d74b;
+            background: rgba(50,215,75,0.1);
+            padding: 0 10px;
+            border-radius: 12px;
+          ">${hitCount}x</span>
+        </div>
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <span style="font-size: 9px; color: #64748b;">Last: ${lastDate}</span>
+          ${isOriginal ? `<span style="font-size: 9px; color: #ff9d00; font-weight: 700;">🔔</span>` : ''}
+        </div>
+      </div>
+    `;
+  }
+  
+  // --- Build Pages ---
   const pagesHtml = [];
   for (let page = 0; page < totalPages; page++) {
     const start = page * itemsPerPage;
@@ -2810,107 +3797,255 @@ function renderPick4CurrentWeekPlays(weeksData) {
     for (let draw of pageDraws) {
       const comboData = historyMap.get(draw.original) || { hits: 0, lastDate: null, lastSlot: null };
       const lastPlayed = comboData.lastDate ? formatDisplayDate(comboData.lastDate, comboData.lastSlot) : "Never";
+      const totalPerms = draw.permutations.length;
+      const totalPossible = 24;
+      const coveragePercent = Math.round((totalPerms / totalPossible) * 100);
       
-      // Build permutations list with hit counts
-      let permutationsHtml = '';
+      // Build permutations list
+      let permsHtml = '';
       draw.permutations.forEach(perm => {
         const permData = historyMap.get(perm);
         const isOriginal = (perm === draw.original);
         const hitCount = permData?.hits || 0;
-        // Get highlight color from comboColors if this permutation was played in current week
-        // (we'll check if any current week draw matches this permutation)
-        let highlightColor = null;
+        let isPlayedThisWeek = false;
         for (let cd of currentWeekDraws) {
           if (cd.original === perm) {
-            highlightColor = "#58a6ff";
+            isPlayedThisWeek = true;
             break;
           }
         }
-        
-        permutationsHtml += `
-          <div style="display: flex; align-items: center; justify-content: space-between; background: rgba(255,255,255,0.03); border-radius: 8px; padding: 6px 12px; margin-bottom: 6px;">
-            <div style="display: flex; align-items: center; gap: 12px;">
-              ${formatPermutation(perm, isOriginal, highlightColor)}
-              <span style="font-size: 11px; color: #32d74b;">${hitCount}x</span>
-            </div>
-            <span style="font-size: 9px; color: #888;">Last: ${permData?.lastDate ? formatDisplayDate(permData.lastDate, permData.lastSlot) : 'Never'}</span>
-          </div>
-        `;
+        const lastDate = permData?.lastDate ? formatDisplayDate(permData.lastDate, permData.lastSlot) : 'Never';
+        permsHtml += renderPermutationItem(perm, isOriginal, hitCount, lastDate, isPlayedThisWeek);
       });
       
       pageRowsHtml += `
-        <div style="margin-bottom: 20px; background: rgba(88,166,255,0.05); border-radius: 16px; padding: 12px; border: 1px solid rgba(88,166,255,0.3);">
-          <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; flex-wrap: wrap; gap: 8px;">
-            <div>
-              <span style="font-size: 14px; font-weight: 800; color: #58a6ff;">🎲 DRAWN:</span>
-              <span style="font-size: 20px; font-weight: 900; color: #ff9d00; margin-left: 8px;">${draw.original}</span>
+        <div style="
+          background: linear-gradient(145deg, rgba(15,23,42,0.8), rgba(30,41,59,0.6));
+          border-radius: 14px;
+          padding: 16px;
+          margin-bottom: 16px;
+          border: 1px solid rgba(88,166,255,0.12);
+          box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+        ">
+          <!-- Draw Header -->
+          <div style="
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 14px;
+            flex-wrap: wrap;
+            gap: 8px;
+            padding-bottom: 12px;
+            border-bottom: 1px solid rgba(255,255,255,0.05);
+          ">
+            <div style="display: flex; align-items: center; gap: 12px;">
+              <span style="font-size: 12px; font-weight: 600; color: #58a6ff; letter-spacing: 0.5px;">🎲 DRAWN</span>
+              <div style="display: flex; gap: 4px;">
+                ${renderDigitChips(draw.original.split(''))}
+              </div>
             </div>
-            <div style="text-align: right;">
-              <div style="font-size: 11px; color: #888;">${draw.playedDay} ${draw.playedSlotIcon}</div>
-              <div style="font-size: 11px; color: #aaa;">Hits: ${comboData.hits}x | Last: ${lastPlayed}</div>
+            <div style="display: flex; align-items: center; gap: 16px;">
+              <div style="text-align: right;">
+                <div style="font-size: 21px; color: #64748b;">${draw.playedDay} ${draw.playedSlotIcon}</div>
+                <div style="font-size: 10px; color: #94a3b8;">
+                  <span style="color: #32d74b;">${comboData.hits}x</span> hits · Last: ${lastPlayed}
+                </div>
+              </div>
+              <div style="
+                background: rgba(88,166,255,0.1);
+                border-radius: 20px;
+                padding: 2px 12px;
+                border: 1px solid rgba(88,166,255,0.15);
+              ">
+                <span style="font-size: 10px; font-weight: 600; color: #58a6ff;">${totalPerms}/${totalPossible}</span>
+                <span style="font-size: 8px; color: #64748b;">(${coveragePercent}%)</span>
+              </div>
             </div>
           </div>
-          <div style="font-size: 11px; font-weight: 600; color: #58a6ff; margin-bottom: 8px;">📊 PERMUTATIONS PLAYED IN HISTORY (${draw.permutations.length} of 24 possible):</div>
-          <div style="display: flex; flex-direction: column; gap: 4px;">
-            ${permutationsHtml}
+          
+          <!-- Permutations List -->
+          <div style="font-size: 11px; font-weight: 600; color: #94a3b8; margin-bottom: 10px; letter-spacing: 0.3px;">
+            📜 PERMUTATIONS PLAYED IN HISTORY
+            <span style="font-size: 9px; font-weight: 400; color: #64748b; margin-left: 6px;">
+              (${totalPerms} of ${totalPossible} possible)
+            </span>
           </div>
-          ${draw.permutations.length === 0 ? '<div style="color: #666; text-align: center; padding: 10px;">No permutations of this number have been played in history</div>' : ''}
+          <div style="display: flex; flex-direction: column; gap: 2px;">
+            ${permsHtml || `
+              <div style="text-align: center; color: #64748b; padding: 16px; font-size: 12px;">
+                No permutations of this number have been played in history
+              </div>
+            `}
+          </div>
+          
+          <!-- Coverage Bar -->
+          <div style="margin-top: 10px;">
+            <div style="
+              height: 3px;
+              background: rgba(255,255,255,0.05);
+              border-radius: 4px;
+              overflow: hidden;
+            ">
+              <div style="
+                height: 100%;
+                width: ${coveragePercent}%;
+                background: linear-gradient(90deg, #58a6ff, #ff9d00);
+                border-radius: 4px;
+                transition: width 0.6s ease;
+              "></div>
+            </div>
+          </div>
         </div>
       `;
     }
     
     pagesHtml.push(`
-      <div class="carousel-slide-pick4-perm" style="min-width: 100%; scroll-snap-align: start;">
-        <div style="padding: 4px;">
-          ${pageRowsHtml}
-        </div>
+      <div class="pick4-slide" style="
+        min-width: 100%;
+        scroll-snap-align: start;
+        padding: 4px 2px;
+      ">
+        ${pageRowsHtml}
       </div>
     `);
   }
   
-  if (allDraws.length === 0) {
-    return `
-      <div class="pick4-current-plays" style="background: linear-gradient(135deg, #0f172a, #1e293b); border-radius: 20px; padding: 16px; margin-bottom: 15px; border: 1px solid #58a6ff; text-align:center;">
-        <div style="font-size: 13px; font-weight: 800; color: #58a6ff; margin-bottom: 8px;">📊 PICK 4 CURRENT WEEK PLAYS INFO</div>
-        <div style="color: #888;">No Pick 4 plays recorded in current week yet</div>
-      </div>
+  // --- Generate Pagination Dots ---
+  let dotsHtml = '';
+  for (let i = 0; i < totalPages; i++) {
+    dotsHtml += `
+      <span class="pick4-dot" data-slide="${i}" style="
+        width: 8px;
+        height: 8px;
+        background: ${i === 0 ? '#58a6ff' : '#334155'};
+        border-radius: 50%;
+        display: inline-block;
+        margin: 0 4px;
+        cursor: pointer;
+        transition: all 0.3s ease;
+        ${i === 0 ? 'width: 20px; border-radius: 4px;' : ''}
+      "></span>
     `;
   }
   
-  // Generate dots for pagination
-  let dotsHtml = '';
-  for (let i = 0; i < totalPages; i++) {
-    dotsHtml += `<span class="carousel-dot-pick4-perm" data-slide="${i}" style="width: 8px; height: 8px; background: #555; border-radius: 50%; display: inline-block; margin: 0 4px; cursor: pointer; transition: all 0.3s ease;"></span>`;
-  }
+  const carouselId = 'pick4-perm-' + Date.now();
   
-  const carouselId = 'pick4-perm-carousel-' + Date.now();
-  
+  // --- Final HTML ---
   return `
-    <div class="pick4-current-plays" style="background: linear-gradient(135deg, #0f172a, #1e293b); border-radius: 20px; padding: 16px; margin-bottom: 15px; border: 1px solid #58a6ff;">
-      <div style="font-size: 13px; font-weight: 800; color: #58a6ff; margin-bottom: 12px; text-align: center;">📊 PICK 4 PERMUTATION ANALYSIS</div>
-      <div style="font-size: 10px; color: #aaa; text-align: center; margin-bottom: 12px;">
-        For each drawn number, showing all permutations that have appeared in history
+    <div class="pick4-container" style="
+      background: linear-gradient(145deg, #0f172a, #1a2332);
+      border-radius: 16px;
+      padding: 20px;
+      border: 1px solid rgba(88,166,255,0.1);
+      margin-bottom: 12px;
+    ">
+      <!-- Header -->
+      <div style="
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 4px;
+        flex-wrap: wrap;
+        gap: 8px;
+      ">
+        <div>
+          <div style="font-size: 16px; font-weight: 800; color: #58a6ff; letter-spacing: 0.3px;">
+            ♠️ PICK 4 PERMUTATION ANALYSIS
+          </div>
+          <div style="font-size: 10px; color: #64748b; margin-top: 2px;">
+            Historical permutations for each drawn number
+          </div>
+        </div>
+        <div style="
+          background: rgba(88,166,255,0.08);
+          padding: 4px 14px;
+          border-radius: 20px;
+          border: 1px solid rgba(88,166,255,0.1);
+        ">
+          <span style="font-size: 11px; font-weight: 600; color: #94a3b8;">
+            ${allDraws.length} draws · 
+            <span style="color: #58a6ff;">${totalPages}</span> pages
+          </span>
+        </div>
       </div>
       
-      <!-- Swipeable Carousel Container -->
-      <div id="${carouselId}" style="overflow-x: auto; scroll-snap-type: x mandatory; display: flex; scroll-behavior: smooth; -webkit-overflow-scrolling: touch; gap: 16px; margin-top: 10px;">
+      <!-- Legend -->
+      <div style="
+        display: flex;
+        align-items: center;
+        gap: 16px;
+        padding: 8px 0 12px 0;
+        flex-wrap: wrap;
+        border-bottom: 1px solid rgba(255,255,255,0.04);
+        margin-bottom: 14px;
+      ">
+        <div style="display: flex; align-items: center; gap: 6px;">
+          <span style="
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            background: rgba(255,157,0,0.3);
+            border-radius: 4px;
+            border: 1px solid #ff9d00;
+          "></span>
+          <span style="font-size: 9px; color: #94a3b8;">Drawn Number</span>
+        </div>
+        <div style="display: flex; align-items: center; gap: 6px;">
+          <span style="
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            background: rgba(88,166,255,0.2);
+            border-radius: 4px;
+            border: 1px solid #58a6ff;
+          "></span>
+          <span style="font-size: 9px; color: #94a3b8;">Played This Week</span>
+        </div>
+        <div style="display: flex; align-items: center; gap: 6px;">
+          <span style="
+            display: inline-block;
+            width: 12px;
+            height: 12px;
+            background: rgba(50,215,75,0.15);
+            border-radius: 4px;
+            border: 1px solid #32d74b;
+          "></span>
+          <span style="font-size: 9px; color: #94a3b8;">Hit Count</span>
+        </div>
+      </div>
+      
+      <!-- Carousel -->
+      <div id="${carouselId}" style="
+        overflow-x: auto;
+        scroll-snap-type: x mandatory;
+        display: flex;
+        scroll-behavior: smooth;
+        -webkit-overflow-scrolling: touch;
+        gap: 20px;
+        padding: 4px 2px 12px 2px;
+      ">
         ${pagesHtml.join('')}
       </div>
       
-      <!-- Page Indicators -->
-      <div style="display: flex; justify-content: center; margin-top: 12px; gap: 6px;" id="${carouselId}-dots">
-        ${dotsHtml}
-      </div>
-      
-      <div style="font-size: 8px; color: #555; text-align: center; margin-top: 10px; padding-top: 6px; border-top: 1px solid rgba(88,166,255,0.2);">
-        🔄 Swipe to see more draws • ${allDraws.length} draws this week • Showing historical permutations
+      <!-- Footer -->
+      <div style="
+        font-size: 8px;
+        color: #475569;
+        text-align: center;
+        margin-top: 8px;
+        padding-top: 6px;
+        border-top: 1px solid rgba(255,255,255,0.02);
+      ">
+        🔄 Swipe To View • ${allDraws.length} draws this week • Showing historical permutations
       </div>
     </div>
     
     <script>
       (function() {
         var container = document.getElementById('${carouselId}');
-        var dots = document.querySelectorAll('#${carouselId}-dots .carousel-dot-pick4-perm');
+        var dots = document.querySelectorAll('#${carouselId}-dots .pick4-dot');
+        var prevBtn = container.parentElement.querySelector('.pick4-prev');
+        var nextBtn = container.parentElement.querySelector('.pick4-next');
         var currentIndex = 0;
         var totalSlides = ${totalPages};
         
@@ -2918,10 +4053,10 @@ function renderPick4CurrentWeekPlays(weeksData) {
           dots.forEach(function(dot, idx) {
             if (idx === currentIndex) {
               dot.style.background = '#58a6ff';
-              dot.style.width = '16px';
+              dot.style.width = '20px';
               dot.style.borderRadius = '4px';
             } else {
-              dot.style.background = '#555';
+              dot.style.background = '#334155';
               dot.style.width = '8px';
               dot.style.borderRadius = '50%';
             }
@@ -2934,7 +4069,7 @@ function renderPick4CurrentWeekPlays(weeksData) {
           currentIndex = index;
           var slideWidth = container.children[0] ? container.children[0].offsetWidth : 0;
           if (slideWidth > 0) {
-            container.scrollTo({ left: index * (slideWidth + 16), behavior: 'smooth' });
+            container.scrollTo({ left: index * (slideWidth + 20), behavior: 'smooth' });
           }
           updateDots();
         }
@@ -2942,7 +4077,7 @@ function renderPick4CurrentWeekPlays(weeksData) {
         function handleScroll() {
           var slideWidth = container.children[0] ? container.children[0].offsetWidth : 0;
           var scrollPosition = container.scrollLeft;
-          var newIndex = Math.round(scrollPosition / (slideWidth + 16));
+          var newIndex = Math.round(scrollPosition / (slideWidth + 20));
           if (newIndex !== currentIndex && newIndex >= 0 && newIndex < totalSlides) {
             currentIndex = newIndex;
             updateDots();
@@ -2956,6 +4091,8 @@ function renderPick4CurrentWeekPlays(weeksData) {
               scrollToSlide(idx);
             });
           });
+          if (prevBtn) prevBtn.addEventListener('click', function() { scrollToSlide(currentIndex - 1); });
+          if (nextBtn) nextBtn.addEventListener('click', function() { scrollToSlide(currentIndex + 1); });
         }
         
         updateDots();
@@ -3477,11 +4614,480 @@ function renderPick4DigitTracker(title, weeksData, currentCycleNumber) {
     </div>
   `;
 }
+
+// ====== V2 Two-Digit & Three-Digit 
+// ====================================
+// RENDER PICK 2-DIGIT TRACKER — CAROUSEL ENHANCED
+// 4 Tabs: Split Halves | Front Pair | Back Pair | Sliding Window
+// 24-week rolling window
+// =======================================
+function renderPick2DigitTracker(title, weeksData, currentCycleNumber) {
+  return renderComboDigitTracker(title, weeksData, currentCycleNumber, 2);
+}
+
+// =====================================
+// RENDER PICK 3-DIGIT TRACKER — CAROUSEL ENHANCED
+// 3 Tabs: Front 3 | Back 3 | Sliding Window
+// 24-week rolling window
+// ======================================
+function renderPick3DigitTracker(title, weeksData, currentCycleNumber) {
+  return renderComboDigitTracker(title, weeksData, currentCycleNumber, 3);
+}
+
+// =====================================
+// CORE ENGINE — Shared by 2-digit and 3-digit trackers
+// =====================================
+function renderComboDigitTracker(title, weeksData, currentCycleNumber, comboSize) {
+  const numberColors = {
+    0:"#6c757d",1:"#ff6b6b",2:"#ffa94d",3:"#ffd43b",4:"#69db7c",
+    5:"#38d9a9",6:"#4dabf7",7:"#9775fa",8:"#f783ac",9:"#ff922b"
+  };
+
+  if (!weeksData || weeksData.length === 0) {
+    return '<div class="table-wrapper"><div class="table-header" style="background:#334155;"><span>No data available</span></div></div>';
+  }
+
+  // ---- Sort weeks chronologically ----
+  const sortedWeeks = [...weeksData].sort((a, b) => {
+    const pa = a.startDate.split(" "), pb = b.startDate.split(" ");
+    return new Date(pa[2]+"-"+pa[1]+"-"+pa[0]) - new Date(pb[2]+"-"+pb[1]+"-"+pb[0]);
+  });
+
+  // ---- 24-week rolling window ----
+  const windowWeeks = sortedWeeks.slice(-24);
+  const currentWeek  = windowWeeks[windowWeeks.length - 1];
+  const previousWeek = windowWeeks.length >= 2 ? windowWeeks[windowWeeks.length - 2] : null;
+
+  const dayNames = ["Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday"];
+  const slots = ["MOR","MID","NON","EVE"];
+  const todayIdx = new Date().getDay();
+
+  function getDraw(week, dayName, slot) {
+    if (!week) return null;
+    const day = week.days.find(d => d.dayName === dayName);
+    if (!day) return null;
+    const val = day.draws[slot];
+    return (val && val !== "-" && val !== "PENDING" && val !== "HOLIDAY") ? val.toString() : null;
+  }
+
+  // ---- Panel extractors ----
+  const panelDefs = comboSize === 2
+    ? [
+        { key:"split",   label:"SPLIT HALVES",   fn: d => [ d.slice(0,2), d.slice(2,4) ] },
+        { key:"front",   label:"FRONT PAIR",     fn: d => [ d.slice(0,2) ] },
+        { key:"back",    label:"BACK PAIR",      fn: d => [ d.slice(2,4) ] },
+        { key:"sliding", label:"SLIDING WINDOW", fn: d => [ d.slice(0,2), d.slice(1,3), d.slice(2,4) ] }
+      ]
+    : [
+        { key:"front3",   label:"FRONT 3",       fn: d => [ d.slice(0,3) ] },
+        { key:"back3",    label:"BACK 3",        fn: d => [ d.slice(1,4) ] },
+        { key:"sliding3", label:"SLIDING WINDOW",fn: d => [ d.slice(0,3), d.slice(1,4) ] }
+      ];
+
+  // ---- Build shared timeline (raw digits kept for date math) ----
+  const timeline = [];
+  for (const week of windowWeeks) {
+    const weekStart = new Date(week.startDate);
+    for (let d = 0; d < dayNames.length; d++) {
+      const drawDate = new Date(weekStart);
+      drawDate.setDate(weekStart.getDate() + d);
+      for (const slot of slots) {
+        const draw = getDraw(week, dayNames[d], slot);
+        if (draw) {
+          const digits = draw.replace(/\D/g,'').split('');
+          if (digits.length === 4) {
+            timeline.push({
+              draw, digits, date: drawDate,
+              day: dayNames[d], slot,
+              timestamp: drawDate.getTime(),
+              week
+            });
+          }
+        }
+      }
+    }
+  }
+  timeline.sort((a,b) => a.timestamp - b.timestamp);
+
+  if (timeline.length === 0) {
+    return '<div class="table-wrapper"><div class="table-header" style="background:#334155;"><span>No combo data available</span></div></div>';
+  }
+
+  const today = new Date();
+
+  // ---- Build panel data ----
+  const panels = panelDefs.map(def => {
+    const comboTimeline = []; // { combo, date, draw, slot, timestamp, week }
+    const comboFreq = {}, currFreq = {}, prevFreq = {};
+
+    for (const entry of timeline) {
+      const combos = def.fn(entry.draw);
+      for (const combo of combos) {
+        comboTimeline.push({
+          combo, date: entry.date, draw: entry.draw,
+          slot: entry.slot, timestamp: entry.timestamp, week: entry.week
+        });
+        comboFreq[combo] = (comboFreq[combo] || 0) + 1;
+
+        if (currentWeek && entry.week === currentWeek) {
+          currFreq[combo] = (currFreq[combo] || 0) + 1;
+        }
+        if (previousWeek && entry.week === previousWeek) {
+          prevFreq[combo] = (prevFreq[combo] || 0) + 1;
+        }
+      }
+    }
+
+    // ---- daysSinceLast & avgGap per combo ----
+    const combosList = Object.keys(comboFreq);
+    const daysSinceLast = {}, avgGap = {}, confidence = {};
+    const trend = {}, trendArrow = {}, statusMap = {};
+
+    for (const combo of combosList) {
+      const entries = comboTimeline.filter(e => e.combo === combo);
+      const last = entries[entries.length - 1];
+      daysSinceLast[combo] = last
+        ? Math.floor((today - last.date) / 86400000)
+        : 99;
+
+      // avgGap (weighted to recent)
+      if (entries.length < 2) {
+        avgGap[combo] = 14;
+      } else {
+        const recent = entries.slice(-10);
+        let totalGap = 0, weightTotal = 0;
+        for (let j = 1; j < recent.length; j++) {
+          const gap = Math.max(1, Math.floor((recent[j].date - recent[j-1].date) / 86400000));
+          const w = 1 + (j / recent.length);
+          totalGap += gap * w;
+          weightTotal += w;
+        }
+        avgGap[combo] = Math.max(1, Math.round(totalGap / weightTotal));
+      }
+
+      const days = daysSinceLast[combo];
+      const avg  = avgGap[combo];
+      const cw   = currFreq[combo] || 0;
+      const pw   = prevFreq[combo] || 0;
+
+      // Confidence (same math as Pick 4)
+      let baseConf;
+      if (days === 0) baseConf = 0;
+      else if (avg === 0) baseConf = 50;
+      else {
+        const r = days / avg;
+        if (r >= 2) baseConf = Math.min(100, Math.round(r*50));
+        else if (r >= 1.5) baseConf = Math.min(95, Math.round(70 + (r-1.5)*50));
+        else if (r >= 1)   baseConf = Math.min(85, Math.round(50 + (r-1)*40));
+        else               baseConf = Math.min(49, Math.round(r*50));
+      }
+
+      let weekBoost = 0, tLabel = "STABLE", arrow = "➡️";
+      if (cw > 0) {
+        weekBoost = -Math.min(20, cw*5);
+        tLabel = "RECENT"; arrow = "🔽";
+      } else if (pw > 0) {
+        weekBoost = Math.min(25, pw*8);
+        tLabel = "DUE"; arrow = "🔼";
+      } else {
+        weekBoost = 10;
+        tLabel = "WATCH"; arrow = "⏳";
+      }
+
+      const freqRatio = (comboFreq[combo] || 0) / (comboTimeline.length / Math.max(1, combosList.length));
+      const freqBoost = Math.min(10, Math.round((freqRatio - 0.5) * 20));
+
+      confidence[combo] = Math.max(0, Math.min(100, baseConf + weekBoost + freqBoost));
+
+      // Trend override
+      if (cw > 0 && pw > 0 && cw > pw) { tLabel = "↑ HOT"; arrow = "🔥"; }
+      else if (cw > 0 && pw > 0 && cw < pw) { tLabel = "↓ COOL"; arrow = "❄️"; }
+      else if (cw > 0 && pw === 0) { tLabel = "↗ NEW"; arrow = "🆕"; }
+      else if (cw === 0 && pw > 0) { tLabel = "↘ DUE"; arrow = "⏰"; }
+
+      trend[combo] = tLabel;
+      trendArrow[combo] = arrow;
+
+      // Status
+      let sLabel, sColor;
+      if (cw > 0)                          { sLabel = "✅ RECENT";     sColor = "#32d74b"; }
+      else if (days > avg*1.5 && pw > 0)   { sLabel = "🔥 DUE NOW";    sColor = "#ff453a"; }
+      else if (days > avg*1.2)             { sLabel = "HEATING UP";    sColor = "#ff9f0a"; }
+      else if (days > avg*0.8 && pw > 0)   { sLabel = "👀 WATCHING";   sColor = "#ffd60a"; }
+      else if (days > avg*0.5)             { sLabel = "📊 MONITORING"; sColor = "#58a6ff"; }
+      else                                 { sLabel = "✅ RECENT";     sColor = "#32d74b"; }
+
+      statusMap[combo] = { label: sLabel, color: sColor };
+    }
+
+    // ---- Hot/Cold combo tables ----
+    const sortedByFreq = [...combosList].sort((a,b) => comboFreq[b] - comboFreq[a]);
+    const hotCombos  = sortedByFreq.slice(0, 10);
+    const coldCombos = sortedByFreq.slice(-10).reverse();
+
+    // ---- Cycle tracker (top-N distinct combos re-hit) ----
+    const cycleTargetSet = new Set(combosList);
+    const cycles = [];
+    let seen = new Set(), cycleHits = 0;
+    for (const e of comboTimeline) {
+      if (!seen.has(e.combo)) {
+        seen.add(e.combo);
+        cycleHits++;
+      }
+      if (seen.size === cycleTargetSet.size) {
+        cycles.push({
+          completionDate: e.date,
+          lastCombo: e.combo,
+          lastDraw: e.draw,
+          totalHits: cycleHits
+        });
+        seen = new Set();
+        cycleHits = 0;
+      }
+    }
+    const historicalCycles = cycles.slice(-5);
+
+    return {
+      key: def.key, label: def.label,
+      comboFreq, currFreq, prevFreq,
+      daysSinceLast, avgGap, confidence,
+      trend, trendArrow, statusMap,
+      comboTimeline, combosList,
+      hotCombos, coldCombos,
+      historicalCycles,
+      totalHits: comboTimeline.length
+    };
+  });
+
+  // ---- Render helper ----
+  function colorCombo(combo) {
+    return combo.split('').map(ch =>
+      `<span style="background:${numberColors[ch]||'#fff'};color:#000;padding:1px 5px;border-radius:3px;margin:0 1px;font-weight:700;">${ch}</span>`
+    ).join('');
+  }
+
+  function renderPanel(panel, panelIdx, cycleNum) {
+    const sortedCombos = [...panel.combosList].sort(
+      (a,b) => panel.confidence[b] - panel.confidence[a]
+    );
+
+    let rows = "";
+    for (const combo of sortedCombos) {
+      const freq = panel.comboFreq[combo] || 0;
+      const days = panel.daysSinceLast[combo] || 0;
+      const avg  = panel.avgGap[combo] || 0;
+      const conf = panel.confidence[combo] || 0;
+      const cw   = panel.currFreq[combo] || 0;
+      const pw   = panel.prevFreq[combo] || 0;
+      const st   = panel.statusMap[combo] || { label:"✅ RECENT", color:"#32d74b" };
+      const tr   = panel.trend[combo] || "STABLE";
+      const ar   = panel.trendArrow[combo] || "➡️";
+
+      const wkDisplay = (cw > 0 || pw > 0)
+        ? `<span style="color:#32d74b;">${cw}x</span>${pw>0?` / <span style="color:#64748b;">${pw}x</span>`:''}`
+        : `<span style="color:#64748b;">—</span>`;
+
+      rows += `
+        <tr style="border-bottom:1px solid rgba(255,255,255,0.05);">
+          <td style="text-align:center;font-weight:700;font-size:14px;background:rgba(0,0,0,0.2);padding:5px;">
+            ${colorCombo(combo)}
+          </td>
+          <td style="text-align:center;font-weight:700;color:#ffd700;">${freq}</td>
+          <td style="text-align:center;font-weight:700;color:${days>14?'#ff453a':'#ffd700'};">${days}d</td>
+          <td style="text-align:center;font-weight:700;color:${st.color};font-size:10px;">${st.label}</td>
+          <td style="text-align:center;font-weight:700;color:#58a6ff;font-size:11px;">${avg}d</td>
+          <td style="text-align:center;font-weight:700;color:#94a3b8;font-size:11px;">${wkDisplay}</td>
+          <td style="text-align:center;font-weight:700;color:#ff9d00;font-size:10px;">${ar} ${tr}</td>
+          <td style="text-align:center;width:80px;">
+            <div style="background:rgba(255,255,255,0.1);border-radius:4px;height:6px;width:100%;overflow:hidden;">
+              <div style="background:${st.color};height:100%;width:${Math.min(conf,100)}%;border-radius:4px;"></div>
+            </div>
+            <span style="font-size:9px;color:#94a3b8;">${conf}%</span>
+          </td>
+        </tr>`;
+    }
+
+    // Hot / Cold tables
+    const hotRows = panel.hotCombos.map(c => `
+      <tr style="border-bottom:1px solid rgba(255,255,255,0.05);">
+        <td style="padding:4px 6px;text-align:center;">${colorCombo(c)}</td>
+        <td style="padding:4px 6px;text-align:center;color:#ffd700;font-weight:700;">${panel.comboFreq[c]}</td>
+        <td style="padding:4px 6px;text-align:center;color:${panel.daysSinceLast[c]>14?'#ff453a':'#94a3b8'};">${panel.daysSinceLast[c]}d</td>
+      </tr>`).join("");
+
+    const coldRows = panel.coldCombos.map(c => `
+      <tr style="border-bottom:1px solid rgba(255,255,255,0.05);">
+        <td style="padding:4px 6px;text-align:center;">${colorCombo(c)}</td>
+        <td style="padding:4px 6px;text-align:center;color:#ffd700;font-weight:700;">${panel.comboFreq[c]}</td>
+        <td style="padding:4px 6px;text-align:center;color:${panel.daysSinceLast[c]>14?'#ff453a':'#94a3b8'};">${panel.daysSinceLast[c]}d</td>
+      </tr>`).join("");
+
+    // Cycle history
+    let historyHtml = "";
+    if (panel.historicalCycles.length > 0) {
+      let cycleNumResolved = cycleNum;
+      if (!cycleNumResolved || cycleNumResolved <= 0) {
+        const m = title.match(/Cycle\s*(\d+)/i);
+        cycleNumResolved = m ? parseInt(m[1],10) : panel.historicalCycles.length + 1;
+      }
+
+      const cycleRows = panel.historicalCycles.map((cyc, idx) => {
+        const posFromEnd = panel.historicalCycles.length - 1 - idx;
+        const num = cycleNumResolved - 1 - posFromEnd;
+        const dStr = cyc.completionDate.toLocaleDateString("en-US",{month:"short",day:"numeric",year:"numeric"});
+        return `
+          <tr style="border-bottom:1px solid rgba(255,255,255,0.05);">
+            <td style="padding:5px;text-align:center;color:#ff9d00;font-weight:700;">${num}</td>
+            <td style="padding:5px;text-align:center;color:#ffd700;font-weight:700;">${cyc.totalHits}</td>
+            <td style="padding:5px;text-align:center;">${colorCombo(cyc.lastCombo)}</td>
+            <td style="padding:5px;text-align:center;color:#94a3b8;font-size:10px;">${dStr}</td>
+          </tr>`;
+      }).join("");
+
+      historyHtml = `
+        <div style="margin-top:12px;border-top:2px solid rgba(255,157,0,0.2);padding-top:10px;">
+          <div style="font-size:10px;font-weight:800;color:#ff9d00;margin-bottom:6px;text-align:center;letter-spacing:0.5px;">
+            📜 LAST ${panel.historicalCycles.length} COMBO CYCLES (${panel.combosList.length} distinct combos)
+          </div>
+          <div style="background:rgba(0,0,0,0.2);border-radius:8px;overflow-x:auto;">
+            <table style="width:100%;border-collapse:collapse;font-size:11px;">
+              <thead><tr style="background:rgba(255,255,255,0.05);">
+                <th style="padding:5px;color:#94a3b8;">CYCLE</th>
+                <th style="padding:5px;color:#94a3b8;">HITS</th>
+                <th style="padding:5px;color:#94a3b8;">LAST COMBO</th>
+                <th style="padding:5px;color:#94a3b8;">DATE</th>
+              </tr></thead>
+              <tbody>${cycleRows}</tbody>
+            </table>
+          </div>
+        </div>`;
+    }
+
+    return `
+      <div class="combo-panel" data-panel="${panelIdx}" style="display:${panelIdx===0?'block':'none'};">
+        <table class="ls-table">
+          <thead><tr class="ls-header-row">
+            <td style="width:12%;color:#888;font-size:9px;text-align:center;">COMBO</td>
+            <td style="width:8%;color:#888;font-size:9px;text-align:center;">HITS</td>
+            <td style="width:9%;color:#888;font-size:9px;text-align:center;">DAYS</td>
+            <td style="width:13%;color:#888;font-size:9px;text-align:center;">STATUS</td>
+            <td style="width:8%;color:#888;font-size:9px;text-align:center;">AVG</td>
+            <td style="width:12%;color:#888;font-size:9px;text-align:center;">WEEK</td>
+            <td style="width:12%;color:#888;font-size:9px;text-align:center;">TREND</td>
+            <td style="width:26%;color:#888;font-size:9px;text-align:center;">CONFIDENCE</td>
+          </tr></thead>
+          <tbody>
+            ${rows}
+            <tr class="td-row" style="background:rgba(255,255,255,0.05);">
+              <td colspan="3" style="font-size:10px;color:#aaa;">TOTAL HITS</td>
+              <td colspan="5" style="text-align:right;padding-right:8px;font-size:13px;color:#00f2ff;font-weight:900;">n = ${panel.totalHits}</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:12px;">
+          <div style="background:rgba(255,69,58,0.08);border:1px solid rgba(255,69,58,0.25);border-radius:8px;padding:6px;">
+            <div style="font-size:10px;font-weight:800;color:#ff453a;text-align:center;margin-bottom:4px;">🔥 TOP 10 HOT</div>
+            <table style="width:100%;font-size:10px;border-collapse:collapse;">${hotRows}</table>
+          </div>
+          <div style="background:rgba(88,166,255,0.08);border:1px solid rgba(88,166,255,0.25);border-radius:8px;padding:6px;">
+            <div style="font-size:10px;font-weight:800;color:#58a6ff;text-align:center;margin-bottom:4px;">❄️ TOP 10 COLD</div>
+            <table style="width:100%;font-size:10px;border-collapse:collapse;">${coldRows}</table>
+          </div>
+        </div>
+
+        ${historyHtml}
+      </div>`;
+  }
+
+  // ---- Carousel tabs ----
+  const trackerId = `combo${comboSize}_${Math.random().toString(36).slice(2,8)}`;
+
+  const tabsHtml = panels.map((p, i) =>
+    `<button class="combo-tab" data-tracker="${trackerId}" data-panel="${i}"
+      style="flex:1;padding:8px 4px;background:${i===0?'#334155':'rgba(255,255,255,0.04)'};
+      color:${i===0?'#fff':'#94a3b8'};border:none;border-bottom:2px solid ${i===0?'#00f2ff':'transparent'};
+      font-size:10px;font-weight:800;letter-spacing:0.5px;cursor:pointer;transition:all 0.2s;">
+      ${p.label}
+    </button>`
+  ).join("");
+
+  const panelsHtml = panels.map((p, i) => renderPanel(p, i, currentCycleNumber)).join("");
+
+  // ---- Swipe container with embedded JS ----
+  return `
+    <div class="table-wrapper" id="${trackerId}">
+      <div class="table-header" style="background:#334155;">
+        <span>${title}</span>
+      </div>
+
+      <div style="display:flex;background:#1e293b;border-bottom:1px solid rgba(255,255,255,0.08);">
+        ${tabsHtml}
+      </div>
+
+      <div class="combo-swipe" data-tracker="${trackerId}" style="touch-action:pan-y;">
+        ${panelsHtml}
+      </div>
+
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:6px 10px;background:#0f172a;">
+        <button class="combo-arrow" data-tracker="${trackerId}" data-dir="-1"
+          style="background:rgba(255,255,255,0.05);color:#94a3b8;border:none;border-radius:4px;padding:4px 12px;font-size:14px;cursor:pointer;">◀</button>
+        <span style="font-size:9px;color:#64748b;">swipe or tap tabs • 24-week rolling window</span>
+        <button class="combo-arrow" data-tracker="${trackerId}" data-dir="1"
+          style="background:rgba(255,255,255,0.05);color:#94a3b8;border:none;border-radius:4px;padding:4px 12px;font-size:14px;cursor:pointer;">▶</button>
+      </div>
+    </div>
+
+    <script>
+    (function(){
+      const tid = "${trackerId}";
+      const wrap = document.getElementById(tid);
+      if (!wrap) return;
+
+      const tabs = wrap.querySelectorAll('.combo-tab');
+      const panels = wrap.querySelectorAll('.combo-panel');
+      const swipe = wrap.querySelector('.combo-swipe');
+      const arrows = wrap.querySelectorAll('.combo-arrow');
+      let active = 0;
+
+      function show(idx) {
+        if (idx < 0) idx = panels.length - 1;
+        if (idx >= panels.length) idx = 0;
+        active = idx;
+        panels.forEach((p,i) => p.style.display = i === idx ? 'block' : 'none');
+        tabs.forEach((t,i) => {
+          t.style.background = i === idx ? '#334155' : 'rgba(255,255,255,0.04)';
+          t.style.color = i === idx ? '#fff' : '#94a3b8';
+          t.style.borderBottomColor = i === idx ? '#00f2ff' : 'transparent';
+        });
+      }
+
+      tabs.forEach((t,i) => t.addEventListener('click', () => show(i)));
+      arrows.forEach(a => a.addEventListener('click', () => show(active + parseInt(a.dataset.dir,10))));
+
+      // Swipe
+      let sx = 0, sy = 0, tracking = false;
+      swipe.addEventListener('touchstart', e => {
+        sx = e.touches[0].clientX; sy = e.touches[0].clientY; tracking = true;
+      }, {passive:true});
+      swipe.addEventListener('touchend', e => {
+        if (!tracking) return;
+        tracking = false;
+        const dx = e.changedTouches[0].clientX - sx;
+        const dy = e.changedTouches[0].clientY - sy;
+        if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy)) {
+          show(active + (dx < 0 ? 1 : -1));
+        }
+      }, {passive:true});
+    })();
+    </script>
+  `;
+}
 /////END IF PICK 4 SUITS TRACKING//////////
 
-// =========================================
+// =====================================
 // PLAYWHE SHELF MARKS RENDERER
-// =========================================
+// =====================================
 function renderPlayWheShelfContainer(marks, numberColors, intervals) {
     if (!marks || marks.length === 0) {
         return '<div style="text-align:center; padding:40px; color:#666;">No mark data available</div>';
@@ -3711,7 +5317,949 @@ function renderPlayWheShelfContainer(marks, numberColors, intervals) {
 
     return html;
 }
+///////////////////////////////////////////
+/**
+ * =====================================================================
+ * PLAY WHE LINE CHART ANALYSIS CONTAINER (SHELF ENGINE VERSION - FINAL)
+ * =====================================================================
+ * This is an ANALYSIS chart, not a prediction chart.
+ * 
+ * TOP SECTION: Line-level analysis (Leaving, Meeting, Pulling, Pull Back)
+ * RULES BLOCK: Displays the specific Line Rules for BOTH Leaving and Meeting lines
+ * BOTTOM TABLE: Detailed Shelf Status of every number in the Leaving, Meeting, 
+ *               and Pulling Lines.
+ *               Columns: MARK | HITS | LAST PLAYED | PLAY | STATUS %
+ * PATTERN ANALYSIS: Articulates the full pattern logic including the most overdue 
+ *                   number across BOTH Leaving and Meeting pulling lines.
+ * PROBABILITY GRID: 2x3 grid showing the top 6 numbers best suited for
+ *                   the upcoming draw. Located inside the Pattern Analysis container.
+ * 
+ * @param {Array} weeksData - The array of week objects from your main app state.
+ * @returns {string} HTML string for the container.
+ */
+function renderPlayWheLineChartAnalysis(weeksData) {
+  if (!weeksData || weeksData.length === 0) {
+    return `
+      <div style="background: linear-gradient(135deg, #0f172a, #1e293b); border-radius: 16px; padding: 16px; margin-bottom: 15px; border: 1px solid #58a6ff; text-align:center;">
+        📊 Loading Line Chart Analysis...
+      </div>
+    `;
+  }
 
+  // ======================================
+  // CONSTANTS & MAPPINGS
+  // ======================================
+  const dayNames = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+  const slots = ["MOR", "MID", "NON", "EVE"];
+  const now = new Date();
+
+  const numToLineMap = {
+    1:1, 10:1, 19:1, 28:1, 2:2, 11:2, 20:2, 29:2, 3:3, 12:3, 21:3, 30:3,
+    4:4, 13:4, 22:4, 31:4, 5:5, 14:5, 23:5, 32:5, 6:6, 15:6, 24:6, 33:6,
+    7:7, 16:7, 25:7, 34:7, 8:8, 17:8, 26:8, 35:8, 9:9, 18:9, 27:9, 36:9
+  };
+
+  const lineColors = [
+    "#00f2ff", "#ff9f0a", "#32d74b", "#ff375f", 
+    "#ffd60a", "#bf5af2", "#1e90ff", "#ff1493", "#00ff7f"
+  ];
+
+  const lineNames = {
+    1: "1 Line", 2: "2 Line", 3: "3 Line", 4: "4 Line", 5: "5 Line",
+    6: "6 Line", 7: "7 Line", 8: "8 Line", 9: "9 Line"
+  };
+
+  const lineRules = {
+    1: { pulls: [5], description: "1 line does pull 5 line mainly because 5/1 is mark and spirit" },
+    2: { pulls: [7], description: "2 line does pull 7 line" },
+    3: { pulls: [7, 5], description: "3 line does play with 7 line and 5 line mostly to complete the 357 play" },
+    4: { pulls: [8, 7], description: "4 line does pull 8 line and 7 line" },
+    5: { pulls: [1, 9], description: "5 line does pull 1 line and 9 line" },
+    6: { pulls: [6], description: "6 line does pull 6 line" },
+    7: { pulls: [7, 4], description: "7 line does pull 7 line and 4 line" },
+    8: { pulls: [8, 4], description: "8 line does pull 8 line and 4 line" },
+    9: { pulls: [5, 4, 8], description: "9 line does pull 5 line and 4 line and sometimes 8 line" }
+  };
+
+  const spiritEmoji = {
+    1: "🔪", 2: "👵🏾", 3: "🚕", 4: "⚰️", 5: "👨🏾‍🦳", 6: "🤰🏽", 7: "🐗", 8: "🐯",
+    9: "🐮", 10: "🐒", 11: "🦅", 12: "🤴🏽", 13: "🐸", 14: "💰", 15: "🤧", 16: "💃🏽",
+    17: "🐦‍⬛", 18: "🚤", 19: "🐎", 20: "🐶", 21: "👄", 22: "🐀", 23: "🏡", 24: "🫅🏽",
+    25: "🐢", 26: "🐔", 27: "🐍", 28: "🐟", 29: "🍻", 30: "🐈‍⬛", 31: "👵🏾", 32: "🦐",
+    33: "🕷️", 34: "👨🏾‍🦯", 35: "🐍", 36: "🫏"
+  };
+
+  const monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+  // ======================================
+  // HELPER FUNCTIONS
+  // ======================================
+  
+  function getDraw(week, dayName, slot) {
+    if (!week) return null;
+    const day = week.days.find(d => d.dayName === dayName);
+    if (!day) return null;
+    const val = day.draws[slot];
+    return val && val !== "-" && val !== "PENDING" && val !== "HOLIDAY" ? parseInt(val, 10) : null;
+  }
+
+  function getLine(num) {
+    return numToLineMap[num] || null;
+  }
+
+  function getDateForDraw(week, dayName) {
+    if (!week || !week.startDate) return null;
+    const parts = week.startDate.split(" ");
+    const monthMap = {"Jan":0,"Feb":1,"Mar":2,"Apr":3,"May":4,"Jun":5,"Jul":6,"Aug":7,"Sep":8,"Oct":9,"Nov":10,"Dec":11};
+    const startDate = new Date(parts[2], monthMap[parts[1]], parseInt(parts[0]));
+    const dayIndex = dayNames.indexOf(dayName);
+    if (dayIndex === -1) return null;
+    const drawDate = new Date(startDate);
+    drawDate.setDate(startDate.getDate() + dayIndex);
+    return drawDate;
+  }
+
+  const sortedWeeks = [...weeksData].sort((a, b) => {
+    let pa = a.startDate.split(" ");
+    let pb = b.startDate.split(" ");
+    return new Date(pa[2] + "-" + pa[1] + "-" + pa[0]) - new Date(pb[2] + "-" + pb[1] + "-" + pb[0]);
+  });
+
+  const currentWeek = sortedWeeks[sortedWeeks.length - 1];
+  const previousWeek = sortedWeeks.length >= 2 ? sortedWeeks[sortedWeeks.length - 2] : currentWeek;
+
+  // ======================================
+  // 1. GET LEAVING & MEETING NUMBERS
+  // ======================================
+  function getLeavingMeetingNumbers() {
+    let leavingNumber = null, leavingSlot = null, leavingDate = null;
+    let meetingNumber = null, meetingSlot = null, meetingDate = null;
+    let meetingWeekStart = null; 
+    
+    const todayIdx = now.getDay();
+    const currentHour = now.getHours();
+    
+    let currentSlotIdx = -1;
+    if (currentHour >= 9 && currentHour < 12) currentSlotIdx = 0;
+    else if (currentHour >= 12 && currentHour < 15) currentSlotIdx = 1;
+    else if (currentHour >= 15 && currentHour < 18) currentSlotIdx = 2;
+    else if (currentHour >= 18) currentSlotIdx = 3;
+    
+    let leavingDayIdx = -1, leavingSlotIdx = -1;
+    
+    for (let d = todayIdx; d >= 0; d--) {
+      const maxSlot = (d === todayIdx) ? currentSlotIdx : slots.length - 1;
+      for (let s = maxSlot; s >= 0; s--) {
+        const draw = getDraw(currentWeek, dayNames[d], slots[s]);
+        if (draw) {
+          leavingNumber = draw; leavingDayIdx = d; leavingSlotIdx = s;
+          leavingSlot = slots[s];
+          leavingDate = getDateForDraw(currentWeek, dayNames[d]);
+          break;
+        }
+      }
+      if (leavingNumber) break;
+    }
+    
+    if (!leavingNumber) {
+      for (let w = sortedWeeks.length - 2; w >= 0; w--) {
+        const week = sortedWeeks[w];
+        for (let d = dayNames.length - 1; d >= 0; d--) {
+          for (let s = slots.length - 1; s >= 0; s--) {
+            const draw = getDraw(week, dayNames[d], slots[s]);
+            if (draw) {
+              leavingNumber = draw; leavingDayIdx = d; leavingSlotIdx = s;
+              leavingSlot = slots[s];
+              leavingDate = getDateForDraw(week, dayNames[d]);
+              break;
+            }
+          }
+          if (leavingNumber) break;
+        }
+        if (leavingNumber) break;
+      }
+    }
+    
+    if (leavingNumber && leavingDayIdx !== -1 && leavingSlotIdx !== -1) {
+      let nextDayIdx = leavingDayIdx;
+      let nextSlotIdx = leavingSlotIdx + 1;
+      
+      if (nextSlotIdx >= slots.length) {
+        nextSlotIdx = 0;
+        nextDayIdx = leavingDayIdx + 1;
+      }
+      if (nextDayIdx >= dayNames.length) nextDayIdx = 0;
+      
+      if (nextDayIdx >= 0 && nextDayIdx < dayNames.length) {
+        const targetDay = dayNames[nextDayIdx];
+        const targetSlot = slots[nextSlotIdx];
+        
+        meetingNumber = getDraw(previousWeek, targetDay, targetSlot);
+        if (meetingNumber) {
+          meetingSlot = targetSlot;
+          meetingDate = getDateForDraw(previousWeek, targetDay);
+          meetingWeekStart = previousWeek.startDate;
+        }
+        
+        if (!meetingNumber) {
+          for (let w = sortedWeeks.length - 2; w >= 0; w--) {
+            const week = sortedWeeks[w];
+            const draw = getDraw(week, targetDay, targetSlot);
+            if (draw) {
+              meetingNumber = draw;
+              meetingSlot = targetSlot;
+              meetingDate = getDateForDraw(week, targetDay);
+              meetingWeekStart = week.startDate;
+              break;
+            }
+          }
+        }
+        
+        if (!meetingNumber) {
+          const draw = getDraw(currentWeek, targetDay, targetSlot);
+          if (draw) {
+            meetingNumber = draw;
+            meetingSlot = targetSlot;
+            meetingDate = getDateForDraw(currentWeek, targetDay);
+            meetingWeekStart = currentWeek.startDate;
+          }
+        }
+      }
+    }
+    
+    return { leavingNumber, leavingSlot, leavingDate, meetingNumber, meetingSlot, meetingDate, meetingWeekStart };
+  }
+
+  const { leavingNumber, leavingSlot, leavingDate, meetingNumber, meetingSlot, meetingDate, meetingWeekStart } = getLeavingMeetingNumbers();
+
+  const leavingLine = leavingNumber ? getLine(leavingNumber) : null;
+  const meetingLine = meetingNumber ? getLine(meetingNumber) : null;
+
+  // ======================================
+  // 2. GATHER ALL DRAW HISTORY (For Shelf Logic)
+  // ======================================
+  const allDrawsChronological = [];
+  const allDrawsWithDates = [];
+  
+  for (const week of sortedWeeks) {
+    for (const day of dayNames) {
+      for (const slot of slots) {
+        const draw = getDraw(week, day, slot);
+        if (draw) {
+          const drawDate = getDateForDraw(week, day);
+          if (drawDate) {
+            allDrawsChronological.push(draw);
+            allDrawsWithDates.push({ num: draw, date: drawDate, weekStart: week.startDate, day, slot });
+          }
+        }
+      }
+    }
+  }
+
+  // ======================================
+  // Calculate hits over the LAST 24 WEEKS
+  // ======================================
+  const hits24Weeks = {};
+  for (let i = 1; i <= 36; i++) hits24Weeks[i] = 0;
+
+  const last24Weeks = sortedWeeks.slice(-24);
+  last24Weeks.forEach(week => {
+    for (const day of dayNames) {
+      for (const slot of slots) {
+        const draw = getDraw(week, day, slot);
+        if (draw) {
+          hits24Weeks[draw] = (hits24Weeks[draw] || 0) + 1;
+        }
+      }
+    }
+  });
+
+  // ======================================
+  // Calculate Average Gap for each number (over the last 200 draws)
+  // ======================================
+  const recentDraws = allDrawsChronological.slice(-200);
+  const numberGaps = {};
+  const numberLastSeen = {};
+  
+  for (let i = 1; i <= 36; i++) {
+    numberGaps[i] = [];
+    numberLastSeen[i] = null;
+  }
+
+  for (let i = 0; i < recentDraws.length; i++) {
+    const num = recentDraws[i];
+    if (numberLastSeen[num] !== null) {
+      numberGaps[num].push(i - numberLastSeen[num]);
+    }
+    numberLastSeen[num] = i;
+  }
+
+  const avgGap = {};
+  for (let i = 1; i <= 36; i++) {
+    if (numberGaps[i].length > 0) {
+      avgGap[i] = Math.round(numberGaps[i].reduce((a, b) => a + b, 0) / numberGaps[i].length);
+    } else {
+      avgGap[i] = 12;
+    }
+  }
+
+  // Calculate "Days Since Last Seen" and capture the exact draw details
+  const daysSinceLastSeen = {};
+  const lastPlayedDate = {};
+  const lastPlayedDetails = {}; 
+  
+  for (let i = 1; i <= 36; i++) {
+    let lastIdx = -1;
+    for (let j = allDrawsWithDates.length - 1; j >= 0; j--) {
+      if (allDrawsWithDates[j].num === i) {
+        lastIdx = j;
+        break;
+      }
+    }
+    
+    if (lastIdx !== -1) {
+      const record = allDrawsWithDates[lastIdx];
+      const lastDate = record.date;
+      
+      let previousNum = null;
+      if (lastIdx > 0) {
+        previousNum = allDrawsWithDates[lastIdx - 1].num;
+      }
+      
+      lastPlayedDate[i] = lastDate;
+      lastPlayedDetails[i] = { day: record.day, slot: record.slot, date: lastDate, previousNum: previousNum };
+      
+      const diffTime = Math.abs(now - lastDate);
+      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+      daysSinceLastSeen[i] = diffDays;
+    } else {
+      lastPlayedDate[i] = null;
+      lastPlayedDetails[i] = null;
+      daysSinceLastSeen[i] = 999;
+    }
+  }
+
+  // ======================================
+  // 2b. BUILD THE PROBABILITY ANALYSIS DATA
+  // ======================================
+  const candidateLines = new Set();
+  if (leavingLine) candidateLines.add(leavingLine);
+  if (leavingLine && lineRules[leavingLine]) {
+    lineRules[leavingLine].pulls.forEach(l => candidateLines.add(l));
+  }
+  if (meetingLine) candidateLines.add(meetingLine);
+  if (meetingLine && lineRules[meetingLine]) {
+    lineRules[meetingLine].pulls.forEach(l => candidateLines.add(l));
+  }
+
+  const candidateNumbers = [];
+  candidateLines.forEach(line => {
+    Object.keys(numToLineMap).forEach(key => {
+      const num = parseInt(key);
+      if (numToLineMap[num] === line) {
+        candidateNumbers.push(num);
+      }
+    });
+  });
+
+  const last24WeeksList = sortedWeeks.slice(-24);
+  const afterMeetingPlays = {}; 
+  
+  for (let i = 0; i < last24WeeksList.length; i++) {
+    const week = last24WeeksList[i];
+    const weekDraws = [];
+    for (const day of dayNames) {
+      for (const slot of slots) {
+        const draw = getDraw(week, day, slot);
+        if (draw) weekDraws.push(draw);
+      }
+    }
+    
+    for (let j = 0; j < weekDraws.length - 1; j++) {
+      if (weekDraws[j] === meetingNumber) {
+        const nextNum = weekDraws[j + 1];
+        afterMeetingPlays[nextNum] = (afterMeetingPlays[nextNum] || 0) + 1;
+      }
+    }
+  }
+
+  const scoredCandidates = candidateNumbers.map(num => {
+    const historicalPlays = afterMeetingPlays[num] || 0;
+    const shelfConf = daysSinceLastSeen[num] === 999 ? 0 : Math.min(Math.round((daysSinceLastSeen[num] / avgGap[num]) * 100), 100);
+    const hitFrequency = hits24Weeks[num] || 0;
+    const isPullLine = candidateLines.has(numToLineMap[num]) ? 10 : 0;
+    
+    const historicalScore = Math.min(historicalPlays * 8, 40); 
+    const shelfScore = (shelfConf / 100) * 30;
+    const hitScore = Math.min(hitFrequency * 2, 20);
+    
+    const totalScore = historicalScore + shelfScore + hitScore + isPullLine;
+    
+    return {
+      num,
+      line: numToLineMap[num],
+      lineName: lineNames[numToLineMap[num]],
+      lineColor: lineColors[(numToLineMap[num] - 1) % lineColors.length],
+      historicalPlays,
+      shelfConf,
+      hitFrequency,
+      totalScore,
+      lastDetails: lastPlayedDetails[num],
+      days: daysSinceLastSeen[num],
+      avg: avgGap[num]
+    };
+  });
+
+  scoredCandidates.sort((a, b) => b.totalScore - a.totalScore);
+  const top6Candidates = scoredCandidates.slice(0, 6);
+
+  let gridHtml = '';
+  top6Candidates.forEach((item, index) => {
+    let lastPlayedStr = "Never";
+    if (item.lastDetails) {
+      const d = item.lastDetails.date;
+      const dayNum = d.getDate();
+      const monthStr = monthNames[d.getMonth()];
+      lastPlayedStr = `${dayNum} ${monthStr}`;
+    }
+
+    let statusColor = "#ff9f0a";
+    if (item.shelfConf >= 100) statusColor = "#ff453a";
+    else if (item.shelfConf >= 75) statusColor = "#ffd60a";
+    
+    gridHtml += `
+      <div style="background: rgba(0,0,0,0.25); border-radius: 8px; padding: 6px; border: 1px solid ${item.lineColor}44; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; min-height: 70px;">
+        <div style="font-size: 13px; font-weight: 900; color: #fff; line-height: 1.1;">${item.num} ${spiritEmoji[item.num] || ''}</div>
+        <div style="font-size: 7px; color: ${item.lineColor}; font-weight: 700; margin-top: 1px;">${item.lineName}</div>
+        <div style="font-size: 8px; color: #cbd5e1; margin-top: 2px; font-weight: 700;">${item.hitFrequency}x • <span style="color: ${statusColor};">${item.shelfConf}%</span></div>
+        <div style="font-size: 7px; color: #64748b; margin-top: 1px;">${lastPlayedStr}</div>
+      </div>
+    `;
+  });
+
+  // ======================================
+  // 3. BUILD THE TOP SECTION (LINE-LEVEL ANALYSIS)
+  // ======================================
+  let topSectionHtml = '';
+  let activeMeetingLines = []; 
+
+  if (leavingLine && lineRules[leavingLine]) {
+    const rule = lineRules[leavingLine];
+    const pullLines = rule.pulls;
+    
+    const linesToShow = [leavingLine];
+    if (meetingLine) linesToShow.push(meetingLine);
+    pullLines.forEach(l => linesToShow.push(l));
+    
+    const uniqueLines = [...new Set(linesToShow)];
+
+    for (const line of uniqueLines) {
+      const isLeaving = (line === leavingLine);
+      const isMeeting = (line === meetingLine);
+      const isPulling = pullLines.includes(line);
+      
+      const lineNumbers = Object.keys(numToLineMap).filter(key => numToLineMap[key] === line).map(Number);
+      const color = lineColors[(line - 1) % lineColors.length];
+      
+      let dueCount = 0;
+      let warmCount = 0;
+      let justPlayedCount = 0;
+      
+      lineNumbers.forEach(num => {
+        const days = daysSinceLastSeen[num];
+        const avg = avgGap[num];
+        if (days > avg) dueCount++;
+        else if (days > (avg * 0.75)) warmCount++;
+        else if (days === 0) justPlayedCount++;
+      });
+
+      let status = "PULL BACK";
+      let statusColor = "#ff9f0a";
+      
+      if (isLeaving) {
+        status = "LEAVING";
+        statusColor = "#ff9d00";
+      } else if (isMeeting) {
+        status = "MEETING";
+        statusColor = "#1e90ff";
+      } else if (isPulling) {
+        if (dueCount > 0) {
+          status = "🔥 DUE PULL";
+          statusColor = "#ff453a";
+        } else if (warmCount > 0) {
+          status = "♨️ WARM";
+          statusColor = "#ffd60a";
+        } else {
+          status = "PULLING";
+          statusColor = "#32d74b";
+        }
+        activeMeetingLines.push({ line, name: lineNames[line], color, dueCount });
+      }
+
+      topSectionHtml += `
+        <div style="display: flex; align-items: center; justify-content: space-between; padding: 6px 8px; border-bottom: 1px solid rgba(255,255,255,0.05); ${isLeaving ? 'background: rgba(255, 157, 0, 0.1); border-left: 3px solid #ff9d00;' : ''} ${isMeeting ? 'background: rgba(30, 144, 255, 0.1); border-left: 3px solid #1e90ff;' : ''} ${isPulling ? 'background: rgba(50, 215, 75, 0.05); border-left: 3px solid #32d74b;' : ''}">
+          <div style="min-width: 65px; display: flex; align-items: center; gap: 4px;">
+            <span style="font-weight: 800; font-size: 11px; color: ${color};">${lineNames[line]}</span>
+            ${isLeaving ? '<span style="font-size: 8px; color: #ff9d00;">🔵</span>' : ''}
+            ${isMeeting ? '<span style="font-size: 8px; color: #1e90ff;">⚡️🟢</span>' : ''}
+            ${isPulling ? '<span style="font-size: 8px; color: #32d74b;">⚡</span>' : ''}
+          </div>
+          <div style="flex: 1; text-align: left; padding: 0 5px;">
+            <span style="font-size: 8px; color: #64748b;">${dueCount} Due • ${warmCount} Warm • ${justPlayedCount} Just Played</span>
+          </div>
+          <div style="min-width: 65px; text-align: right;">
+            <span style="font-size: 8px; font-weight: 800; color: ${statusColor}; letter-spacing: 0.5px;">${status}</span>
+          </div>
+        </div>
+      `;
+    }
+  } else {
+    topSectionHtml = `<div style="text-align:center; padding:20px; color:#64748b; font-size:12px;">No active Line Rule available for the current leaving number.</div>`;
+  }
+
+  // ======================================
+  // 3b. BUILD THE RULES BLOCK
+  // ======================================
+  let rulesBlockHtml = '';
+  if (leavingLine && lineRules[leavingLine]) {
+    const leavingRule = lineRules[leavingLine];
+    const leavingPullNames = leavingRule.pulls.map(l => lineNames[l]).join(" and ");
+    
+    let meetingRuleHtml = '';
+    if (meetingLine && lineRules[meetingLine]) {
+      const meetingRule = lineRules[meetingLine];
+      const meetingPullNames = meetingRule.pulls.map(l => lineNames[l]).join(" and ");
+      meetingRuleHtml = `
+        <div style="margin-top: 6px; padding-top: 6px; border-top: 1px dashed rgba(255,255,255,0.1);">
+          <div style="font-size: 8px; color: #1e90ff; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 2px;">
+            Meeting Line Rule
+          </div>
+          <div style="font-size: 9px; color: #cbd5e1; line-height: 1.3;">
+            <b>${lineNames[meetingLine]}</b> is pulling <b>${meetingPullNames}</b>.
+          </div>
+          <div style="font-size: 8px; color: #64748b; margin-top: 2px;">
+            ${meetingRule.description}
+          </div>
+        </div>
+      `;
+    }
+
+    rulesBlockHtml = `
+      <div style="background: rgba(255,255,255,0.03); border-radius: 8px; padding: 6px 10px; margin-top: 8px; border-left: 3px solid #ff9d00;">
+        <div style="font-size: 8px; color: #ff9d00; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 2px;">
+          Active Line Rule
+        </div>
+        <div style="font-size: 9px; color: #cbd5e1; line-height: 1.3;">
+          <b>${lineNames[leavingLine]}</b> is pulling <b>${leavingPullNames}</b>.
+        </div>
+        <div style="font-size: 8px; color: #64748b; margin-top: 2px;">
+          ${leavingRule.description}
+        </div>
+        ${meetingRuleHtml}
+      </div>
+    `;
+  }
+
+  // ======================================
+  // 4. BUILD THE BOTTOM TABLE (SHELF STATUS)
+  // ======================================
+  
+  let shelfTableRows = '';
+  
+  const relevantLines = [leavingLine];
+  if (meetingLine) relevantLines.push(meetingLine);
+  if (leavingLine && lineRules[leavingLine]) {
+    lineRules[leavingLine].pulls.forEach(pullLine => {
+      if (!relevantLines.includes(pullLine)) {
+        relevantLines.push(pullLine);
+      }
+    });
+  }
+  if (meetingLine && lineRules[meetingLine]) {
+    lineRules[meetingLine].pulls.forEach(pullLine => {
+      if (!relevantLines.includes(pullLine)) {
+        relevantLines.push(pullLine);
+      }
+    });
+  }
+  
+  const uniqueRelevantLines = [...new Set(relevantLines)];
+  
+  let relevantNumbers = [];
+  uniqueRelevantLines.forEach(line => {
+    const lineNumbers = Object.keys(numToLineMap).filter(key => numToLineMap[key] === line).map(Number);
+    lineNumbers.forEach(num => {
+      relevantNumbers.push({
+        num,
+        line,
+        lineName: lineNames[line],
+        lineColor: lineColors[(line - 1) % lineColors.length],
+        days: daysSinceLastSeen[num],
+        avg: avgGap[num],
+        hits: hits24Weeks[num] || 0,
+        lastDate: lastPlayedDate[num],
+        lastDetails: lastPlayedDetails[num],
+        conf: daysSinceLastSeen[num] === 999 ? 0 : Math.min(Math.round((daysSinceLastSeen[num] / avgGap[num]) * 100), 100),
+        isLeaving: (num === leavingNumber),
+        isMeeting: (num === meetingNumber),
+        isPulling: (leavingLine && lineRules[leavingLine] && lineRules[leavingLine].pulls.includes(line))
+      });
+    });
+  });
+
+  relevantNumbers.sort((a, b) => {
+    if (a.isLeaving) return -1;
+    if (b.isLeaving) return 1;
+    if (a.isMeeting) return -1;
+    if (b.isMeeting) return 1;
+    return b.conf - a.conf;
+  });
+
+  relevantNumbers.forEach(item => {
+    let statusText = "PULL BACK";
+    let statusColor = "#ff9f0a";
+    
+    if (item.isLeaving) {
+      statusText = "JUST PLAYED";
+      statusColor = "#32d74b";
+    } else if (item.isMeeting) {
+      statusText = "MEETING";
+      statusColor = "#1e90ff";
+    } else if (item.days > item.avg) {
+      statusText = "🔥 DUE NOW";
+      statusColor = "#ff453a";
+    } else if (item.days > (item.avg * 0.75)) {
+      statusText = "♨️ WARM";
+      statusColor = "#ffd60a";
+    }
+
+    let lastPlayedStr = "Never";
+    if (item.lastDetails) {
+      const d = item.lastDetails.date;
+      const dayNum = d.getDate();
+      const monthStr = monthNames[d.getMonth()];
+      const slotStr = item.lastDetails.slot;
+      lastPlayedStr = `${dayNum} ${monthStr} • ${slotStr}`;
+    }
+    
+    let playSequence = "—";
+    if (item.isMeeting && meetingWeekStart) {
+      const meetingWeek = sortedWeeks.find(w => w.startDate === meetingWeekStart);
+      if (meetingWeek) {
+        let foundIdx = -1;
+        const meetingWeekDraws = [];
+        for (const day of dayNames) {
+          for (const slot of slots) {
+            const draw = getDraw(meetingWeek, day, slot);
+            if (draw) meetingWeekDraws.push(draw);
+          }
+        }
+        for (let i = meetingWeekDraws.length - 1; i >= 0; i--) {
+          if (meetingWeekDraws[i] === item.num) {
+            foundIdx = i;
+            break;
+          }
+        }
+        if (foundIdx > 0) {
+          playSequence = `${meetingWeekDraws[foundIdx - 1]}/${item.num}`;
+        } else if (foundIdx === 0) {
+          playSequence = `—/${item.num}`;
+        }
+      }
+    } else if (item.lastDetails && item.lastDetails.previousNum) {
+      playSequence = `${item.lastDetails.previousNum}/${item.num}`;
+    } else if (item.lastDetails) {
+      playSequence = `—/${item.num}`;
+    }
+
+    let rowBg = "transparent";
+    if (item.isLeaving) rowBg = "rgba(255, 157, 0, 0.1)";
+    else if (item.isMeeting) rowBg = "rgba(30, 144, 255, 0.1)";
+
+    const onclickAttr = `onclick="if(typeof showNumberHistory === 'function') { showNumberHistory(${item.num}); } else { console.log('History for ${item.num}:', '${playSequence}'); }"`;
+
+    shelfTableRows += `
+      <div style="display: flex; align-items: center; justify-content: space-between; padding: 5px 8px; border-bottom: 1px solid rgba(255,255,255,0.03); background: ${rowBg}; cursor: pointer;" ${onclickAttr}>
+        <div style="min-width: 80px; display: flex; align-items: center; gap: 4px;">
+          <span style="font-size: 11px; font-weight: 800; color: #fff;">${item.num} ${spiritEmoji[item.num] || ''}</span>
+          <span style="font-size: 7px; color: ${item.lineColor}; font-weight: 700;">${item.lineName}</span>
+          ${item.isLeaving ? '<span style="font-size: 7px; color: #ff9d00;">🔵</span>' : ''}
+          ${item.isMeeting ? '<span style="font-size: 7px; color: #1e90ff;">⚡️🟢</span>' : ''}
+        </div>
+        
+        <div style="min-width: 30px; text-align: center;">
+          <span style="font-size: 10px; font-weight: 700; color: ${item.hits > 0 ? '#fff' : '#64748b'};">${item.hits}</span>
+        </div>
+
+        <div style="min-width: 70px; text-align: center; font-size: 9px; color: #cbd5e1;">
+          ${lastPlayedStr}
+        </div>
+
+        <div style="min-width: 50px; text-align: center; font-size: 9px; color: #94a3b8;">
+          ${playSequence}
+        </div>
+
+        <div style="min-width: 60px; text-align: right;">
+          <div style="font-size: 9px; font-weight: 900; color: ${statusColor};">${item.conf}%</div>
+          <div style="font-size: 6px; color: ${statusColor}; letter-spacing: 0.5px;">${statusText}</div>
+        </div>
+      </div>
+    `;
+  });
+
+  // ======================================
+  // 5. ARTICULATE THE PATTERN (EXPANDED TO INCLUDE MEETING LINE PULLS)
+  // ======================================
+  let patternText = "Awaiting data...";
+  if (leavingLine && lineRules[leavingLine]) {
+    const rule = lineRules[leavingLine];
+    const pullNames = rule.pulls.map(l => lineNames[l]).join(" and ");
+    
+    // ======================================
+    // EXPANDED: Find most overdue number across BOTH Leaving AND Meeting pulling lines
+    // ======================================
+    let mostOverdueNum = null;
+    let maxOverdueRatio = 0;
+    let mostOverdueSource = ""; // Track which line pool the number came from
+    
+    // 1. Check Leaving Line's pulling lines
+    rule.pulls.forEach(pullLine => {
+      const lineNumbers = Object.keys(numToLineMap).filter(key => numToLineMap[key] === pullLine).map(Number);
+      lineNumbers.forEach(num => {
+        const ratio = daysSinceLastSeen[num] / avgGap[num];
+        if (ratio > maxOverdueRatio) {
+          maxOverdueRatio = ratio;
+          mostOverdueNum = num;
+          mostOverdueSource = "Leaving";
+        }
+      });
+    });
+    
+    // 2. Check Meeting Line's pulling lines (if a meeting line exists)
+    if (meetingLine && lineRules[meetingLine]) {
+      lineRules[meetingLine].pulls.forEach(pullLine => {
+        const lineNumbers = Object.keys(numToLineMap).filter(key => numToLineMap[key] === pullLine).map(Number);
+        lineNumbers.forEach(num => {
+          const ratio = daysSinceLastSeen[num] / avgGap[num];
+          if (ratio > maxOverdueRatio) {
+            maxOverdueRatio = ratio;
+            mostOverdueNum = num;
+            mostOverdueSource = "Meeting";
+          }
+        });
+      });
+    }
+
+    patternText = `The <b>${lineNames[leavingLine]}</b> (${leavingNumber}) is leaving.`;
+    if (meetingLine) {
+      patternText += ` It is meeting the <b>${lineNames[meetingLine]}</b> (${meetingNumber}).`;
+    }
+    
+    patternText += ` Based on the Play Whe Line Rules, the Leaving Line is pulling <b>${pullNames}</b>. ${rule.description}.`;
+    
+    if (meetingLine && lineRules[meetingLine]) {
+      const meetingRule = lineRules[meetingLine];
+      const meetingPullNames = meetingRule.pulls.map(l => lineNames[l]).join(" and ");
+      patternText += ` The Meeting Line (${lineNames[meetingLine]}) is also pulling <b>${meetingPullNames}</b>. ${meetingRule.description}.`;
+    }
+    
+    // Expanded: Now states which pool the most overdue number came from
+    if (mostOverdueNum) {
+      patternText += ` The most overdue number across both the Leaving and Meeting pulling lines is <b>${mostOverdueNum} ${spiritEmoji[mostOverdueNum] || ''}</b> (${daysSinceLastSeen[mostOverdueNum]} days since last seen, avg gap ${avgGap[mostOverdueNum]} days) from the <b>${mostOverdueSource} Line's pull pool</b>. This is a strong <b>Pull Back</b> mark.`;
+    } else {
+      patternText += ` No strong pull back mark found in the pulling lines right now.`;
+    }
+  }
+
+  const leavingDisplay = leavingNumber 
+    ? `${leavingNumber} ${spiritEmoji[leavingNumber] || ''}` 
+    : "N/A";
+    
+  const meetingDisplay = meetingNumber
+    ? `${meetingNumber} ${spiritEmoji[meetingNumber] || ''}`
+    : "N/A";
+
+  // ======================================
+  // RENDER THE CONTAINER
+  // ======================================
+  return `
+    <style>
+      .line-analysis-container {
+        background: var(--bg-start, linear-gradient(135deg, #0f172a, #1e293b));
+        border-radius: 16px;
+        padding: 12px;
+        margin-bottom: 15px;
+        border: 1px solid #ff9d00;
+        font-family: 'Inter', sans-serif;
+        box-shadow: 0 4px 15px rgba(0,0,0,0.3);
+      }
+      .line-analysis-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 10px;
+        padding-bottom: 8px;
+        border-bottom: 1px solid rgba(255,255,255,0.1);
+      }
+      .line-analysis-title {
+        font-size: 14px;
+        font-weight: 800;
+        color: #ff9d00;
+        letter-spacing: 0.5px;
+      }
+      .line-analysis-subtitle {
+        font-size: 8px;
+        color: #64748b;
+        margin-top: 2px;
+      }
+      .line-analysis-badges {
+        display: flex;
+        gap: 8px;
+      }
+      .line-analysis-leaving-badge {
+        background: rgba(255, 157, 0, 0.15);
+        border: 1px solid #ff9d00;
+        border-radius: 8px;
+        padding: 4px 10px;
+        text-align: center;
+      }
+      .line-analysis-meeting-badge {
+        background: rgba(30, 144, 255, 0.15);
+        border: 1px solid #1e90ff;
+        border-radius: 8px;
+        padding: 4px 10px;
+        text-align: center;
+      }
+      .line-analysis-badge-label {
+        font-size: 7px;
+        font-weight: 700;
+        letter-spacing: 1px;
+      }
+      .line-analysis-badge-value {
+        font-size: 14px;
+        font-weight: 900;
+        color: #fff;
+      }
+      .line-analysis-table-header {
+        display: flex;
+        justify-content: space-between;
+        padding: 4px 8px;
+        font-size: 7px;
+        color: #64748b;
+        font-weight: 700;
+        letter-spacing: 0.5px;
+        text-transform: uppercase;
+        border-bottom: 1px solid rgba(255,255,255,0.05);
+      }
+      .line-analysis-pattern {
+        background: rgba(255,255,255,0.03);
+        border-radius: 8px;
+        padding: 8px 10px;
+        margin-top: 10px;
+        border-left: 3px solid #1e90ff;
+        font-size: 10px;
+        color: #cbd5e1;
+        line-height: 1.4;
+      }
+      .line-analysis-footer {
+        text-align: center;
+        padding-top: 8px;
+        margin-top: 8px;
+        border-top: 1px solid rgba(255,255,255,0.05);
+        font-size: 7px;
+        color: #64748b;
+      }
+      .shelf-table-header {
+        display: flex;
+        justify-content: space-between;
+        padding: 4px 8px;
+        font-size: 7px;
+        color: #64748b;
+        font-weight: 700;
+        letter-spacing: 0.5px;
+        text-transform: uppercase;
+        border-bottom: 1px solid rgba(255,255,255,0.05);
+        margin-top: 15px;
+      }
+      .shelf-table-header span:nth-child(1) { min-width: 80px; text-align: left; }
+      .shelf-table-header span:nth-child(2) { min-width: 30px; text-align: center; }
+      .shelf-table-header span:nth-child(3) { min-width: 70px; text-align: center; }
+      .shelf-table-header span:nth-child(4) { min-width: 50px; text-align: center; }
+      .shelf-table-header span:nth-child(5) { min-width: 60px; text-align: right; }
+      .probability-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr 1fr;
+        gap: 6px;
+        margin-top: 8px;
+      }
+      .probability-grid-title {
+        font-size: 8px;
+        color: #1e90ff;
+        font-weight: 800;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        margin-top: 10px;
+        margin-bottom: 4px;
+      }
+    </style>
+
+    <div class="line-analysis-container">
+      
+      <div class="line-analysis-header">
+        <div>
+          <div class="line-analysis-title">📈 LINE CHART ANALYSIS</div>
+          <div class="line-analysis-subtitle">Shelf-based pull analysis • Not a prediction</div>
+        </div>
+        <div class="line-analysis-badges">
+          <div class="line-analysis-leaving-badge">
+            <div class="line-analysis-badge-label" style="color: #ff9d00;">LEAVING</div>
+            <div class="line-analysis-badge-value">${leavingDisplay}</div>
+          </div>
+          <div class="line-analysis-meeting-badge">
+            <div class="line-analysis-badge-label" style="color: #1e90ff;">MEETING</div>
+            <div class="line-analysis-badge-value">${meetingDisplay}</div>
+          </div>
+        </div>
+      </div>
+
+      <div style="font-size: 8px; color: #64748b; font-weight: 700; text-transform: uppercase; margin-bottom: 6px; padding-left: 4px;">
+        Line Analysis
+      </div>
+      <div style="max-height: 150px; overflow-y: auto; -webkit-overflow-scrolling: touch; background: rgba(0,0,0,0.15); border-radius: 8px; padding: 4px;">
+        ${topSectionHtml}
+      </div>
+
+      ${rulesBlockHtml}
+
+      <div class="shelf-table-header">
+        <span>MARK</span>
+        <span>HITS</span>
+        <span>LAST PLAYED</span>
+        <span>PLAY</span>
+        <span>STATUS %</span>
+      </div>
+      <div style="max-height: 250px; overflow-y: auto; -webkit-overflow-scrolling: touch;">
+        ${shelfTableRows}
+      </div>
+
+      <!-- PATTERN ANALYSIS CONTAINER (Expanded to include Meeting Line pulls) -->
+      <div class="line-analysis-pattern">
+        <b>Pattern Analysis:</b> ${patternText}
+        
+        <div class="probability-grid">
+          ${gridHtml}
+        </div>
+      </div>
+
+      <div class="line-analysis-footer">
+        CODEWITHGLASGOW 🌐 LINE CHART ANALYSIS • ${new Date().toLocaleDateString()}
+      </div>
+
+    </div>
+  `;
+}
+
+//////////////////////////////////////////
 
 // ============MAIN WEBVIEW LOGIC=========
 //////////////////////////////////////////
@@ -3954,10 +6502,10 @@ Object.keys(p4Suites).forEach(s =>
   p4SuiteStats[s] = p4Suites[s].reduce((sum, num) => sum + (p4TotalHits[num] || 0), 0)
 );
 
-// =========================================
+// =====================================
 // PLAYWHE SHELF MARKS PROCESSING
 // Extracted from WhePlay Shelf Analysis
-// =========================================
+// =====================================
 function processShelfData(weeksData) {
     if (!weeksData || weeksData.length === 0) {
         return { marks: [], intervals: {}, numberColors: {}, markInfo: {} };
@@ -4080,7 +6628,7 @@ function processShelfData(weeksData) {
   let html = `<html><head><meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
     <style>
     
-       /* ===== SPLASH SCREEN STYLES ===== */
+  /* ===== SPLASH SCREEN STYLES ===== */
     #splash-screen {
       position: fixed;
       inset: 0;
@@ -4412,7 +6960,7 @@ body.light-mode .tab.active {
   <br>
   ${renderDrawPreview(pwData.data.weeks)}
   <div id="pw-tab" class="container active">
-
+  
       <div class="branding">
     <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 2px; padding: 0 2px;">
       <span>PLAY WHE</span>
@@ -4420,8 +6968,20 @@ body.light-mode .tab.active {
       <span style="color: #00000; font-size: 10px;">Last: ${globalLastDraw}</span>
     </div>
   </div>
+  <br>
+  <!-- PlayWheFullScreenChartv1-->
   ${playWheChartOnly(allWeeksPW, "pw")}
   <br>
+  <!-- PlayWheFullScreenChartv2-->
+  ${playWheChartOnlyv2(allWeeksPW, "pw")}
+  <br>
+  <!--Green PlayWhe Chart v1-->
+  ${renderPlayWheGreenChart(pwData.data.weeks)}
+  <br>
+  <!--Green PlayWhe Chart v2-->
+  ${renderPlayWheGreenChartv2(pwData.data.weeks)}
+  <br>
+  <!--PlayWhe Day To Day Chart-->
   <div class="branding">
     <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 2px; padding: 0 2px;">
       <span>PLAY WHE</span>
@@ -4429,139 +6989,228 @@ body.light-mode .tab.active {
       <span style="color: #00000; font-size: 10px;">Last: ${globalLastDraw}</span>
     </div>
   </div>
+  <br>
   ${buildTable(pwData.data.weeks.slice(-2), "P2WHE")}
   <br>
-    <div class="branding">
-    <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 2px; padding: 0 2px;">
-  <span>HISTORICAL DAY TO DAY VIEW</span>
-      <span style="color: #00000; font-size: 10px;">Last: ${globalLastDraw}</span>
-    </div>
-  </div>
-  ${renderCarouselWithCurrentPW(allWeeksPW, "pw")}
-  <br>
-        <div class="branding">
-    <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 2px; padding: 0 2px;">
-      <span>PLAY WHE</span>
-      <span>DAY TO DAY LINE CHART</span>
-      <span style="color: #00000; font-size: 10px;">Last: ${globalLastDraw}</span>
-    </div>
-  </div>
-  ${buildLineTable(pwData.data.weeks.slice(-2))}
-  <br>
-    <div class="branding">
-    <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 2px; padding: 0 2px;">
-  <span>PLAY WHE LINE CHART HEAT MAP</span>
-      <span style="color: #00000; font-size: 10px;">Last: ${globalLastDraw}</span>
-    </div>
-  </div>
-${renderLSChart(
-  `LINES (${dynamicStartHeader} — PRESENT) • Cycle ${pwCycleNum} • ${filteredPW.length}/36`,
-  "L", lines, lineStats, lsPwTotalHits, filteredPW.length, pwData.data.weeks, "PLAY_WHE"
-)}
-  <br>
-    <div class="branding">
-    <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 2px; padding: 0 2px;">
-  <span>PLAY WHE SUITS CHART HEAT MAP</span>
-      <span style="color: #00000; font-size: 10px;">Last: ${globalLastDraw}</span>
-    </div>
-  </div>
-${renderLSChart(
-  `SUITES (${dynamicStartHeader} — PRESENT) • Cycle ${pwCycleNum} • ${filteredPW.length}/36`,
-  "S", suites, suiteStats, lsPwTotalHits, filteredPW.length, pwData.data.weeks, "PLAY_WHE"
-)}
-  <br>
-  ${renderChartPlayMapping(pwData.data.weeks)}
-  <br>
-  ${renderPlayWheChartMapping(pwData.data.weeks)}
-  <br>
-  <div class="branding">
-    <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 2px; padding: 0 2px;">
-      <span>PLAY WHE STATS UPDATE</span>
-      <span style="color: #00000; font-size: 10px;">Last: ${globalLastDraw}</span>
-    </div>
-  </div>
-  ${generatePlayWheReadout(pwData.data.weeks)}
-  <br>
-  ${renderHotAndOverdue(pwData.data.weeks)}
-  <br>
-    <div class="branding">
-    <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 2px; padding: 0 2px;">
-  <span>LINES & SUITES MISSING STATS</span>
-      <span style="color: #00000; font-size: 10px;">Last: ${globalLastDraw}</span>
-    </div>
-  </div>
-  ${renderIntelligentAnalysis(pwData.data.weeks)}
-  <br>
-      <div class="branding">
-    <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 2px; padding: 0 2px;">
-  <span>LINES & SUITES MISSING STATS</span>
-      <span style="color: #00000; font-size: 10px;">Last: ${globalLastDraw}</span>
-    </div>
-  </div>
-  ${renderLastWeekMissing(pwData.data.weeks)}
-  <br>
+  ${renderPlayWheWhiteBoard(pwData.data.weeks)}
+
+    ${renderPlayWheHotColdMarks(pwData.data.weeks)}
+    <br>
+    ${renderPlayWheWhiteBoardv2(pwData.data.weeks)}
+    
+    ${renderPlayWheHotColdMarksEnhanced(pwData.data.weeks)}
+    <br>
+<!-- 1/16, 1/8, 1/9, 1/7, 1/5 Charts v1-->
+    ${renderPlayWheFiveCharts(pwData.data.weeks)}
+    <br>
+<!-- 1/16, 1/8, 1/9, 1/7, 1/5 Charts v2-->
+    ${renderPlayWheFiveChartsv2(pwData.data.weeks)}
+    <br>
+<!-- 1/16, 1/8, 1/9, 1/7, 1/5 Charts v3-->
+    ${renderPlayWheFiveChartsv3(pwData.data.weeks)}
+    <br>
+  <!- 3 YR LOOK BACK CHART PW PKII PIKIV ->
+    ${renderThreeYearHistory(pwData.data.weeks, p2Data.data.weeks, p4Data.data.weeks)}
+    <br>
+<!-- Line Rules & Mapping v1-->
+    ${renderPlayWheLineRulesMapping(pwData.data.weeks)}
+    <br>
+    <!-- Line Rules & Mapping v2-->
+    ${renderPlayWheLineRulesMappingv2(pwData.data.weeks)}
+    <br>
+<!-- Pattern & Rules Analysis -->
+    ${renderPlayWhePatternRulesAnalysis(pwData.data.weeks)}
+    <br>
+    ${renderPlayWheLineRules(pwData.data.weeks)}
+    <br>
+    <!--PlayWhe Calendar Chart Play-->
   <div class="branding">
     <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 2px; padding: 0 2px;">
       <span>CALENDAR DAILY CHART PLAY</span>
       <span style="color: #00000; font-size: 10px;">Last: ${globalLastDraw}</span>
     </div>
   </div>
+  <br>
   ${renderCalendarMonthDisplay(pwData.data.weeks)}
   <br>
-  ${renderOneSixteenAnalysis(pwData.data.weeks)}
+  <!--PlayWhe Day To Day Line Chart-->
+  <div class="branding">
+    <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 2px; padding: 0 2px;">
+      <span>PLAY WHE</span>
+      <span>DAY TO DAY LINE CHART</span>
+      <span style="color: #00000; font-size: 10px;">Last: ${globalLastDraw}</span>
+    </div>
+  </div>
   <br>
-    <!-- SHELF MARKS CONTAINER -->
+  ${buildLineTable(pwData.data.weeks.slice(-2))}
+  <br>
+  ${renderPlayWheLineChartAnalysis(pwData.data.weeks)}
+    <br>
+ <!--PlayWhe Missing Lines/Suites Chart-->
+  <div class="branding">
+    <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 2px; padding: 0 2px;">
+  <span>LINES & SUITES MISSING STATS</span>
+      <span style="color: #00000; font-size: 10px;">Last: ${globalLastDraw}</span>
+    </div>
+  </div>
+  <br>
+  ${renderIntelligentAnalysis(pwData.data.weeks)}
+  <br>
+  <!--PlayWhe 2 Weeks Missing L&S Chart-->
+  <div class="branding">
+    <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 2px; padding: 0 2px;">
+  <span>LINES & SUITES MISSING STATS</span>
+      <span style="color: #00000; font-size: 10px;">Last: ${globalLastDraw}</span>
+    </div>
+  </div>
+  <br>
+  ${renderLastWeekMissing(pwData.data.weeks)}
+  <br>
+    ${renderPlayWheWhiteBoardv3(pwData.data.weeks)}
+    <br>
+  <!-- SHELF MARKS CONTAINER -->
   ${(() => {
     const shelfData = processShelfData(allWeeksPW);
     return renderPlayWheShelfContainer(shelfData.marks, shelfData.numberColors, shelfData.intervals);
   })()}
   <br>
-  ${renderMonthlyCarousel(allWeeksPW, "P2WHE", "PLAY WHE")}
-  <br>
-      <div class="branding">
+  <!--PlayWhe Line Heat Map Tracking-->
+    <div class="branding">
     <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 2px; padding: 0 2px;">
-      <span>PICK 2</span>
-      <span>DAY TO DAY CHART</span>
+  <span>PLAY WHE LINE CHART HEAT MAP</span>
       <span style="color: #00000; font-size: 10px;">Last: ${globalLastDraw}</span>
     </div>
   </div>
-    ${buildTable(p2Data.data.weeks.slice(-2), "PIKII")}
-<br>
+  <br>
+${renderLSChart(
+  `LINES (${dynamicStartHeader} — PRESENT) • Cycle ${pwCycleNum} • ${filteredPW.length}/36`,
+  "L", lines, lineStats, lsPwTotalHits, filteredPW.length, pwData.data.weeks, "PLAY_WHE"
+)}
+  <br>
+  <!--PlayWhe Suits Heat Map Tracking-->
+    <div class="branding">
+    <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 2px; padding: 0 2px;">
+  <span>PLAY WHE SUITS CHART HEAT MAP</span>
+      <span style="color: #00000; font-size: 10px;">Last: ${globalLastDraw}</span>
+    </div>
+  </div>
+  <br>
+${renderLSChart(
+  `SUITES (${dynamicStartHeader} — PRESENT) • Cycle ${pwCycleNum} • ${filteredPW.length}/36`,
+  "S", suites, suiteStats, lsPwTotalHits, filteredPW.length, pwData.data.weeks, "PLAY_WHE"
+)}
+  <br>
+  <!--Title Needed Here-->
+  ${renderChartPlayMapping(pwData.data.weeks)}
+  <br>
+  <!--Title Needed Here-->
+  ${renderPlayWheChartMapping(pwData.data.weeks)}
+  <br>
+  <!--Historical PlayWhe DTD Chart-->
     <div class="branding">
     <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 2px; padding: 0 2px;">
   <span>HISTORICAL DAY TO DAY VIEW</span>
       <span style="color: #00000; font-size: 10px;">Last: ${globalLastDraw}</span>
     </div>
   </div>
-  ${renderCarouselWithCurrentP2(allWeeksP2, "p2")}
-  
-  ${renderPick2CurrentWeekPlays(allWeeksP2, "p2")}
-<br>
+  <br>
+  ${renderCarouselWithCurrentPW(allWeeksPW, "pw")}
+  <br>
+  <!--Play Whe Stats Report Chart-->
+  <div class="branding">
+    <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 2px; padding: 0 2px;">
+  <span>PLAY WHE STATS REPORT UPDATE</span>
+      <span style="color: #00000; font-size: 10px;">Last: ${globalLastDraw}</span>
+    </div>
+  </div>
+  <br>
+  ${generatePlayWheReadout(pwData.data.weeks)}
+  <br>
+  <!--Hot and Overdue Chart-->
+  ${renderHotAndOverdue(pwData.data.weeks)}
+  <br>
+  <!--Title Needed Here-->
+  ${renderProbabilityAnalysis(pwData.data.weeks, "P2WHE", { 
+  hitData: lsPwTotalHits, 
+  title: `LINES (${dynamicStartHeader})` 
+})}
+  <br>
+  <!--Title Needed Here-->
+  ${renderOneSixteenAnalysis(pwData.data.weeks)}
+  <br>
+  <!--Title Needed Here-->
+  ${renderMonthlyCarousel(allWeeksPW, "P2WHE", "PLAY WHE")}
+  <br>
+  <!--Title Needed Here-->
+  <div class="branding">
+    <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 2px; padding: 0 2px;">
+      <span>PICK 2</span>
+      <span>DAY TO DAY CHART</span>
+      <span style="color: #00000; font-size: 10px;">Last: ${globalLastDraw}</span>
+    </div>
+  </div>
+  <br>
+    ${buildTable(p2Data.data.weeks.slice(-2), "PIKII")}
+  <br>
+  <!--Title Needed Here-->
+  <div class="branding">
+    <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 2px; padding: 0 2px;">
+      <span>PICK 2</span>
+      <span>DAY TO DAY LINE CHART</span>
+      <span style="color: #00000; font-size: 10px;">Last: ${globalLastDraw}</span>
+    </div>
+  </div>
+  <br>
+  ${buildPick2LineTable(p2Data.data.weeks.slice(-2))}
+  <br>
+  ${renderPick2LineRulesMapping(p2Data.data.weeks)}
+  <br>
+  <!--Title Needed Here-->
   <div class="branding">
     <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 2px; padding: 0 2px;">
   <span>PICK 2 LINE CHART HEAT MAP</span>
       <span style="color: #00000; font-size: 10px;">Last: ${globalLastDraw}</span>
     </div>
   </div>
+  <br>
 ${renderLSChart(
   `LINES (${p2StartHeader} — PRESENT) • Cycle ${p2CycleNum} • ${filteredP2.length}/36`,
   "L", lines, p2LineStats, p2TotalHits, filteredP2.length, p2Data.data.weeks, "PICK_2"
 )}
-<br>
+  <br>
+  ${renderPick2HotColdMissing(allWeeksP2)}
+  <br>
+  <!--Title Needed Here-->
   <div class="branding">
     <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 2px; padding: 0 2px;">
-  <span>PICK 2 SUITE CHART HEAT MAP</span>
+  <span>HISTORICAL DAY TO DAY VIEW</span>
       <span style="color: #00000; font-size: 10px;">Last: ${globalLastDraw}</span>
     </div>
   </div>
-${renderLSChart(
-  `SUITES (${p2StartHeader} — PRESENT) • Cycle ${p2CycleNum} • ${filteredP2.length}/36`,
-  "S", suites, p2SuiteStats, p2TotalHits, filteredP2.length, p2Data.data.weeks, "PICK_2"
-)}
   <br>
+  ${renderCarouselWithCurrentP2(allWeeksP2, "p2")}
+
+<!--Title Needed Here-->
+${renderTabContainer(pwData.data.weeks, allWeeksP2, p2Data, p2TotalHits, p2StartHeader)}
+  <br>
+  <!--Title Needed Here-->
+ <div class="branding">
+    <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 2px; padding: 0 2px;">
+  <span>HISTORICAL LINE CHART</span>
+      <span style="color: #00000; font-size: 10px;">Last: ${globalLastDraw}</span>
+    </div>
+  </div>
+  <br>
+  ${renderCarouselWithPick2LineChart(allWeeksP2, "p2-line")}
+  <br>
+  <!--Title Needed Here-->
+${renderPick2OutstandingPlays(allWeeksP2)}
+  <br>
+  <!--Title Needed Here-->
   ${renderMonthlyCarousel(allWeeksP2, "PIKII", "PICK 2")}
   <br>
-      <div class="branding">
+  <!--Title Needed Here-->
+  <div class="branding">
     <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 2px; padding: 0 2px;">
       <span>PICK 4</span>
       <span>DAY TO DAY CHART</span>
@@ -4569,29 +7218,54 @@ ${renderLSChart(
     </div>
   </div>
 </div>
+<br>
   ${buildTable(p4Data.data.weeks.slice(-2), "PIKIV")}
   <br>
+  ${renderPick4HotColdMissing(allWeeksP4)}
+  <br>
+  <!--Digit Tracker-->
   ${renderPick4DigitTracker(
     `DIGIT FREQUENCY (${p4StartHeader} — PRESENT) • Cycle ${p4CycleNum} • ${filteredP4.length}/36`,
     p4Data.data.weeks,
     p4CycleNum
   )}
   <br>
-      <div class="branding">
+  <!-- 2-Digit Tracker -->
+  ${renderPick2DigitTracker(
+  `2-DIGIT COMBO (${p4StartHeader} — PRESENT) • Cycle ${p4CycleNum} • ${filteredP4.length}/36`,
+  p4Data.data.weeks,
+  p4CycleNum
+)}
+  <br>
+  <!-- 3-Digit Tracker -->
+  ${renderPick3DigitTracker(
+  `3-DIGIT COMBO (${p4StartHeader} — PRESENT) • Cycle ${p4CycleNum} • ${filteredP4.length}/36`,
+  p4Data.data.weeks,
+  p4CycleNum
+)}
+  <br>
+  <!--Title Needed Here-->
+  <div class="branding">
     <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 2px; padding: 0 2px;">
   <span>HISTORICAL DAY TO DAY VIEW</span>
       <span style="color: #00000; font-size: 10px;">Last: ${globalLastDraw}</span>
     </div>
   </div>
+  <br>
   ${renderCarouselWithCurrentP4(allWeeksP4, "p4")}
   
+  <!--Title Needed Here-->
   ${renderPick4CurrentWeekPlays(allWeeksP4, "p4")}
   
   <br>
+  <!--Title Needed Here-->
   ${renderMonthlyCarousel(allWeeksP4, "PIKIV", "PICK 4")}
   <br>
-
-    <div class="branding">
+  <!--- Year vs Prev Year Outlook --->
+  ${renderYearVsPreviousYear(pwData.data.weeks, p2Data.data.weeks, p4Data.data.weeks)}
+  <br>
+  <!--Title Needed Here-->
+  <div class="branding">
     <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 2px; padding: 0 2px;">
       <span>${BRANDING}</span>
       <span style="color: #00000; font-weight: bold; font-size: 10px;">${globalTrackingCode}</span>
@@ -4848,6 +7522,9 @@ function buildTable(weeks, gameType) {
   }).join('<div style="text-align:center; padding:3px 3px; opacity:0.15; font-weight:900; letter-spacing:3px; pointer-events:none; user-select:none;"><div style="display: flex; justify-content: center; align-items: center; gap: 4px; flex-wrap: wrap;"><span style="font-size:9px;">CODEWITHGLASGOW 🌐 bit.ly/CWGCharts</span><span style="color: #ff9d00; font-weight: bold; font-size: 8px;">' + globalTrackingCode + '</span><span style="color: #666; font-size: 8px;">Last: ' + globalLastDraw + '</span></div></div>');
 }
 
+/////////////////////////////////////////
+// Line Chart Table For Play Whe & Pick 2
+/////////////////////////////////////////
 function buildLineTable(weeks) {
   const numToLineMap = {
     1:1, 10:1, 19:1, 28:1, 2:2, 11:2, 20:2, 29:2, 3:3, 12:3, 21:3, 30:3,
@@ -5382,23 +8059,37 @@ function renderPlayWheChartMapping(weeksData) {
 // ======================================
 // Monthly Plays Ranking
 // ======================================
-// =========================================
-// MONTHLY STATS CAROUSEL FUNCTION (SMART VERSION - FINAL)
-// =========================================
+// ====================================
+// MONTHLY STATS CAROUSEL FUNCTION (UNIVERSAL - WORKS FOR ALL 6 GAMES)
+// UPDATED: Shows 6 months (current + 5 previous) with pagination
+// ====================================
 function renderMonthlyCarousel(weeksData, gameType, title) {
   const now = new Date();
   const currentMonth = now.getMonth();
   const currentYear = now.getFullYear();
-  const lastMonth = currentMonth === 0 ? 11 : currentMonth - 1;
-  const lastMonthYear = currentMonth === 0 ? currentYear - 1 : currentYear;
+  
+  // Define number ranges for each game type
+  function getNumberRange(gameType) {
+    switch(gameType) {
+      case "P2WHE": return { min: 1, max: 36 };
+      case "PIKII": return { min: 1, max: 36 };
+      case "PIKIV": return { min: 0, max: 9 };
+      case "CASHPOT": return { min: 1, max: 20 };
+      case "LOTTO": return { min: 1, max: 35 };
+      case "W4L": return { min: 1, max: 28 };
+      default: return { min: 1, max: 36 };
+    }
+  }
   
   // Helper to extract numbers based on game type
-  function extractNumbers(value, gameType) {
-    if (!value || value === "-" || value === "PENDING") return [];
+  function extractNumbers(value, gameType, drawIndex = null) {
+    if (!value || value === "-" || value === "PENDING" || value === "SCHEDULED") return [];
+    
+    const range = getNumberRange(gameType);
     
     if (gameType === "P2WHE") {
       let num = parseInt(value, 10);
-      if (!isNaN(num) && num >= 1 && num <= 36) return [num];
+      if (!isNaN(num) && num >= range.min && num <= range.max) return [num];
       return [];
     }
     else if (gameType === "PIKII") {
@@ -5407,7 +8098,7 @@ function renderMonthlyCarousel(weeksData, gameType, title) {
       let parts = strVal.split(/[,/ ]+/);
       for (let part of parts) {
         let num = parseInt(part, 10);
-        if (!isNaN(num) && num >= 1 && num <= 36) {
+        if (!isNaN(num) && num >= range.min && num <= range.max) {
           results.push(num);
         }
       }
@@ -5419,8 +8110,47 @@ function renderMonthlyCarousel(weeksData, gameType, title) {
       let cleanVal = strVal.replace(/[^0-9]/g, '');
       for (let i = 0; i < cleanVal.length; i++) {
         let digit = parseInt(cleanVal.charAt(i), 10);
-        if (!isNaN(digit) && digit >= 0 && digit <= 9) {
+        if (!isNaN(digit) && digit >= range.min && digit <= range.max) {
           results.push(digit);
+        }
+      }
+      return results;
+    }
+    else if (gameType === "CASHPOT") {
+      let results = [];
+      for (let n = 1; n <= 5; n++) {
+        let num = value[`Num${n}`];
+        if (num && num !== "-" && num !== "") {
+          let parsed = parseInt(num, 10);
+          if (!isNaN(parsed) && parsed >= range.min && parsed <= range.max) {
+            results.push(parsed);
+          }
+        }
+      }
+      return results;
+    }
+    else if (gameType === "LOTTO") {
+      let results = [];
+      for (let n = 1; n <= 5; n++) {
+        let num = value[`Num${n}`];
+        if (num && num !== "-" && num !== "") {
+          let parsed = parseInt(num, 10);
+          if (!isNaN(parsed) && parsed >= range.min && parsed <= range.max) {
+            results.push(parsed);
+          }
+        }
+      }
+      return results;
+    }
+    else if (gameType === "W4L") {
+      let results = [];
+      for (let n = 1; n <= 6; n++) {
+        let num = value[`Num${n}`];
+        if (num && num !== "-" && num !== "") {
+          let parsed = parseInt(num, 10);
+          if (!isNaN(parsed) && parsed >= range.min && parsed <= range.max) {
+            results.push(parsed);
+          }
         }
       }
       return results;
@@ -5428,66 +8158,183 @@ function renderMonthlyCarousel(weeksData, gameType, title) {
     return [];
   }
   
-  // Calculate stats for the month
+  // Get month stats for a specific month
   function getMonthStats(targetMonth, targetYear) {
+    const range = getNumberRange(gameType);
     let counts = {};
     let lastPlayed = {};
-    let numberRange = (gameType === "PIKIV") ? 9 : 36;
-    let startNum = (gameType === "PIKIV") ? 0 : 1;
     
-    for (let i = startNum; i <= numberRange; i++) {
+    for (let i = range.min; i <= range.max; i++) {
       counts[i] = 0;
       lastPlayed[i] = null;
     }
     
-    weeksData.forEach(week => {
-      week.days.forEach(day => {
-        let parts = week.startDate.split(" ");
-        let monthMap = {"Jan":0,"Feb":1,"Mar":2,"Apr":3,"May":4,"Jun":5,"Jul":6,"Aug":7,"Sep":8,"Oct":9,"Nov":10,"Dec":11};
-        let d = new Date(parts[2], monthMap[parts[1]], parts[0]);
-        let dayOrderLocal = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
-        d.setDate(d.getDate() + dayOrderLocal.indexOf(day.dayName));
-        
-        if (d.getMonth() === targetMonth && d.getFullYear() === targetYear) {
-          Object.values(day.draws).forEach(val => {
-            let numbers = extractNumbers(val, gameType);
-            numbers.forEach(num => {
-              counts[num]++;
-              if (!lastPlayed[num] || d > lastPlayed[num]) {
-                lastPlayed[num] = new Date(d);
-              }
-            });
-          });
-        }
-      });
-    });
+    function getDrawDate(week, day) {
+      if (!week.startDate) return null;
+      let parts = week.startDate.split(" ");
+      let monthMap = {"Jan":0,"Feb":1,"Mar":2,"Apr":3,"May":4,"Jun":5,"Jul":6,"Aug":7,"Sep":8,"Oct":9,"Nov":10,"Dec":11};
+      let d = new Date(parts[2], monthMap[parts[1]], parseInt(parts[0]));
+      let dayOrderLocal = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+      let dayIndex = dayOrderLocal.indexOf(day.dayName);
+      if (dayIndex !== -1) {
+        d.setDate(d.getDate() + dayIndex);
+      }
+      return d;
+    }
     
-    let sorted = Object.keys(counts).map(num => {
+    let dataArray = null;
+    
+    if (gameType === "P2WHE" || gameType === "PIKII" || gameType === "PIKIV") {
+      if (weeksData && weeksData.weeks && Array.isArray(weeksData.weeks)) {
+        dataArray = weeksData.weeks;
+      } else if (weeksData && Array.isArray(weeksData)) {
+        dataArray = weeksData;
+      }
+    } 
+    else if (gameType === "CASHPOT") {
+      if (weeksData && weeksData.data && Array.isArray(weeksData.data)) {
+        dataArray = weeksData.data;
+      } else if (weeksData && Array.isArray(weeksData)) {
+        dataArray = weeksData;
+      }
+    }
+    else if (gameType === "LOTTO" || gameType === "W4L") {
+      if (weeksData && weeksData.data && Array.isArray(weeksData.data)) {
+        dataArray = weeksData.data;
+      } else if (weeksData && Array.isArray(weeksData)) {
+        dataArray = weeksData;
+      }
+    }
+    
+    if (!dataArray || dataArray.length === 0) {
+      return { top: [], bottom: [] };
+    }
+    
+    if (gameType === "P2WHE" || gameType === "PIKII" || gameType === "PIKIV") {
+      for (let weekIdx = 0; weekIdx < dataArray.length; weekIdx++) {
+        let week = dataArray[weekIdx];
+        if (week && week.days && Array.isArray(week.days)) {
+          for (let dayIdx = 0; dayIdx < week.days.length; dayIdx++) {
+            let day = week.days[dayIdx];
+            let drawDate = getDrawDate(week, day);
+            if (drawDate && drawDate.getMonth() === targetMonth && drawDate.getFullYear() === targetYear) {
+              if (day.draws) {
+                let drawValues = Object.values(day.draws);
+                for (let v = 0; v < drawValues.length; v++) {
+                  let numbers = extractNumbers(drawValues[v], gameType);
+                  for (let n = 0; n < numbers.length; n++) {
+                    let num = numbers[n];
+                    counts[num]++;
+                    if (!lastPlayed[num] || drawDate > lastPlayed[num]) {
+                      lastPlayed[num] = new Date(drawDate);
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    } 
+    else if (gameType === "CASHPOT") {
+      for (let weekIdx = 0; weekIdx < dataArray.length; weekIdx++) {
+        let week = dataArray[weekIdx];
+        if (week && week.days && Array.isArray(week.days)) {
+          for (let dayIdx = 0; dayIdx < week.days.length; dayIdx++) {
+            let day = week.days[dayIdx];
+            if (day.date && day.date !== "SCHEDULED") {
+              let drawDate = new Date(day.date);
+              if (!isNaN(drawDate) && drawDate.getMonth() === targetMonth && drawDate.getFullYear() === targetYear) {
+                let numbers = extractNumbers(day.draws, gameType);
+                for (let n = 0; n < numbers.length; n++) {
+                  let num = numbers[n];
+                  counts[num]++;
+                  if (!lastPlayed[num] || drawDate > lastPlayed[num]) {
+                    lastPlayed[num] = new Date(drawDate);
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    else if (gameType === "LOTTO" || gameType === "W4L") {
+      for (let monthIdx = 0; monthIdx < dataArray.length; monthIdx++) {
+        let month = dataArray[monthIdx];
+        if (month && month.days && Array.isArray(month.days)) {
+          for (let dayIdx = 0; dayIdx < month.days.length; dayIdx++) {
+            let day = month.days[dayIdx];
+            if (day.date && day.date !== "SCHEDULED") {
+              let drawDate = new Date(day.date);
+              if (!isNaN(drawDate) && drawDate.getMonth() === targetMonth && drawDate.getFullYear() === targetYear) {
+                let numbers = extractNumbers(day.draws, gameType);
+                for (let n = 0; n < numbers.length; n++) {
+                  let num = numbers[n];
+                  counts[num]++;
+                  if (!lastPlayed[num] || drawDate > lastPlayed[num]) {
+                    lastPlayed[num] = new Date(drawDate);
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+    
+    let allNumbers = [];
+    for (let num = range.min; num <= range.max; num++) {
       let daysAgo = "Never";
       if (lastPlayed[num]) {
         let diffDays = Math.floor((now - lastPlayed[num]) / (1000 * 60 * 60 * 24));
         daysAgo = diffDays;
       }
-      return { 
-        num: parseInt(num), 
+      allNumbers.push({ 
+        num: num, 
         count: counts[num],
         lastPlayed: lastPlayed[num],
         daysAgo: daysAgo
-      };
-    }).sort((a, b) => b.count - a.count);
+      });
+    }
     
-    // Dynamic filtering - no hardcoded limits
-    let top = sorted.filter(item => item.count >= 3);   // 3 or more hits
-    let bottom = sorted.filter(item => item.count <= 2); // 2 or fewer hits (includes zeros)
+    let top = allNumbers.filter(item => item.count >= 3).sort((a, b) => b.count - a.count);
+    let bottom = allNumbers.filter(item => item.count <= 2).sort((a, b) => a.count - b.count);
     
     return { top: top, bottom: bottom };
   }
   
-  const thisMonthStats = getMonthStats(currentMonth, currentYear);
-  const lastMonthStats = getMonthStats(lastMonth, lastMonthYear);
+  // ==================================
+  // BUILD MONTHS ARRAY (Now + 6 Prev)
+  // ==================================
+  const monthsToShow = 7;// adjust
+  const monthData = [];
   
-  const currentMonthName = new Date(currentYear, currentMonth).toLocaleString('default', { month: 'long', year: 'numeric' });
-  const lastMonthName = new Date(lastMonthYear, lastMonth).toLocaleString('default', { month: 'long', year: 'numeric' });
+  for (let i = 0; i < monthsToShow; i++) {
+    let month = currentMonth - i;
+    let year = currentYear;
+    if (month < 0) {
+      month += 12;
+      year -= 1;
+    }
+    monthData.push({
+      month: month,
+      year: year,
+      name: new Date(year, month).toLocaleString('default', { month: 'long', year: 'numeric' }),
+      stats: getMonthStats(month, year)
+    });
+  }
+  
+  let hasValidData = false;
+  if (gameType === "P2WHE" || gameType === "PIKII" || gameType === "PIKIV") {
+    hasValidData = (weeksData && weeksData.weeks && weeksData.weeks.length > 0) || (weeksData && Array.isArray(weeksData) && weeksData.length > 0);
+  } else {
+    hasValidData = (weeksData && weeksData.data && weeksData.data.length > 0) || (weeksData && Array.isArray(weeksData) && weeksData.length > 0);
+  }
+  
+  if (!hasValidData) {
+    return '<div style="text-align:center; padding:20px; color:#666;">Loading monthly stats...</div>';
+  }
   
   function formatLastPlayed(date) {
     if (!date) return "Never";
@@ -5497,12 +8344,11 @@ function renderMonthlyCarousel(weeksData, gameType, title) {
     return date.toLocaleDateString("en-GB", { day: "2-digit", month: "short" }).replace(/(\d{2})(\d{2})$/, "'$2");
   }
   
-  function generateStatsTable(marksArray, monthName, isMostPlayed = true) {
+  function generateStatsTable(marksArray, monthName, isMostPlayed = true, monthIndex = 0) {
     if (!marksArray || marksArray.length === 0) {
-      return '<div style="text-align:center; padding:20px; color:#666;">No data available</div>';
+      return '<div style="text-align:center; padding:20px; color:#666;">No data meets threshold</div>';
     }
     
-    // Filter based on hit count thresholds
     let filteredArray;
     if (isMostPlayed) {
       filteredArray = marksArray.filter(item => item.count >= 3);
@@ -5514,33 +8360,29 @@ function renderMonthlyCarousel(weeksData, gameType, title) {
       return '<div style="text-align:center; padding:20px; color:#666;">No data meets threshold</div>';
     }
     
-    let spiritName = (num) => {
-      if (gameType === "P2WHE") return spirits[num] ? spirits[num].substring(0, 8) : "Unknown";
-      return "-";
-    };
-    
     let displayNum = (num) => {
-      if (gameType === "PIKIV") return num.toString();
       return num.toString();
     };
     
+    const isCurrentMonth = monthIndex === 0;
+    const accentColor = isCurrentMonth ? '#00ff88' : '#ff9d00';
+    
     let tableHtml = `
       <div class="stats-card">
-        <div class="stats-card-header">
-          <h4>${monthName}</h4>
+        <div class="stats-card-header" style="border-bottom: 2px solid ${accentColor};">
+          <h4 style="color: ${accentColor};">${monthName} ${isCurrentMonth ? '⚜️ CURRENT' : ''}</h4>
           <p style="font-size: 9px; margin-top: 2px; color: #aaa;">${filteredArray.length} numbers</p>
         </div>
-        <div style="max-height: 400px; overflow-y: auto;">
+        <div style="max-height: 480px; overflow-y: auto;">
           <table class="stats-table">
             <thead>
               <tr style="position: sticky; top: 0; background: var(--card);">
                 <th>#</th>
                 <th>Mark</th>
-                ${gameType === "P2WHE" ? '<th>Spirit</th>' : ''}
                 <th>Hits</th>
                 <th>Last</th>
                 <th>Days</th>
-               </tr>
+              </tr>
             </thead>
             <tbody>
     `;
@@ -5556,19 +8398,11 @@ function renderMonthlyCarousel(weeksData, gameType, title) {
       const numDisplay = displayNum(item.num);
       
       let hitColor = '#10b981';
-      if (gameType === "PIKIV") {
-        if (item.count >= 20) hitColor = '#bf5af2';
-        else if (item.count >= 15) hitColor = '#5856d6';
-        else if (item.count >= 10) hitColor = '#007aff';
-        else if (item.count >= 5) hitColor = '#ff9f0a';
-        else if (item.count >= 1) hitColor = '#10b981';
-      } else {
-        if (item.count >= 10) hitColor = '#bf5af2';
-        else if (item.count >= 7) hitColor = '#5856d6';
-        else if (item.count >= 4) hitColor = '#007aff';
-        else if (item.count >= 2) hitColor = '#ff9f0a';
-        else if (item.count >= 1) hitColor = '#10b981';
-      }
+      if (item.count >= 10) hitColor = '#bf5af2';
+      else if (item.count >= 7) hitColor = '#5856d6';
+      else if (item.count >= 4) hitColor = '#007aff';
+      else if (item.count >= 2) hitColor = '#ff9f0a';
+      else if (item.count >= 1) hitColor = '#10b981';
       
       if (item.count === 0) hitColor = '#666';
       
@@ -5576,10 +8410,9 @@ function renderMonthlyCarousel(weeksData, gameType, title) {
         <tr class="${rankClass}">
           <td style="font-weight: 700; color: #ff9d00;">${idx + 1}</td>
           <td style="font-weight: 800; font-size: 14px;">${numDisplay}</td>
-          ${gameType === "P2WHE" ? `<td style="font-size: 10px;">${spiritName(item.num)}</td>` : ''}
-          <td style="font-weight: 700; color: ${hitColor};">${item.count}x</td>
+          <td style="font-weight: 700; color: ${hitColor};">${item.count}x</span></td>
           <td style="font-size: 9px;">${lastPlayedFormatted}</td>
-          <td style="font-size: 9px; font-weight: bold; color: ${item.daysAgo !== "Never" && item.daysAgo > 7 ? '#ff453a' : '#888'};">${daysAgoText}</td>
+          <td style="font-size: 9px; font-weight: bold; color: ${item.daysAgo !== "Never" && item.daysAgo > 14 ? '#ff453a' : '#888'};">${daysAgoText}</td>
         </tr>
       `;
     });
@@ -5593,38 +8426,75 @@ function renderMonthlyCarousel(weeksData, gameType, title) {
     return tableHtml;
   }
   
+  // ==================================
+  // BUILD CAROUSEL SLIDES (6 months)
+  // ==================================
+  const slidesHtml = monthData.map((data, index) => {
+    const isCurrent = index === 0;
+    const borderColor = isCurrent ? '#00ff88' : '#ff9d00';
+    
+    return `
+      <div class="carousel-item" style="flex: 0 0 calc(100% - 20px); min-width: 320px; scroll-snap-align: start; background: var(--card); border-radius: 16px; overflow: hidden; border: 1px solid ${borderColor}40;">
+        <div class="carousel-header" style="background: linear-gradient(135deg, ${isCurrent ? '#1a6b3a' : '#1e3a8a'}, ${isCurrent ? '#0f4a2a' : '#1e40af'}); padding: 12px; text-align: center; font-size: 13px; font-weight: 800; color: ${isCurrent ? '#00ff88' : '#ff9d00'};">
+          ${isCurrent ? '⚜️ ' : ''}${data.name} ${isCurrent ? '⚜️' : ''}
+          <span style="font-size: 9px; color: #94a3b8; display: block; margin-top: 2px; font-weight: 400;">
+            ${index + 1} of ${monthsToShow} months
+          </span>
+        </div>
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 2px;">
+          <div class="stats-container">
+            <div style="background: rgba(50,215,75,0.08); padding: 6px 8px; text-align: center; font-size: 10px; font-weight: 700; color: #32d74b; border-bottom: 1px solid rgba(50,215,75,0.1);">
+              🔺 MOST PLAYED
+            </div>
+            ${generateStatsTable(data.stats.top, data.name, true, index)}
+          </div>
+          <div class="stats-container">
+            <div style="background: rgba(255,69,58,0.08); padding: 6px 8px; text-align: center; font-size: 10px; font-weight: 700; color: #ff453a; border-bottom: 1px solid rgba(255,69,58,0.1);">
+              🔻 LEAST PLAYED
+            </div>
+            ${generateStatsTable(data.stats.bottom, data.name, false, index)}
+          </div>
+        </div>
+        <div class="carousel-subtitle" style="font-size: 8px; color: #64748b; text-align: center; padding: 6px; border-top: 1px solid rgba(255,255,255,0.05);">
+          ${isCurrent ? '📅 Current Month Data 📅' : '📜 Historical Data 📜'}
+        </div>
+      </div>
+    `;
+  }).join('');
+  
+  // Generate dots for pagination
+  let dotsHtml = '';
+  for (let i = 0; i < monthsToShow; i++) {
+    dotsHtml += `<span class="monthly-dot" data-index="${i}" style="width: 6px; height: 6px; background: ${i === 0 ? '#ff9d00' : '#555'}; border-radius: 50%; display: inline-block; margin: 0 4px; cursor: pointer; transition: all 0.3s ease; ${i === 0 ? 'width: 16px; border-radius: 4px;' : ''}"></span>`;
+  }
+  
+  const carouselId = 'monthlyCarousel-' + gameType + '-' + Date.now();
+  
   return `
-    <div class="fsp-carousel-wrapper" style="margin-bottom: 15px;">
-      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; padding: 0 4px;">
+    <div class="fsp-carousel-wrapper" style="margin-bottom: 7px;">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; padding: 0 4px;">
         <span style="font-size: 14px; font-weight: 800; color: #ff9d00;">♠️ ${title} : MONTHLY STATS</span>
         <div style="display: flex; gap: 8px;">
-          <button class="carousel-prev-${gameType}" style="background: rgba(255,157,0,0.3); border: none; border-radius: 20px; padding: 4px 12px; color: white; font-weight: bold; cursor: pointer;">◀</button>
-          <button class="carousel-next-${gameType}" style="background: rgba(255,157,0,0.3); border: none; border-radius: 20px; padding: 4px 12px; color: white; font-weight: bold; cursor: pointer;">▶</button>
+          <button class="carousel-prev-${gameType}" style="background: rgba(255,157,0,0.3); border: none; border-radius: 20px; padding: 4px 12px; color: white; font-weight: bold; cursor: pointer; transition: all 0.2s ease;">
+            ◀
+          </button>
+          <button class="carousel-next-${gameType}" style="background: rgba(255,157,0,0.3); border: none; border-radius: 20px; padding: 4px 12px; color: white; font-weight: bold; cursor: pointer; transition: all 0.2s ease;">
+            ▶
+          </button>
         </div>
       </div>
-      <div class="fsp-carousel" id="monthlyCarousel-${gameType}" style="display: flex; overflow-x: auto; scroll-snap-type: x mandatory; gap: 16px; padding: 4px 0 16px 0; scroll-behavior: smooth;">
-        <div class="carousel-item" style="flex: 0 0 calc(100% - 40px); min-width: 320px; scroll-snap-align: start; background: var(--card); border-radius: 16px; overflow: hidden;">
-          <div class="carousel-header" style="background: linear-gradient(135deg, #1e3a8a, #1e40af); padding: 12px; text-align: center; font-size: 13px; font-weight: 800; color: #ff9d00;">🔺 MOST PLAYED (THIS MONTH)</div>
-          <div class="stats-container">${generateStatsTable(thisMonthStats.top, currentMonthName, true)}</div>
-          <div class="carousel-subtitle" style="font-size: 9px; color: #888; text-align: center; padding: 8px; border-top: 1px solid #333;">Marks with 3x + Hits This Month</div>
-        </div>
-        <div class="carousel-item" style="flex: 0 0 calc(100% - 40px); min-width: 320px; scroll-snap-align: start; background: var(--card); border-radius: 16px; overflow: hidden;">
-          <div class="carousel-header" style="background: linear-gradient(135deg, #1e3a8a, #1e40af); padding: 12px; text-align: center; font-size: 13px; font-weight: 800; color: #ff9d00;">🔻 LEAST PLAYED (THIS MONTH)</div>
-          <div class="stats-container">${generateStatsTable(thisMonthStats.bottom, currentMonthName, false)}</div>
-          <div class="carousel-subtitle" style="font-size: 9px; color: #888; text-align: center; padding: 8px; border-top: 1px solid #333;">Marks With 0x - 2x Hits This Month</div>
-        </div>
-        <div class="carousel-item" style="flex: 0 0 calc(100% - 40px); min-width: 320px; scroll-snap-align: start; background: var(--card); border-radius: 16px; overflow: hidden;">
-          <div class="carousel-header" style="background: linear-gradient(135deg, #1e3a8a, #1e40af); padding: 12px; text-align: center; font-size: 13px; font-weight: 800; color: #ff9d00;">🔺 MOST PLAYED (LAST MONTH)</div>
-          <div class="stats-container">${generateStatsTable(lastMonthStats.top, lastMonthName, true)}</div>
-          <div class="carousel-subtitle" style="font-size: 9px; color: #888; text-align: center; padding: 8px; border-top: 1px solid #333;">Marks With 3x + Hits Last Month</div>
-        </div>
-        <div class="carousel-item" style="flex: 0 0 calc(100% - 40px); min-width: 320px; scroll-snap-align: start; background: var(--card); border-radius: 16px; overflow: hidden;">
-          <div class="carousel-header" style="background: linear-gradient(135deg, #1e3a8a, #1e40af); padding: 12px; text-align: center; font-size: 13px; font-weight: 800; color: #ff9d00;">🔻 LEAST PLAYED (LAST MONTH)</div>
-          <div class="stats-container">${generateStatsTable(lastMonthStats.bottom, lastMonthName, false)}</div>
-          <div class="carousel-subtitle" style="font-size: 9px; color: #888; text-align: center; padding: 8px; border-top: 1px solid #333;">Marks With 0x - 2x Hits Last Month</div>
-        </div>
+      
+      <div class="fsp-carousel" id="${carouselId}" style="display: flex; overflow-x: auto; scroll-snap-type: x mandatory; gap: 16px; padding: 4px 0 16px 0; scroll-behavior: smooth; -webkit-overflow-scrolling: touch;">
+        ${slidesHtml}
       </div>
-      <div class="carousel-dots" style="display: flex; justify-content: center; gap: 8px; margin-top: 12px;" id="carouselDots-${gameType}"></div>
+      
+      <div style="display: flex; justify-content: center; gap: 8px; margin-top: 6px;" id="${carouselId}-dots">
+        ${dotsHtml}
+      </div>
+      
+      <div style="font-size: 8px; color: #475569; text-align: center; margin-top: 3px;">
+        Showing ${monthsToShow} months • Swipe or use buttons to navigate
+      </div>
     </div>
     
     <style>
@@ -5679,16 +8549,23 @@ function renderMonthlyCarousel(weeksData, gameType, title) {
       .stats-rank-3 {
         background: rgba(205, 127, 50, 0.15);
       }
+      .monthly-dot.active {
+        background: #ff9d00 !important;
+        width: 16px !important;
+        border-radius: 4px !important;
+      }
     </style>
     
     <script>
       (function() {
-        var carousel = document.getElementById('monthlyCarousel-${gameType}');
+        var carousel = document.getElementById('${carouselId}');
         var prevBtn = document.querySelector('.carousel-prev-${gameType}');
         var nextBtn = document.querySelector('.carousel-next-${gameType}');
-        var dotsContainer = document.getElementById('carouselDots-${gameType}');
+        var dotsContainer = document.getElementById('${carouselId}-dots');
         var slides = carousel ? carousel.children : [];
         var currentIndex = 0;
+        var totalSlides = ${monthsToShow};
+        var scrollTimeout;
         
         function updateDots() {
           if (!dotsContainer) return;
@@ -5705,38 +8582,53 @@ function renderMonthlyCarousel(weeksData, gameType, title) {
         function scrollToSlide(index) {
           if (!carousel || slides.length === 0) return;
           if (index < 0) index = 0;
-          if (index >= slides.length) index = slides.length - 1;
+          if (index >= totalSlides) index = totalSlides - 1;
           currentIndex = index;
-          var slideWidth = slides[0].offsetWidth;
+          var slideWidth = slides[0] ? slides[0].offsetWidth : 0;
           var gap = 16;
-          carousel.scrollTo({ left: index * (slideWidth + gap), behavior: 'smooth' });
+          if (slideWidth > 0) {
+            carousel.scrollTo({ left: index * (slideWidth + gap), behavior: 'smooth' });
+          }
           updateDots();
         }
         
         function handleScroll() {
-          if (!carousel || slides.length === 0) return;
-          var slideWidth = slides[0].offsetWidth;
-          var gap = 16;
-          var scrollPosition = carousel.scrollLeft;
-          var newIndex = Math.round(scrollPosition / (slideWidth + gap));
-          if (newIndex !== currentIndex && newIndex >= 0 && newIndex < slides.length) {
-            currentIndex = newIndex;
-            updateDots();
-          }
+          if (scrollTimeout) clearTimeout(scrollTimeout);
+          scrollTimeout = setTimeout(function() {
+            if (!carousel || slides.length === 0) return;
+            var slideWidth = slides[0] ? slides[0].offsetWidth : 0;
+            var gap = 16;
+            var scrollPosition = carousel.scrollLeft;
+            var newIndex = Math.round(scrollPosition / (slideWidth + gap));
+            if (newIndex !== currentIndex && newIndex >= 0 && newIndex < totalSlides) {
+              currentIndex = newIndex;
+              updateDots();
+            }
+          }, 100);
         }
         
-        if (prevBtn) prevBtn.onclick = function() { scrollToSlide(currentIndex - 1); };
-        if (nextBtn) nextBtn.onclick = function() { scrollToSlide(currentIndex + 1); };
-        if (carousel) carousel.addEventListener('scroll', handleScroll);
+        if (prevBtn) {
+          prevBtn.onclick = function() { scrollToSlide(currentIndex - 1); };
+        }
+        if (nextBtn) {
+          nextBtn.onclick = function() { scrollToSlide(currentIndex + 1); };
+        }
+        if (carousel) {
+          carousel.addEventListener('scroll', handleScroll);
+        }
         
-        if (dotsContainer && slides.length > 1) {
+        if (dotsContainer && totalSlides > 1) {
           dotsContainer.innerHTML = '';
-          for (var i = 0; i < slides.length; i++) {
+          for (var i = 0; i < totalSlides; i++) {
             var dot = document.createElement('div');
             dot.className = 'monthly-dot' + (i === currentIndex ? ' active' : '');
-            dot.style.cssText = 'width: 6px; height: 6px; background: #555; border-radius: 50%; transition: all 0.3s ease; cursor: pointer;';
-            if (i === currentIndex) dot.style.cssText += 'background: #ff9d00; width: 16px; border-radius: 4px;';
-            dot.onclick = (function(idx) { return function() { scrollToSlide(idx); }; })(i);
+            dot.style.cssText = 'width: 6px; height: 6px; background: #555; border-radius: 50%; transition: all 0.3s ease; cursor: pointer; margin: 0 4px;';
+            if (i === currentIndex) {
+              dot.style.cssText += 'background: #ff9d00; width: 16px; border-radius: 4px;';
+            }
+            dot.onclick = (function(idx) {
+              return function() { scrollToSlide(idx); };
+            })(i);
             dotsContainer.appendChild(dot);
           }
         }
@@ -5746,8 +8638,847 @@ function renderMonthlyCarousel(weeksData, gameType, title) {
     </script>
   `;
 }
+//////////////////////////////////////////
+// ======================================
+// YEAR VS PREVIOUS YEAR OVERVIEW CHART — CAROUSEL
+// Shows annual comparison for Play Whe, Pick 2, Pick 4
+// Each slide shows one game for one year (6 slides total)
+// ======================================
+function renderYearVsPreviousYear(pwWeeks, p2Weeks, p4Weeks) {
+  const dayNames = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+  const slots = ["MOR", "MID", "NON", "EVE"];
+  const now = new Date();
+  const currentYear = now.getFullYear();
+  const previousYear = currentYear - 1;
 
+  // Spirit Emoji
+  const spiritEmoji = {
+    1: "🔪", 2: "👵🏾", 3: "🚕", 4: "⚰️", 5: "👨🏾‍🦳", 6: "🤰🏽", 7: "🐗", 8: "🐯",
+    9: "🐮", 10: "🐒", 11: "🦅", 12: "🤴🏽", 13: "🐸", 14: "💰", 15: "🤧", 16: "💃🏽",
+    17: "🐦‍⬛", 18: "🚤", 19: "🐎", 20: "🐶", 21: "👄", 22: "🐀", 23: "🏡", 24: "🫅🏽",
+    25: "🐢", 26: "🐔", 27: "🐍", 28: "🐟", 29: "🍻", 30: "🐈‍⬛", 31: "👵🏾", 32: "🦐",
+    33: "🕷️", 34: "👨🏾‍🦯", 35: "🐍", 36: "🫏"
+  };
 
+  const numToLineMap = {
+    1:1, 10:1, 19:1, 28:1, 2:2, 11:2, 20:2, 29:2, 3:3, 12:3, 21:3, 30:3,
+    4:4, 13:4, 22:4, 31:4, 5:5, 14:5, 23:5, 32:5, 6:6, 15:6, 24:6, 33:6,
+    7:7, 16:7, 25:7, 34:7, 8:8, 17:8, 26:8, 35:8, 9:9, 18:9, 27:9, 36:9
+  };
+
+  const numToSuitMap = {
+    1:1, 11:1, 21:1, 31:1, 2:2, 12:2, 22:2, 32:2, 3:3, 13:3, 23:3, 33:3,
+    4:4, 14:4, 24:4, 34:4, 5:5, 15:5, 25:5, 35:5, 6:6, 16:6, 26:6, 36:6,
+    7:7, 17:7, 27:7, 8:8, 18:8, 28:8, 9:9, 19:9, 29:9, 10:0, 20:0, 30:0
+  };
+
+  const chartPlayMaps = {
+    "1/16": { main: 1, num2: 29, num3: 16 },
+    "1/8":  { main: 1, num2: 8,  num3: 25 },
+    "1/9":  { main: 1, num2: 9,  num3: 25 },
+    "1/7":  { main: 1, num2: 7,  num3: 12 },
+    "1/5":  { main: 1, num2: 5,  num3: 27 }
+  };
+
+  // ======================================
+  // HELPERS
+  // ======================================
+  function parseWeekStart(str) {
+    if (!str) return null;
+    const parts = str.split(" ");
+    const monthMap = {"Jan":0,"Feb":1,"Mar":2,"Apr":3,"May":4,"Jun":5,"Jul":6,"Aug":7,"Sep":8,"Oct":9,"Nov":10,"Dec":11};
+    return new Date(parts[2], monthMap[parts[1]], parseInt(parts[0]));
+  }
+
+  function getActualDate(week, dayName) {
+    const weekStart = parseWeekStart(week.startDate);
+    if (!weekStart) return null;
+    const dayIdx = dayNames.indexOf(dayName);
+    if (dayIdx === -1) return null;
+    const d = new Date(weekStart);
+    d.setDate(weekStart.getDate() + dayIdx);
+    return d;
+  }
+
+  function formatShortDate(date) {
+    if (!date) return "—";
+    const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    return `${date.getDate()} ${months[date.getMonth()]}`;
+  }
+
+  // Returns two-digit year suffix, e.g. 2026 -> '26
+  function yearTag(date) {
+    if (!date) return '';
+    return "'" + String(date.getFullYear()).slice(-2);
+  }
+
+  function daysSince(date) {
+    if (!date) return null;
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const d = new Date(date);
+    d.setHours(0, 0, 0, 0);
+    return Math.max(0, Math.round((today - d) / 86400000));
+  }
+
+  // ======================================
+  // PLAY WHE — YEARLY STATS  (FIXED)
+  // ======================================
+  function computePlayWheYearStats(weeks, targetYear) {
+    const markStats = {};
+    const lineStats = {};
+    const suitStats = {};
+    const chartStats = {};
+
+    for (let i = 1; i <= 36; i++) markStats[i] = { count: 0, lastDate: null };
+    for (let i = 1; i <= 9; i++) { lineStats[i] = { count: 0, lastDate: null }; suitStats[i] = { count: 0, lastDate: null }; }
+    suitStats[0] = { count: 0, lastDate: null };
+    Object.keys(chartPlayMaps).forEach(id => chartStats[id] = { count: 0, lastDate: null });
+
+    const chartFamilies = {};
+    Object.entries(chartPlayMaps).forEach(([id, base]) => {
+      const fam = new Set();
+      function wrap(n){ while(n>36)n-=36; while(n<1)n+=36; return n; }
+      for (let i = 0; i < 36; i++) {
+        fam.add(wrap(base.main + i));
+        fam.add(wrap(base.num2 + i));
+        fam.add(wrap(base.num3 + i));
+      }
+      chartFamilies[id] = fam;
+    });
+
+    weeks.forEach(week => {
+      const weekStart = parseWeekStart(week.startDate);
+      if (!weekStart || weekStart.getFullYear() !== targetYear) return;
+
+      week.days.forEach(day => {
+        const actualDate = getActualDate(week, day.dayName);
+        slots.forEach(slot => {
+          const val = day.draws[slot];
+          if (!val || val === "-" || val === "PENDING" || val === "HOLIDAY") return;
+          const num = parseInt(val, 10);
+          if (isNaN(num) || num < 1 || num > 36) return;
+
+          markStats[num].count++;
+          if (!markStats[num].lastDate || actualDate > markStats[num].lastDate) {
+            markStats[num].lastDate = actualDate;
+          }
+
+          const line = numToLineMap[num];
+          if (line) {
+            lineStats[line].count++;
+            if (!lineStats[line].lastDate || actualDate > lineStats[line].lastDate) {
+              lineStats[line].lastDate = actualDate;
+            }
+          }
+
+          const suit = numToSuitMap[num];
+          if (suit !== undefined) {
+            suitStats[suit].count++;
+            if (!suitStats[suit].lastDate || actualDate > suitStats[suit].lastDate) {
+              suitStats[suit].lastDate = actualDate;
+            }
+          }
+
+          Object.entries(chartFamilies).forEach(([id, fam]) => {
+            if (fam.has(num)) {
+              chartStats[id].count++;
+              if (!chartStats[id].lastDate || actualDate > chartStats[id].lastDate) {
+                chartStats[id].lastDate = actualDate;
+              }
+            }
+          });
+        });
+      });
+    });
+
+    return { markStats, lineStats, suitStats, chartStats };
+  }
+
+  // ======================================
+  // PICK 2 — YEARLY STATS
+  // ======================================
+  function computePick2YearStats(weeks, targetYear) {
+    const markStats = {};
+    const pairStats = {};
+
+    for (let i = 1; i <= 36; i++) markStats[i] = { count: 0, lastDate: null };
+
+    weeks.forEach(week => {
+      const weekStart = parseWeekStart(week.startDate);
+      if (!weekStart || weekStart.getFullYear() !== targetYear) return;
+
+      week.days.forEach(day => {
+        const actualDate = getActualDate(week, day.dayName);
+        slots.forEach(slot => {
+          const val = day.draws[slot];
+          if (!val || val === "-" || val === "PENDING" || val === "HOLIDAY") return;
+          const parts = String(val).split(/[,/ ]+/);
+          if (parts.length < 2) return;
+          const n1 = parseInt(parts[0], 10);
+          const n2 = parseInt(parts[1], 10);
+          if (isNaN(n1) || isNaN(n2)) return;
+
+          [n1, n2].forEach(n => {
+            if (n >= 1 && n <= 36) {
+              markStats[n].count++;
+              if (!markStats[n].lastDate || actualDate > markStats[n].lastDate) {
+                markStats[n].lastDate = actualDate;
+              }
+            }
+          });
+
+          const key = `${n1}/${n2}`;
+          if (!pairStats[key]) pairStats[key] = { count: 0, lastDate: null, n1, n2 };
+          pairStats[key].count++;
+          if (!pairStats[key].lastDate || actualDate > pairStats[key].lastDate) {
+            pairStats[key].lastDate = actualDate;
+          }
+        });
+      });
+    });
+
+    return { markStats, pairStats };
+  }
+
+  // ======================================
+  // PICK 2 — DOUBLES (same-number pairs) STATS
+  //
+  // @param targetYear — the year this slide represents (STRICT)
+  //
+  // For "played" / "least" sections: only hits in targetYear count.
+  // For "missing": we check the target year for hits, and if 0 hits,
+  //   we look back across targetYear-1 (i.e., the previous year) to
+  //   determine the TRUE last seen date so we can report an accurate
+  //   days-missing. That lookup is the ONLY cross-year behavior.
+  // ======================================
+  function computePick2DoubleStats(weeks, targetYear) {
+    const priorYear = targetYear - 1;
+    const doubleStats = {};
+    for (let i = 1; i <= 36; i++) {
+      doubleStats[`${i}/${i}`] = {
+        n: i,
+        count: 0,            // hits in targetYear ONLY
+        lastDate: null,      // most recent hit in targetYear ONLY
+        priorLastDate: null  // most recent hit in priorYear (for missing calc)
+      };
+    }
+
+    weeks.forEach(week => {
+      const weekStart = parseWeekStart(week.startDate);
+      if (!weekStart) return;
+      const yr = weekStart.getFullYear();
+      if (yr !== targetYear && yr !== priorYear) return;
+
+      week.days.forEach(day => {
+        const actualDate = getActualDate(week, day.dayName);
+        if (!actualDate) return;
+
+        slots.forEach(slot => {
+          const val = day.draws[slot];
+          if (!val || val === "-" || val === "PENDING" || val === "HOLIDAY") return;
+          const parts = String(val).split(/[,/ ]+/);
+          if (parts.length < 2) return;
+          const n1 = parseInt(parts[0], 10);
+          const n2 = parseInt(parts[1], 10);
+          if (isNaN(n1) || isNaN(n2)) return;
+          if (n1 !== n2) return;              // doubles only
+          if (n1 < 1 || n1 > 36) return;
+
+          const key = `${n1}/${n1}`;
+          const stat = doubleStats[key];
+
+          if (yr === targetYear) {
+            stat.count++;
+            if (!stat.lastDate || actualDate > stat.lastDate) {
+              stat.lastDate = actualDate;
+            }
+          } else if (yr === priorYear) {
+            if (!stat.priorLastDate || actualDate > stat.priorLastDate) {
+              stat.priorLastDate = actualDate;
+            }
+          }
+        });
+      });
+    });
+
+    // Enrich: effective "last seen" for missing calc = targetYear hit if present, else priorYear hit
+    Object.values(doubleStats).forEach(s => {
+      const effective = s.lastDate || s.priorLastDate;
+      s.effectiveLastDate = effective;
+      s.daysMissing = effective ? daysSince(effective) : null;
+    });
+
+    return doubleStats;
+  }
+
+  // ======================================
+  // PICK 4 — YEARLY STATS
+  // ======================================
+  function computePick4YearStats(weeks, targetYear) {
+    const digitStats = {};
+    const fullDrawStats = {};
+    const twoDigitStats = {};
+    const threeDigitStats = {};
+
+    for (let i = 0; i <= 9; i++) digitStats[i] = { count: 0, lastDate: null };
+
+    weeks.forEach(week => {
+      const weekStart = parseWeekStart(week.startDate);
+      if (!weekStart || weekStart.getFullYear() !== targetYear) return;
+
+      week.days.forEach(day => {
+        const actualDate = getActualDate(week, day.dayName);
+        slots.forEach(slot => {
+          const val = day.draws[slot];
+          if (!val || val === "-" || val === "PENDING" || val === "HOLIDAY") return;
+          const clean = String(val).replace(/\D/g, '');
+          if (clean.length < 4) return;
+          const fourDigit = clean.length === 4 ? clean : clean.slice(0, 4);
+
+          for (const ch of fourDigit) {
+            const d = parseInt(ch, 10);
+            if (!isNaN(d) && d >= 0 && d <= 9) {
+              digitStats[d].count++;
+              if (!digitStats[d].lastDate || actualDate > digitStats[d].lastDate) {
+                digitStats[d].lastDate = actualDate;
+              }
+            }
+          }
+
+          if (!fullDrawStats[fourDigit]) fullDrawStats[fourDigit] = { count: 0, lastDate: null };
+          fullDrawStats[fourDigit].count++;
+          if (!fullDrawStats[fourDigit].lastDate || actualDate > fullDrawStats[fourDigit].lastDate) {
+            fullDrawStats[fourDigit].lastDate = actualDate;
+          }
+
+          for (let i = 0; i <= 2; i++) {
+            const pair = fourDigit.substring(i, i + 2);
+            if (!twoDigitStats[pair]) twoDigitStats[pair] = { count: 0, lastDate: null };
+            twoDigitStats[pair].count++;
+            if (!twoDigitStats[pair].lastDate || actualDate > twoDigitStats[pair].lastDate) {
+              twoDigitStats[pair].lastDate = actualDate;
+            }
+          }
+
+          for (let i = 0; i <= 1; i++) {
+            const triple = fourDigit.substring(i, i + 3);
+            if (!threeDigitStats[triple]) threeDigitStats[triple] = { count: 0, lastDate: null };
+            threeDigitStats[triple].count++;
+            if (!threeDigitStats[triple].lastDate || actualDate > threeDigitStats[triple].lastDate) {
+              threeDigitStats[triple].lastDate = actualDate;
+            }
+          }
+        });
+      });
+    });
+
+    return { digitStats, fullDrawStats, twoDigitStats, threeDigitStats };
+  }
+
+  // ======================================
+  // TOP/BOTTOM SELECTORS
+  // ======================================
+  function topN(obj, n, minCount = 1) {
+    return Object.entries(obj)
+      .map(([k, v]) => ({ key: k, ...v }))
+      .filter(item => (item.count || 0) >= minCount)
+      .sort((a, b) => (b.count || 0) - (a.count || 0))
+      .slice(0, n);
+  }
+
+  function bottomN(obj, n, minCount = 0) {
+    return Object.entries(obj)
+      .map(([k, v]) => ({ key: k, ...v }))
+      .filter(item => (item.count || 0) >= minCount)
+      .sort((a, b) => (a.count || 0) - (b.count || 0))
+      .slice(0, n);
+  }
+
+  // ======================================
+  // RENDER HELPERS
+  // ======================================
+  const textColor = 'var(--text-main, #ffffff)';
+  const dimColor = 'var(--text-dim, #64748b)';
+
+  function chipStack(topLine, count, dateLine, accentColor) {
+    return `
+      <div style="
+        display:flex;
+        flex-direction:column;
+        align-items:center;
+        justify-content:center;
+        padding:4px 6px;
+        background: var(--card-bg, rgba(255,255,255,0.03));
+        border:1px solid var(--border-color, rgba(255,255,255,0.06));
+        border-radius:5px;
+        min-width:0;
+        flex:1 1 auto;
+      ">
+        <span style="font-size:14px; font-weight:900; color:${accentColor}; line-height:1.1;">${topLine}</span>
+        <span style="font-size:9px; font-weight:700; color:${textColor}; margin-top:2px; line-height:1.1;">${count}</span>
+        <span style="font-size:8px; color:${dimColor}; margin-top:1px; line-height:1.1;">${dateLine}</span>
+      </div>
+    `;
+  }
+
+  function subLabel(label, color) {
+    return `
+      <div style="
+        font-size:9px;
+        font-weight:800;
+        color:${color};
+        letter-spacing:0.4px;
+        margin:6px 0 3px;
+        text-align:center;
+      ">${label}</div>
+    `;
+  }
+
+  function chipRow(html) {
+    return `<div style="display:flex; flex-wrap:wrap; gap:3px; justify-content:center;">${html || `<span style="font-size:9px; color:${dimColor}">No data</span>`}</div>`;
+  }
+
+  // ======================================
+  // SLIDE RENDERERS
+  // ======================================
+  function renderPlayWheSlide(year) {
+    const stats = computePlayWheYearStats(pwWeeks, year);
+    const topMarks = topN(stats.markStats, 12, 1);
+    const bottomMarks = bottomN(stats.markStats, 12, 1);
+    const topLines = topN(stats.lineStats, 6, 1);
+    const bottomLines = bottomN(stats.lineStats, 6, 0);
+    const topSuits = topN(stats.suitStats, 6, 1);
+    const bottomSuits = bottomN(stats.suitStats, 6, 0);
+    const topCharts = topN(stats.chartStats, 5, 1);
+
+    const topMarksHtml = topMarks.map(m => {
+      const num = parseInt(m.key, 10);
+      const line = numToLineMap[num];
+      return chipStack(`${num}${spiritEmoji[num] || ''}`, `${line} L • ${m.count}x`, formatShortDate(m.lastDate), '#ff6b6b');
+    }).join('');
+
+    const bottomMarksHtml = bottomMarks.map(m => {
+      const num = parseInt(m.key, 10);
+      const line = numToLineMap[num];
+      return chipStack(`${num}${spiritEmoji[num] || ''}`, `${line} L • ${m.count}x`, formatShortDate(m.lastDate), '#58a6ff');
+    }).join('');
+
+    const topLinesHtml = topLines.map(l => chipStack(`${l.key} L`, `${l.count}x`, formatShortDate(l.lastDate), '#ff9d00')).join('');
+    const bottomLinesHtml = bottomLines.map(l => chipStack(`${l.key} L`, `${l.count}x`, formatShortDate(l.lastDate), '#58a6ff')).join('');
+    const topSuitsHtml = topSuits.map(s => chipStack(`${s.key} S`, `${s.count}x`, formatShortDate(s.lastDate), '#ff9d00')).join('');
+    const bottomSuitsHtml = bottomSuits.map(s => chipStack(`${s.key} S`, `${s.count}x`, formatShortDate(s.lastDate), '#58a6ff')).join('');
+    const topChartsHtml = topCharts.map(c => chipStack(c.key, `${c.count}x`, formatShortDate(c.lastDate), '#32d74b')).join('');
+
+    return `
+      <div style="
+        background: var(--card-bg, rgba(255,255,255,0.02));
+        border-radius:10px;
+        padding:8px;
+        border:1px solid var(--border-color, rgba(255,255,255,0.06));
+      ">
+        <div style="display:flex; align-items:center; gap:6px; padding-bottom:4px; border-bottom:1px solid var(--border-color, rgba(255,255,255,0.06)); margin-bottom:4px;">
+          <span style="display:inline-block; width:8px; height:8px; border-radius:50%; background:#ff6b6b; box-shadow:0 0 8px #ff6b6b80;"></span>
+          <span style="font-size:13px; font-weight:900; color:${textColor};">PLAY WHE <span style="color:${dimColor}; font-weight:700;">(${year})</span></span>
+        </div>
+
+        ${subLabel('TOP MOST PLAYED MARKS', '#ff6b6b')}
+        ${chipRow(topMarksHtml)}
+
+        ${subLabel('LEAST PLAYED MARKS', '#58a6ff')}
+        ${chipRow(bottomMarksHtml)}
+
+        ${subLabel('TOP PLAYED LINES', '#ff9d00')}
+        ${chipRow(topLinesHtml)}
+
+        ${subLabel('LEAST PLAYED LINES', '#58a6ff')}
+        ${chipRow(bottomLinesHtml)}
+
+        ${subLabel('TOP PLAYED SUITS', '#ff9d00')}
+        ${chipRow(topSuitsHtml)}
+
+        ${subLabel('LEAST PLAYED SUITS', '#58a6ff')}
+        ${chipRow(bottomSuitsHtml)}
+
+        ${subLabel('TOP PLAYED CHART PLAY', '#32d74b')}
+        ${chipRow(topChartsHtml)}
+      </div>
+    `;
+  }
+
+  function renderPick2Slide(year) {
+    const stats = computePick2YearStats(p2Weeks, year);
+    // Pass THIS SLIDE'S year — not currentYear — so stats stay within the year
+    const doubleStats = computePick2DoubleStats(p2Weeks, year);
+
+    const topMarks = topN(stats.markStats, 8, 1);
+    const bottomMarks = bottomN(stats.markStats, 8, 1);
+    const topPairs = topN(stats.pairStats, 12, 1);
+    const bottomPairs = bottomN(stats.pairStats, 12, 1);
+
+  // =================================
+  // DOUBLES: MOST PLAYED (this year only)
+  // ==================================
+    const playedDoubles = Object.entries(doubleStats)
+      .map(([k, v]) => ({ key: k, ...v }))
+      .filter(d => d.count > 0)
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 12);
+
+  // ====================================
+  // DOUBLES: LEAST PLAYED (this year only)
+  // Has been hit at least once in the target year, fewest hits first
+  // =====================================
+    const leastPlayedDoubles = Object.entries(doubleStats)
+      .map(([k, v]) => ({ key: k, ...v }))
+      .filter(d => d.count > 0)
+      .sort((a, b) => {
+        if (a.count !== b.count) return a.count - b.count;
+        // Tiebreak: longest gap since last hit within year
+        const aD = a.lastDate ? daysSince(a.lastDate) : Infinity;
+        const bD = b.lastDate ? daysSince(b.lastDate) : Infinity;
+        return bD - aD;
+      })
+      .slice(0, 12);
+
+  // =====================================
+    // DOUBLES: MISSING (0 hits THIS year)
+    // days-missing uses last actual hit (this year or prior year)
+  // =====================================
+    const missingDoubles = Object.entries(doubleStats)
+      .map(([k, v]) => ({ key: k, ...v }))
+      .filter(d => d.count === 0)     // no hits in THIS year
+      .sort((a, b) => {
+        const aNever = a.effectiveLastDate ? 0 : 1;
+        const bNever = b.effectiveLastDate ? 0 : 1;
+        if (aNever !== bNever) return bNever - aNever;
+        const aD = a.daysMissing == null ? Infinity : a.daysMissing;
+        const bD = b.daysMissing == null ? Infinity : b.daysMissing;
+        return bD - aD;
+      })
+      .slice(0, 12);
+
+    const topMarksHtml = topMarks.map(m => chipStack(`${m.key}`, `${m.count}x`, formatShortDate(m.lastDate), '#ff6b6b')).join('');
+    const bottomMarksHtml = bottomMarks.map(m => chipStack(`${m.key}`, `${m.count}x`, formatShortDate(m.lastDate), '#58a6ff')).join('');
+    const topPairsHtml = topPairs.map(p => chipStack(`${p.n1}/${p.n2}`, `${p.count}x`, formatShortDate(p.lastDate), '#ff9d00')).join('');
+    const bottomPairsHtml = bottomPairs.map(p => chipStack(`${p.n1}/${p.n2}`, `${p.count}x`, formatShortDate(p.lastDate), '#58a6ff')).join('');
+
+    // MOST PLAYED DOUBLES → pair + this-year hits + last hit within this year
+    const playedDoublesHtml = playedDoubles.map(d => {
+      const dateLine = d.lastDate
+        ? `${formatShortDate(d.lastDate)} ${yearTag(d.lastDate)}`
+        : 'never';
+      return chipStack(d.key, `${d.count}x`, dateLine, '#ff9d00');
+    }).join('');
+
+    // LEAST PLAYED DOUBLES → pair + this-year hits + last hit within this year
+    const leastPlayedDoublesHtml = leastPlayedDoubles.map(d => {
+      const dateLine = d.lastDate
+        ? `${formatShortDate(d.lastDate)} ${yearTag(d.lastDate)}`
+        : 'never';
+      return chipStack(d.key, `${d.count}x`, dateLine, '#58a6ff');
+    }).join('');
+
+    // MISSING DOUBLES → pair + days missing + last-seen date (could be prior year)
+    const missingDoublesHtml = missingDoubles.map(d => {
+      if (!d.effectiveLastDate) {
+        return chipStack(d.key, '∞', 'never', '#ff6b6b');
+      }
+      const daysTxt = `${d.daysMissing}d`;
+      const subTxt = `${formatShortDate(d.effectiveLastDate)} ${yearTag(d.effectiveLastDate)}`;
+      return chipStack(d.key, daysTxt, subTxt, '#ff6b6b');
+    }).join('');
+
+    return `
+      <div style="
+        background: var(--card-bg, rgba(255,255,255,0.02));
+        border-radius:10px;
+        padding:8px;
+        border:1px solid var(--border-color, rgba(255,255,255,0.06));
+      ">
+        <div style="display:flex; align-items:center; gap:6px; padding-bottom:4px; border-bottom:1px solid var(--border-color, rgba(255,255,255,0.06)); margin-bottom:4px;">
+          <span style="display:inline-block; width:8px; height:8px; border-radius:50%; background:#58a6ff; box-shadow:0 0 8px #58a6ff80;"></span>
+          <span style="font-size:13px; font-weight:900; color:${textColor};">PICK 2 <span style="color:${dimColor}; font-weight:700;">(${year})</span></span>
+        </div>
+
+        ${subLabel('TOP MOST PLAYED PAIRS', '#ff9d00')}
+        ${chipRow(topPairsHtml)}
+
+        ${subLabel('LEAST PLAYED PAIRS', '#58a6ff')}
+        ${chipRow(bottomPairsHtml)}
+
+        ${subLabel('TOP MOST PLAYED MARKS', '#ff6b6b')}
+        ${chipRow(topMarksHtml)}
+
+        ${subLabel('LEAST PLAYED MARKS', '#58a6ff')}
+        ${chipRow(bottomMarksHtml)}
+
+        ${subLabel('MOST PLAYED DOUBLES', '#ff9d00')}
+        ${chipRow(playedDoublesHtml)}
+
+        ${subLabel('LEAST PLAYED DOUBLES', '#58a6ff')}
+        ${chipRow(leastPlayedDoublesHtml)}
+
+        ${subLabel('MISSING DOUBLES — NOT HIT THIS YEAR', '#ff6b6b')}
+        ${chipRow(missingDoublesHtml)}
+      </div>
+    `;
+  }
+
+  function renderPick4Slide(year) {
+    const stats = computePick4YearStats(p4Weeks, year);
+    const topDigits = topN(stats.digitStats, 7, 1);
+    const bottomDigits = bottomN(stats.digitStats, 7, 1);
+    const topDraws = topN(stats.fullDrawStats, 5, 1);
+    const bottomDraws = bottomN(stats.fullDrawStats, 5, 1);
+    const topTwo = topN(stats.twoDigitStats, 6, 1);
+    const bottomTwo = bottomN(stats.twoDigitStats, 6, 1);
+    const topThree = topN(stats.threeDigitStats, 5, 1);
+    const bottomThree = bottomN(stats.threeDigitStats, 5, 1);
+
+    const topDigitsHtml = topDigits.map(d => chipStack(`${d.key}`, `${d.count}x`, formatShortDate(d.lastDate), '#ff6b6b')).join('');
+    const bottomDigitsHtml = bottomDigits.map(d => chipStack(`${d.key}`, `${d.count}x`, formatShortDate(d.lastDate), '#58a6ff')).join('');
+    const topDrawsHtml = topDraws.map(d => chipStack(`${d.key}`, `${d.count}x`, formatShortDate(d.lastDate), '#ff9d00')).join('');
+    const bottomDrawsHtml = bottomDraws.map(d => chipStack(`${d.key}`, `${d.count}x`, formatShortDate(d.lastDate), '#58a6ff')).join('');
+    const topTwoHtml = topTwo.map(d => chipStack(`${d.key}`, `${d.count}x`, formatShortDate(d.lastDate), '#32d74b')).join('');
+    const bottomTwoHtml = bottomTwo.map(d => chipStack(`${d.key}`, `${d.count}x`, formatShortDate(d.lastDate), '#58a6ff')).join('');
+    const topThreeHtml = topThree.map(d => chipStack(`${d.key}`, `${d.count}x`, formatShortDate(d.lastDate), '#bf5af2')).join('');
+    const bottomThreeHtml = bottomThree.map(d => chipStack(`${d.key}`, `${d.count}x`, formatShortDate(d.lastDate), '#58a6ff')).join('');
+
+    return `
+      <div style="
+        background: var(--card-bg, rgba(255,255,255,0.02));
+        border-radius:10px;
+        padding:8px;
+        border:1px solid var(--border-color, rgba(255,255,255,0.06));
+      ">
+        <div style="display:flex; align-items:center; gap:6px; padding-bottom:4px; border-bottom:1px solid var(--border-color, rgba(255,255,255,0.06)); margin-bottom:4px;">
+          <span style="display:inline-block; width:8px; height:8px; border-radius:50%; background:#32d74b; box-shadow:0 0 8px #32d74b80;"></span>
+          <span style="font-size:13px; font-weight:900; color:${textColor};">PICK 4 <span style="color:${dimColor}; font-weight:700;">(${year})</span></span>
+        </div>
+
+        ${subLabel('TOP MOST PLAYED 4-DIGIT DRAWS', '#ff9d00')}
+        ${chipRow(topDrawsHtml)}
+
+        ${subLabel('LEAST PLAYED 4-DIGIT DRAWS', '#58a6ff')}
+        ${chipRow(bottomDrawsHtml)}
+
+        ${subLabel('TOP MOST PLAYED DIGITS', '#ff6b6b')}
+        ${chipRow(topDigitsHtml)}
+
+        ${subLabel('LEAST PLAYED DIGITS', '#58a6ff')}
+        ${chipRow(bottomDigitsHtml)}
+
+        ${subLabel('TOP PLAYED 2-DIGIT PAIRS', '#32d74b')}
+        ${chipRow(topTwoHtml)}
+
+        ${subLabel('LEAST PLAYED 2-DIGIT PAIRS', '#58a6ff')}
+        ${chipRow(bottomTwoHtml)}
+
+        ${subLabel('TOP PLAYED 3-DIGIT SEQUENCES', '#bf5af2')}
+        ${chipRow(topThreeHtml)}
+
+        ${subLabel('LEAST PLAYED 3-DIGIT SEQUENCES', '#58a6ff')}
+        ${chipRow(bottomThreeHtml)}
+      </div>
+    `;
+  }
+
+  // ======================================
+  // BUILD CAROUSEL
+  // ======================================
+  const carouselId = 'yvy-carousel-' + Date.now();
+
+  const slides = [
+    { label: `PLAY WHE (${currentYear})`,   html: renderPlayWheSlide(currentYear),   accent: '#ff6b6b' },
+    { label: `PLAY WHE (${previousYear})`,  html: renderPlayWheSlide(previousYear),  accent: '#ff6b6b' },
+    { label: `PICK 2 (${currentYear})`,     html: renderPick2Slide(currentYear),     accent: '#58a6ff' },
+    { label: `PICK 2 (${previousYear})`,    html: renderPick2Slide(previousYear),    accent: '#58a6ff' },
+    { label: `PICK 4 (${currentYear})`,     html: renderPick4Slide(currentYear),     accent: '#32d74b' },
+    { label: `PICK 4 (${previousYear})`,    html: renderPick4Slide(previousYear),    accent: '#32d74b' }
+  ];
+
+  const slidesHtml = slides.map((s, idx) => `
+    <div class="yvy-slide" data-index="${idx}" style="
+      min-width:100%;
+      scroll-snap-align:start;
+      padding:2px;
+      box-sizing:border-box;
+    ">
+      ${s.html}
+    </div>
+  `).join('');
+
+  let dotsHtml = '';
+  for (let i = 0; i < slides.length; i++) {
+    dotsHtml += `
+      <span class="yvy-dot" data-index="${i}" style="
+        width: 6px; height: 6px;
+        background: ${i === 0 ? '#ff9d00' : '#555'};
+        border-radius: 50%;
+        display: inline-block;
+        margin: 0 4px;
+        cursor: pointer;
+        transition: all 0.3s ease;
+        ${i === 0 ? 'width: 16px; border-radius: 4px;' : ''}
+      "></span>
+    `;
+  }
+
+  const labels = slides.map(s => s.label);
+
+  return `
+    <style>
+      .yvy-track::-webkit-scrollbar { display: none; }
+      .yvy-track { -ms-overflow-style: none; scrollbar-width: none; }
+    </style>
+
+    <div style="
+      background: var(--bg-start, linear-gradient(135deg, #0f172a, #1e293b));
+      border-radius:16px;
+      padding:12px;
+      margin-bottom:15px;
+      border:1px solid var(--border-color, #ff9d00);
+    ">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; flex-wrap:wrap; gap:4px;">
+        <div>
+          <div style="font-size:14px; font-weight:800; color:${textColor}; letter-spacing:0.3px;">
+            ♠️ YEAR OVERVIEW • ${currentYear} vs ${previousYear}
+          </div>
+          <div style="font-size:8px; color:${dimColor}; margin-top:1px;">
+            Swipe to compare • Play Whe • Pick 2 • Pick 4
+          </div>
+        </div>
+        <div style="display:flex; align-items:center; gap:4px; font-size:6px; color:${dimColor};">
+          <span style="color:#ff9d00; font-weight:bold; font-size:6px;">${globalTrackingCode}</span>
+        </div>
+      </div>
+
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+        <button class="yvy-prev" style="
+          background: rgba(255,157,0,0.15);
+          border: 1px solid rgba(255,157,0,0.3);
+          color: #ff9d00;
+          font-weight: 800;
+          font-size: 12px;
+          padding: 4px 14px;
+          border-radius: 20px;
+          cursor: pointer;
+        ">◀ Prev</button>
+
+        <span id="${carouselId}-label" style="
+          font-size:10px;
+          font-weight:700;
+          color:${dimColor};
+          letter-spacing:0.3px;
+        ">${slides[0].label}</span>
+
+        <button class="yvy-next" style="
+          background: rgba(255,157,0,0.15);
+          border: 1px solid rgba(255,157,0,0.3);
+          color: #ff9d00;
+          font-weight: 800;
+          font-size: 12px;
+          padding: 4px 14px;
+          border-radius: 20px;
+          cursor: pointer;
+        ">Next ▶</button>
+      </div>
+
+      <div id="${carouselId}" class="yvy-track" style="
+        display:flex;
+        overflow-x:auto;
+        scroll-snap-type:x mandatory;
+        scroll-behavior:smooth;
+        -webkit-overflow-scrolling:touch;
+        gap:0;
+        padding:0;
+      ">
+        ${slidesHtml}
+      </div>
+
+      <div id="${carouselId}-dots" style="display:flex; justify-content:center; align-items:center; margin-top:8px;">
+        ${dotsHtml}
+      </div>
+
+      <div style="margin-top:6px; padding-top:4px; border-top:1px solid var(--border-color, rgba(255,255,255,0.02)); display:flex; justify-content:center; align-items:center; gap:6px; flex-wrap:wrap;">
+        <span style="font-size:7px; color:${dimColor};">CodeWithGlasgow • CWG Chart Analysis ©️</span>
+        <span style="font-size:7px; color:${dimColor};">${currentYear} vs ${previousYear}</span>
+      </div>
+    </div>
+
+    <script>
+      (function() {
+        var trackId = '${carouselId}';
+        var track = document.getElementById(trackId);
+        if (!track) return;
+
+        var dots = document.querySelectorAll('#' + trackId + '-dots .yvy-dot');
+        var label = document.getElementById(trackId + '-label');
+        var prevBtn = track.parentElement.querySelector('.yvy-prev');
+        var nextBtn = track.parentElement.querySelector('.yvy-next');
+
+        var labels = ${JSON.stringify(labels)};
+        var totalSlides = ${slides.length};
+        var currentIndex = 0;
+        var scrollTimeout;
+
+        function updateDots() {
+          dots.forEach(function(dot, idx) {
+            if (idx === currentIndex) {
+              dot.style.background = '#ff9d00';
+              dot.style.width = '16px';
+              dot.style.borderRadius = '4px';
+            } else {
+              dot.style.background = '#555';
+              dot.style.width = '6px';
+              dot.style.borderRadius = '50%';
+            }
+          });
+          if (label && labels[currentIndex]) {
+            label.textContent = labels[currentIndex];
+          }
+        }
+
+        function scrollToSlide(index) {
+          if (index < 0) index = 0;
+          if (index >= totalSlides) index = totalSlides - 1;
+          currentIndex = index;
+          var slideWidth = track.children[0] ? track.children[0].offsetWidth : 0;
+          if (slideWidth > 0) {
+            track.scrollTo({ left: index * slideWidth, behavior: 'smooth' });
+          }
+          updateDots();
+        }
+
+        function handleScroll() {
+          if (scrollTimeout) clearTimeout(scrollTimeout);
+          scrollTimeout = setTimeout(function() {
+            var slideWidth = track.children[0] ? track.children[0].offsetWidth : 0;
+            if (slideWidth <= 0) return;
+            var newIndex = Math.round(track.scrollLeft / slideWidth);
+            if (newIndex !== currentIndex && newIndex >= 0 && newIndex < totalSlides) {
+              currentIndex = newIndex;
+              updateDots();
+            }
+          }, 80);
+        }
+
+        track.addEventListener('scroll', handleScroll);
+        dots.forEach(function(dot) {
+          dot.addEventListener('click', function() {
+            scrollToSlide(parseInt(dot.getAttribute('data-index'), 10));
+          });
+        });
+        if (prevBtn) prevBtn.addEventListener('click', function() { scrollToSlide(currentIndex - 1); });
+        if (nextBtn) nextBtn.addEventListener('click', function() { scrollToSlide(currentIndex + 1); });
+
+        updateDots();
+      })();
+    </script>
+  `;
+}
+/////////////////////////////////////////
 // ======================================
 // Heat Grid
 // ======================================
@@ -6380,6 +10111,7 @@ function renderIntelligentAnalysis(weeks) {
 // ======================================
 // HOT & OVERDUE NUMBERS
 // Probability Matrix & BEST BETS & HEAD SHOT
+// ENHANCED: Marks Play Streak Stats with rotating banner ticker
 // ======================================
 function renderHotAndOverdue(weeksData) {
   if (!weeksData || weeksData.length === 0) {
@@ -7571,7 +11303,7 @@ function getChart8Family(num) {
     }
     
     alerts.sort((a, b) => b.confidence - a.confidence);
-    return alerts.slice(0, 4);
+    return alerts.slice(0, 8);
   }
   
   let patternAlerts = generatePatternAlerts();
@@ -7841,52 +11573,195 @@ function getChart8Family(num) {
   // Determine if there are any completed streaks
   const hasCompleted = completedDoubles.length > 0 || completedTriples.length > 0 || completedQuadruples.length > 0;
   
-  // Build all completed banners
+  // =============================================================
+  // ENHANCED COMPLETION BANNERS WITH DATE/TIME AND SPIRIT NAMES
+  // =============================================================
+  
+  // Time display mapping
+  const timeDisplay = {
+    MOR: "10:30 AM",
+    MID: "1:00 PM",
+    NON: "4:00 PM",
+    EVE: "7:00 PM"
+  };
+  
+  function getDrawWithDate(week, dayName, slot) {
+    if (!week) return null;
+    const day = week.days.find(d => d.dayName === dayName);
+    if (!day) return null;
+    const val = day.draws[slot];
+    if (val && val !== "-" && val !== "PENDING" && val !== "HOLIDAY") {
+      const parts = week.startDate.split(" ");
+      const monthMap = {"Jan":0,"Feb":1,"Mar":2,"Apr":3,"May":4,"Jun":5,"Jul":6,"Aug":7,"Sep":8,"Oct":9,"Nov":10,"Dec":11};
+      const startDate = new Date(parts[2], monthMap[parts[1]], parseInt(parts[0]));
+      const dayIndex = dayNames.indexOf(dayName);
+      const drawDate = new Date(startDate);
+      drawDate.setDate(startDate.getDate() + dayIndex);
+      return { value: parseInt(val, 10), date: drawDate, slot: slot };
+    }
+    return null;
+  }
+  
+  function formatBannerDate(date, slot) {
+    if (!date) return "";
+    const days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    const dateStr = `${days[date.getDay()]} ${date.getDate()} ${months[date.getMonth()]} '${date.getFullYear().toString().slice(-2)}`;
+    const timeStr = timeDisplay[slot] || slot;
+    return `${dateStr} @ ${timeStr}`;
+  }
+  
+  // Build completion details with dates
+  const completionDetails = {};
+  for (let d = 0; d <= todayIdx; d++) {
+    for (const slot of slots) {
+      const result = getDrawWithDate(currentWeek, dayNames[d], slot);
+      if (result) {
+        const key = `${result.value}`;
+        if (!completionDetails[key]) {
+          completionDetails[key] = [];
+        }
+        completionDetails[key].push({
+          date: result.date,
+          slot: result.slot,
+          formatted: formatBannerDate(result.date, result.slot)
+        });
+      }
+    }
+  }
+  
+  // Build all banners with enhanced details
   const allBanners = [];
   
-  // Quadruples (highest priority)
+  // QUADRUPLE COMPLETED
   completedQuadruples.forEach(num => {
+    const draws = completionDetails[num] || [];
+    const latest = draws.length > 0 ? draws[draws.length - 1] : null;
+    const dateStr = latest ? ` ${latest.formatted}` : "";
     allBanners.push({
       num: num,
-      category: 'QUADRUPLE',
+      category: 'QUADRUPLE_COMPLETED',
       color: '#ff375f',
+      priority: 4,
+      text: `#${num}${spiritEmoji[num] || ''} (${spiritNames[num] || 'Unknown'}) Has Completed <span style="color:#ff375f;">QUADRUPLE</span> Play Streak!<br><center>${dateStr}</center>`
+    });
+  });
+  
+  // QUADRUPLE PENDING
+  toQuadrupleMissing.forEach(num => {
+    allBanners.push({
+      num: num,
+      category: 'QUADRUPLE_PENDING',
+      color: '#800080',
       priority: 3,
-      text: `✅ #${num}${spiritEmoji[num] || ''} (${spiritNames[num] || 'Unknown'}) Has Completed <span style="color:#ff375f;">QUADRUPLE</span> Play Streak!`
+      text: `#${num}${spiritEmoji[num] || ''} (${spiritNames[num] || 'Unknown'}) Made - 1 More To Complete QUADRUPLE Streak!<br><center>Pending from last week</center>`
     });
   });
   
-  // Triples
-  completedTriples.forEach(num => {
+  // QUADRUPLE 3 HITS
+  toQuadrupleCurrent.forEach(num => {
+    const draws = completionDetails[num] || [];
+    const latest = draws.length > 0 ? draws[draws.length - 1] : null;
+    const dateStr = latest ? ` ${latest.formatted}` : "";
     allBanners.push({
       num: num,
-      category: 'TRIPLE',
-      color: '#ff9d00',
+      category: 'QUADRUPLE_3HIT',
+      color: '#ff375f',
       priority: 2,
-      text: `✅ #${num}${spiritEmoji[num] || ''} (${spiritNames[num] || 'Unknown'}) Has Completed <span style="color:#ff9d00;">TRIPLE</span> Play Streak!`
+      text: `#${num}${spiritEmoji[num] || ''} (${spiritNames[num] || 'Unknown'}) Made <span style="color:#ff375f;">3 HITS</span> - 1 More To QUADRUPLE!<br><center>${dateStr}</center>`
     });
   });
   
-  // Doubles
-  completedDoubles.forEach(num => {
+  // TRIPLE COMPLETED
+  completedTriples.forEach(num => {
+    const draws = completionDetails[num] || [];
+    const latest = draws.length > 0 ? draws[draws.length - 1] : null;
+    const dateStr = latest ? ` ${latest.formatted}` : "";
     allBanners.push({
       num: num,
-      category: 'DOUBLE',
-      color: '#32d74b',
+      category: 'TRIPLE_COMPLETED',
+      color: '#ff9d00',
       priority: 1,
-      text: `✅ #${num}${spiritEmoji[num] || ''} (${spiritNames[num] || 'Unknown'}) Has Completed <span style="color:#32d74b;">DOUBLE</span> Play Streak!`
+      text: `#${num}${spiritEmoji[num] || ''} (${spiritNames[num] || 'Unknown'}) Has Completed <span style="color:#ff9d00;">TRIPLE</span> Play Streak!<br><center>${dateStr}</center>`
     });
   });
   
-  // Sort by priority (highest first)
+  // TRIPLE PENDING
+  toTripleMissing.forEach(num => {
+    allBanners.push({
+      num: num,
+      category: 'TRIPLE_PENDING',
+      color: '#800080',
+      priority: 0,
+      text: `#${num}${spiritEmoji[num] || ''} (${spiritNames[num] || 'Unknown'}) Made 2 Hits - 1 More To Complete Streak!<br><center>Pending Triple From Last Week</center>`
+    });
+  });
+  
+  // TRIPLE 2 HITS
+  toTripleCurrent.forEach(num => {
+    const draws = completionDetails[num] || [];
+    const latest = draws.length > 0 ? draws[draws.length - 1] : null;
+    const dateStr = latest ? ` ${latest.formatted}` : "";
+    allBanners.push({
+      num: num,
+      category: 'TRIPLE_2HIT',
+      color: '#ff9d00',
+      priority: 0,
+      text: `#${num}${spiritEmoji[num] || ''} (${spiritNames[num] || 'Unknown'}) Made <span style="color:#ff9d00;">2 HITS</span> - 1 More To TRIPLE!<br><center>${dateStr}</center>`
+    });
+  });
+  
+  // DOUBLE COMPLETED
+  doubleNumbers.forEach(num => {
+    const currCount = currWeekCounts[num] || 0;
+    if (currCount >= 2) {
+      const draws = completionDetails[num] || [];
+      const latest = draws.length > 0 ? draws[draws.length - 1] : null;
+      const dateStr = latest ? ` ${latest.formatted}` : "";
+      allBanners.push({
+        num: num,
+        category: 'DOUBLE_COMPLETED',
+        color: '#32d74b',
+        priority: 0,
+        text: `#${num}${spiritEmoji[num] || ''} (${spiritNames[num] || 'Unknown'}) Has Completed <span style="color:#32d74b;">DOUBLE</span> Play Streak!<br><center>${dateStr}</center>`
+      });
+    }
+  });
+  
+  // DOUBLE PENDING
+  toDoubleMissing.forEach(num => {
+    allBanners.push({
+      num: num,
+      category: 'DOUBLE_PENDING',
+      color: '#800080',
+      priority: 0,
+      text: `Double: #${num}${spiritEmoji[num] || ''} (${spiritNames[num] || 'Unknown'}) <span style="color:#800080;">PENDING</span> - 1 More To Complete DOUBLE Play Streak!<br><center>Pending from last week</center>`
+    });
+  });
+  
+  // DOUBLE 1 HIT
+  toDoubleCurrent.forEach(num => {
+    const draws = completionDetails[num] || [];
+    const latest = draws.length > 0 ? draws[draws.length - 1] : null;
+    const dateStr = latest ? ` ${latest.formatted}` : "";
+    allBanners.push({
+      num: num,
+      category: 'DOUBLE_1HIT',
+      color: '#32d74b',
+      priority: 0,
+      text: `Double: #${num}${spiritEmoji[num] || ''} (${spiritNames[num] || 'Unknown'}) Made <span style="color:#32d74b;">1 HIT</span> - 1 More To DOUBLE!<br><center>${dateStr}</center>`
+    });
+  });
+  
+  // Sort by priority
   allBanners.sort((a, b) => b.priority - a.priority);
   
-  // Generate rotating banner HTML with ticker animation
+  // Generate completion banner HTML with rotating ticker
   let completionBannerHtml = '';
   if (allBanners.length > 0) {
-    // Generate all banner items with fade animation
     const bannerItems = allBanners.map((banner, index) => `
       <div class="banner-item" style="
-        display: flex; 
+        display: ${index === 0 ? 'flex' : 'none'}; 
         justify-content: center; 
         align-items: center; 
         gap: 6px; 
@@ -7895,15 +11770,13 @@ function getChart8Family(num) {
         border-radius: 8px; 
         border: 1px solid ${banner.color}; 
         width: 100%;
-        animation: ${index === 0 ? 'fadeIn 0.5s ease' : 'fadeIn 0.5s ease'};
-        ${index > 0 ? 'display: none;' : ''}
+        animation: fadeIn 0.5s ease;
       ">
         <span style="font-size: 10px; font-weight: 700; color: ${banner.color};">🔔</span>
-        <span style="font-size: 10px; font-weight: 700; color: #fff;">${banner.text}</span>
+        <span style="font-size: 10px; font-weight: 700; color: #ffffff;">${banner.text}</span>
       </div>
     `).join('');
     
-    // Create the rotating ticker with JavaScript
     const bannerId = 'banner-' + Date.now();
     
     completionBannerHtml = `
@@ -7934,11 +11807,8 @@ function getChart8Family(num) {
           if (items.length <= 1) return;
           let currentIndex = 0;
           setInterval(function() {
-            // Hide current
             items[currentIndex].style.display = 'none';
-            // Move to next
             currentIndex = (currentIndex + 1) % items.length;
-            // Show next
             items[currentIndex].style.display = 'flex';
             items[currentIndex].style.animation = 'fadeIn 0.5s ease';
           }, 4000);
@@ -7948,7 +11818,8 @@ function getChart8Family(num) {
   }
   
   // Render category numbers - 3x3 grid
-  function renderCategoryNumbersGrid(numbers, categoryColor, label) {
+// Render category numbers - 3x3 grid WITH STATUS INDICATORS
+  function renderCategoryNumbersGrid(numbers, categoryColor, label, isDouble = false, isTriple = false, isQuadruple = false) {
     if (!numbers || numbers.length === 0) {
       return `<span style="color: #64748b; font-size: 11px;">None</span>`;
     }
@@ -7958,15 +11829,70 @@ function getChart8Family(num) {
     
     return `
       <div style="display: grid; grid-template-columns: repeat(3, 1fr); gap: 3px;">
-        ${displayNumbers.map(num => `
-          <div style="display: flex; flex-direction: column; align-items: center; background: ${categoryColor}15; border-radius: 4px; padding: 2px 4px;">
-            <span style="font-size: 14px; font-weight: 900; color: ${categoryColor};">${num}</span>
-            <span style="font-size: 9px; color: #94a3b8;">${spiritEmoji[num] || ''}</span>
-          </div>
-        `).join('')}
+        ${displayNumbers.map(num => {
+          // Determine status based on game type
+          const isMissing = isDouble && 
+            !previousWeekDraws.includes(num) && 
+            !currentWeekDraws.includes(num);
+          
+          const isPending = (isDouble && (prevWeekCounts[num] || 0) === 1 && !currentWeekDraws.includes(num)) ||
+                           (isTriple && (prevWeekCounts[num] || 0) === 2 && !currentWeekDraws.includes(num)) ||
+                           (isQuadruple && (prevWeekCounts[num] || 0) === 3 && !currentWeekDraws.includes(num));
+          
+          const isOneHit = isDouble && (currWeekCounts[num] || 0) === 1;
+          const isTwoHit = isTriple && (currWeekCounts[num] || 0) === 2;
+          const isThreeHit = isQuadruple && (currWeekCounts[num] || 0) === 3;
+          
+          // Color coding based on status
+          let bgColor = `${categoryColor}15`;
+          let textColor = categoryColor;
+          let borderColor = `${categoryColor}30`;
+          let statusLabel = '';
+          let statusColor = '';
+          
+          if (isMissing) {
+            bgColor = '#ffffff';
+            textColor = '#000000';
+            borderColor = '#cccccc';
+            statusLabel = '❓❓';
+            statusColor = '#999';
+          } else if (isPending) {
+            bgColor = 'rgba(128, 0, 128, 0.15)';
+            textColor = '#fffff';
+            borderColor = 'rgba(128, 0, 128, 0.4)';
+            statusLabel = '⏳';
+            statusColor = '#800080';
+          } else if (isOneHit) {
+            bgColor = '#32d74b';
+            textColor = '#000000';
+            borderColor = '#32d74b';
+            statusLabel = '🔥1X';
+            statusColor = '#32d74b';
+          } else if (isTwoHit) {
+            bgColor = 'rgba(255, 165, 0, 0.25)';
+            textColor = '#ff8c00';
+            borderColor = 'rgba(255, 165, 0, 0.4)';
+            statusLabel = '🔥2X';
+            statusColor = '#ff8c00';
+          } else if (isThreeHit) {
+            bgColor = 'rgba(255, 55, 95, 0.25)';
+            textColor = '#ff375f';
+            borderColor = 'rgba(255, 55, 95, 0.4)';
+            statusLabel = '🔥3X';
+            statusColor = '#ff375f';
+          }
+          
+          return `
+            <div style="display: flex; flex-direction: column; align-items: center; background: ${bgColor}; border-radius: 4px; padding: 4px 2px; border: 1px solid ${borderColor};">
+              <span style="font-size: 16px; font-weight: 900; color: ${textColor};">${num}</span>
+              <span style="font-size: 11px; color: #666;">${spiritEmoji[num] || ''}</span>
+              ${statusLabel ? `<span style="font-size: 7px; font-weight: 700; color: ${statusColor}; margin-top: 1px;">${statusLabel}</span>` : ''}
+            </div>
+          `;
+        }).join('')}
         ${displayNumbers.length < 9 ? Array(9 - displayNumbers.length).fill(0).map(() => `
-          <div style="display: flex; flex-direction: column; align-items: center; background: rgba(255,255,255,0.02); border-radius: 4px; padding: 2px 4px; opacity: 0.3;">
-            <span style="font-size: 14px; font-weight: 900; color: #64748b;">—</span>
+          <div style="display: flex; flex-direction: column; align-items: center; background: rgba(0,0,0,0.02); border-radius: 4px; padding: 4px 2px; opacity: 0.3; border: 1px solid rgba(255,255,255,0.05);">
+            <span style="font-size: 16px; font-weight: 900; color: #ccc;">—</span>
           </div>
         `).join('') : ''}
       </div>
@@ -7974,16 +11900,16 @@ function getChart8Family(num) {
   }
   
   return `
-    <div style="background: linear-gradient(135deg, #0f172a, #1e293b); border-radius: 16px; padding: 12px; margin-bottom: 7px; border: 1px solid #ff9d00;">
+    <div style="background: linear-gradient(135deg, #0f172a, #1e293b); border-radius: 16px; padding: 12px; margin-bottom: 3px; border: 1px solid #ff9d00;">
       
       <!-- Header -->
-      <div style="text-align: center; margin-bottom: 8px;">
+      <div style="text-align: center; margin-bottom: 3px;">
         <div style="font-size: 14px; font-weight: 800; color: #ff9d00; letter-spacing: 0.5px;">🔥 HOT & 📅 OVERDUE<br>MARKS</div>
         <div style="font-size: 9px; color: #64748b; margin-top: 2px;">Hot: Last 6 weeks • Overdue: Last 12 weeks</div>
       </div>
       
       <!-- UNDER TODAY -->
-      <div style="background: rgba(255,157,0,0.08); border-radius: 12px; padding: 8px; margin-bottom: 8px; border: 1px solid rgba(255,157,0,0.15);">
+      <div style="background: rgba(255,157,0,0.08); border-radius: 12px; padding: 8px; margin-bottom: 3px; border: 1px solid rgba(255,157,0,0.15);">
         <div style="font-size: 11px; font-weight: 700; color: #ff9d00; margin-bottom: 4px; text-align: center;">📅 UNDER TODAY • ${today}</div>
         <div style="font-size: 18px; font-weight: 900; text-align: center; color: #ffd700; letter-spacing: 2px;">
           ${todayDrawsText || '—'}
@@ -7991,7 +11917,7 @@ function getChart8Family(num) {
       </div>
       
       <!-- LEAVING & MEETING -->
-      <div style="display: flex; gap: 10px; margin-bottom: 10px;">
+      <div style="display: flex; gap: 10px; margin-bottom: 4px;">
         ${formatLeavingMeeting(leavingNumber, leavingDay, leavingSlot, leavingDate, false)}
         ${formatLeavingMeeting(meetingNumber, meetingDay, meetingSlot, meetingDate, true)}
       </div>
@@ -8001,7 +11927,7 @@ function getChart8Family(num) {
         
         <!-- HOT NUMBERS - 8 -->
         <div style="background: rgba(239, 68, 68, 0.05); border-radius: 10px; padding: 8px; border: 1px solid rgba(239, 68, 68, 0.15);">
-          <div style="text-align: center; margin-bottom: 6px;">
+          <div style="text-align: center; margin-bottom: 2px;">
             <span style="font-size: 11px; font-weight: 800; color: #ef4444;">🔥 HOT MARKS 🔥</span>
             <span style="font-size: 8px; color: #64748b; display: block;">Most frequent in last 6 weeks</span>
           </div>
@@ -8017,7 +11943,7 @@ function getChart8Family(num) {
         
         <!-- OVERDUE NUMBERS -->
         <div style="background: rgba(88, 166, 255, 0.05); border-radius: 10px; padding: 8px; border: 1px solid rgba(88, 166, 255, 0.15);">
-          <div style="text-align: center; margin-bottom: 6px;">
+          <div style="text-align: center; margin-bottom: 2px;">
             <span style="font-size: 11px; font-weight: 800; color: #58a6ff;">📅 OVERDUE MARKS 📅</span>
             <span style="font-size: 8px; color: #64748b; display: block;">Longest since last played</span>
           </div>
@@ -8064,53 +11990,77 @@ function getChart8Family(num) {
       </div>
       
   <!-- ================================ -->
-      <!-- MARKS PLAY STREAK STATS -->
+      <!-- MARKS PLAY STREAK STATS - ENHANCED VERSION -->
   <!-- ================================ -->
-      <div style="margin-top: 12px; border-top: 2px solid rgba(255,157,0,0.15); padding-top: 10px;">
-        <div style="text-align: center; margin-bottom: 8px;">
-          <div style="font-size: 12px; font-weight: 800; color: #ff9d00; letter-spacing: 0.5px;">📊 MARKS PLAY STREAK STATS</div>
+      <div style="margin-top: 3px; border-top: 2px solid rgba(255,157,0,0.15); padding-top: 10px;">
+        <div style="text-align: center; margin-bottom: 2px;">
+          <div style="font-size: 12px; font-weight: 800; color: #ff9d00; letter-spacing: 0.5px;">⚜️♨️ MARKS PLAY STREAK INSIGHT ♨️⚜️</div>
           <div style="font-size: 8px; color: #64748b; margin-top: 2px;">${currentWeekRange} • Based on previous week plays</div>
         </div>
         
-        <!-- Completion Banner - Rotating Ticker -->
+        <!-- Completion Banner - Rotating Ticker with Enhanced Details -->
         ${completionBannerHtml}
         
         <!-- Three Categories Side by Side with 3x3 Grid -->
         <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px;">
           
-          <!-- DOUBLES -->
-          <div style="background: rgba(50, 215, 75, 0.05); border-radius: 10px; padding: 8px; border: 1px solid rgba(50, 215, 75, 0.15);">
-            <div style="text-align: center; margin-bottom: 6px;">
-              <span style="font-size: 10px; font-weight: 800; color: #32d74b;">♣️🔥 DOUBLES🔥♣️</span>
-              <span style="font-size: 7px; color: #64748b; display: block;">1x → 2x</span>
-            </div>
-            ${uniqueDoubles.length > 0 ? renderCategoryNumbersGrid(uniqueDoubles, '#32d74b', 'DOUBLE') : '<div style="text-align:center; color:#64748b; font-size:11px; padding:8px 0;">None</div>'}
-            ${uniqueDoubles.length > 0 ? `<div style="text-align: center; font-size: 7px; color: #64748b; margin-top: 4px;">${uniqueDoubles.length} numbers</div>` : ''}
+        <!-- DOUBLES -->
+        <div style="background: rgba(50, 215, 75, 0.05); border-radius: 10px; padding: 8px; border: 1px solid rgba(50, 215, 75, 0.15);">
+          <div style="text-align: center; margin-bottom: 2px;">
+            <span style="font-size: 10px; font-weight: 800; color: #32d74b;">🔥DOUBLE🔥</span>
+            <span style="font-size: 7px; color: #64748b; display: block;">1x → 2x</span>
           </div>
-          
-          <!-- TRIPLES -->
-          <div style="background: rgba(255, 157, 0, 0.05); border-radius: 10px; padding: 8px; border: 1px solid rgba(255, 157, 0, 0.15);">
-            <div style="text-align: center; margin-bottom: 6px;">
-              <span style="font-size: 10px; font-weight: 800; color: #ff9d00;">🔥 ♠️TRIPLES♠️🔥</span>
-              <span style="font-size: 7px; color: #64748b; display: block;">2x → 3x</span>
-            </div>
-            ${uniqueTriples.length > 0 ? renderCategoryNumbersGrid(uniqueTriples, '#ff9d00', 'TRIPLE') : '<div style="text-align:center; color:#64748b; font-size:11px; padding:8px 0;">None</div>'}
-            ${uniqueTriples.length > 0 ? `<div style="text-align: center; font-size: 7px; color: #64748b; margin-top: 4px;">${uniqueTriples.length} numbers</div>` : ''}
+          ${uniqueDoubles.length > 0 ? renderCategoryNumbersGrid(uniqueDoubles, '#32d74b', 'DOUBLE', true, false, false) : '<div style="text-align:center; color:#64748b; font-size:11px; padding:8px 0;">None</div>'}
+          ${uniqueDoubles.length > 0 ? `<div style="text-align: center; font-size: 7px; color: #64748b; margin-top: 4px;">${uniqueDoubles.length} numbers</div>` : ''}
+        </div>
+                  
+        <!-- TRIPLES -->
+        <div style="background: rgba(255, 157, 0, 0.05); border-radius: 10px; padding: 8px; border: 1px solid rgba(255, 157, 0, 0.15);">
+          <div style="text-align: center; margin-bottom: 2px;">
+            <span style="font-size: 10px; font-weight: 800; color: #ff9d00;">♠️TRIPLE♠️</span>
+            <span style="font-size: 7px; color: #64748b; display: block;">2x → 3x</span>
           </div>
-          
-          <!-- QUADRUPLES -->
-          <div style="background: rgba(255, 55, 95, 0.05); border-radius: 10px; padding: 8px; border: 1px solid rgba(255, 55, 95, 0.15);">
-            <div style="text-align: center; margin-bottom: 6px;">
-              <span style="font-size: 10px; font-weight: 800; color: #ff375f;">♦️QUADRUPLES♦️</span>
-              <span style="font-size: 7px; color: #64748b; display: block;">3x → 4x</span>
-            </div>
-            ${uniqueQuadruples.length > 0 ? renderCategoryNumbersGrid(uniqueQuadruples, '#ff375f', 'QUADRUPLE') : '<div style="text-align:center; color:#64748b; font-size:11px; padding:8px 0;">None</div>'}
-            ${uniqueQuadruples.length > 0 ? `<div style="text-align: center; font-size: 7px; color: #64748b; margin-top: 4px;">${uniqueQuadruples.length} numbers</div>` : ''}
+          ${uniqueTriples.length > 0 ? renderCategoryNumbersGrid(uniqueTriples, '#ff9d00', 'TRIPLE', false, true, false) : '<div style="text-align:center; color:#64748b; font-size:11px; padding:8px 0;">None</div>'}
+          ${uniqueTriples.length > 0 ? `<div style="text-align: center; font-size: 7px; color: #64748b; margin-top: 4px;">${uniqueTriples.length} numbers</div>` : ''}
+        </div>
+                  
+        <!-- QUADRUPLES -->
+        <div style="background: rgba(255, 55, 95, 0.05); border-radius: 10px; padding: 8px; border: 1px solid rgba(255, 55, 95, 0.15);">
+          <div style="text-align: center; margin-bottom: 2px;">
+            <span style="font-size: 10px; font-weight: 800; color: #ff375f;">♦️QUADRUPLE♦️</span>
+            <span style="font-size: 7px; color: #64748b; display: block;">3x → 4x</span>
           </div>
+          ${uniqueQuadruples.length > 0 ? renderCategoryNumbersGrid(uniqueQuadruples, '#ff375f', 'QUADRUPLE', false, false, true) : '<div style="text-align:center; color:#64748b; font-size:11px; padding:8px 0;">None</div>'}
+          ${uniqueQuadruples.length > 0 ? `<div style="text-align: center; font-size: 7px; color: #64748b; margin-top: 4px;">${uniqueQuadruples.length} numbers</div>` : ''}
+        </div>
           
         </div>
         
-    <div style="margin-top: 10px; padding-top: 6px; border-top: 1px solid rgba(255,255,255,0.03); display: flex; justify-content: center; align-items: center; gap: 8px; flex-wrap: wrap;">
+        <!-- Enhanced Legend -->
+        <div style="display: grid; grid-template-columns: repeat(5, 1fr); gap: 2px; margin: 3px 0 2px 0; padding: 2px; background: rgba(255,255,255,0.03); border-radius: 4px;">
+          <div style="display: flex; align-items: center; gap: 3px; font-size: 7px; color: #94a3b8; padding: 2px 4px;">
+            <span style="display: inline-block; width: 10px; height: 10px; background: #ffffff; border: 1px solid #666; border-radius: 2px; flex-shrink: 0;"></span>
+            <span>MISSING</span>
+          </div>
+          <div style="display: flex; align-items: center; gap: 3px; font-size: 7px; color: #94a3b8; padding: 2px 4px;">
+            <span style="display: inline-block; width: 10px; height: 10px; background: #800080; border-radius: 2px; flex-shrink: 0;"></span>
+            <span>PENDING</span>
+          </div>
+          <div style="display: flex; align-items: center; gap: 3px; font-size: 7px; color: #94a3b8; padding: 2px 4px;">
+            <span style="display: inline-block; width: 10px; height: 10px; background: #32d74b; border-radius: 2px; flex-shrink: 0;"></span>
+            <span>DOUBLE</span>
+          </div>
+          <div style="display: flex; align-items: center; gap: 3px; font-size: 7px; color: #94a3b8; padding: 2px 4px;">
+            <span style="display: inline-block; width: 10px; height: 10px; background: #ff8c00; border-radius: 2px; flex-shrink: 0;"></span>
+            <span>TRIPLE</span>
+          </div>
+          <div style="display: flex; align-items: center; gap: 3px; font-size: 7px; color: #94a3b8; padding: 2px 4px;">
+            <span style="display: inline-block; width: 10px; height: 10px; background: #ff375f; border-radius: 2px; flex-shrink: 0;"></span>
+            <span>QUADRUPLE</span>
+          </div>
+        </div>
+        
+    <div style="margin-top: 3px; padding-top: 6px; border-top: 1px solid rgba(255,255,255,0.03); display: flex; justify-content: center; align-items: center; gap: 8px; flex-wrap: wrap;">
         <span style="font-size: 8px; color: #fffff;">CodeWithGlasgow Chart Analysis • CWG ©️</span>
         <span style="font-size: 8px; color: #ff9d00; font-weight: bold;">${globalTrackingCode}</span>
         <span style="font-size: 8px; color: #fffff;">Last: ${globalLastDraw}</span>
@@ -8121,17 +12071,17 @@ function getChart8Family(num) {
   <!-- ================================ -->
       <!-- PROBABILITY MATRIX SECTION -->
   <!-- ================================ -->
-      <div style="margin-top: 12px; border-top: 2px solid rgba(255,157,0,0.15); padding-top: 10px;">
+      <div style="margin-top: 3px; border-top: 2px solid rgba(255,157,0,0.15); padding-top: 5px;">
         
         <!-- Probability Header -->
-        <div style="text-align: center; margin-bottom: 8px;">
+        <div style="text-align: center; margin-bottom: 4px;">
           <div style="font-size: 13px; font-weight: 800; color: #58a6ff; letter-spacing: 0.5px;">🧮 PROBABILITY MATRIX 🧮</div>
           <div style="font-size: 8px; color: #64748b;">Based on Charts + Historical Patterns</div>
         </div>
         
         <!-- CURRENT BEST PICKS -->
         <div style="background: rgba(88,166,255,0.05); border-radius: 10px; padding: 8px; border: 1px solid rgba(88,166,255,0.15); margin-bottom: 8px;">
-          <div style="font-size: 10px; font-weight: 700; color: #58a6ff; text-align: center; margin-bottom: 6px;">🔥 BEST PICKS 🔥</div>
+          <div style="font-size: 10px; font-weight: 700; color: #58a6ff; text-align: center; margin-bottom: 3px;">🔥 BEST PICKS 🔥</div>
           <div style="display: flex; flex-wrap: wrap; justify-content: center; gap: 8px;">
             ${topPicks.map((pick, idx) => {
               const stars = getStars(pick.score);
@@ -8150,15 +12100,15 @@ function getChart8Family(num) {
   <!-- =============================== -->
    <!-- HEAD SHOT SECTION - 4 NUMBERS -->
   <!-- =============================== -->
-        <div style="background: rgba(255,215,0,0.08); border-radius: 10px; padding: 8px; border: 2px solid #ffd700; margin-bottom: 8px;">
-          <div style="text-align: center; margin-bottom: 6px;">
+        <div style="background: rgba(255,215,0,0.08); border-radius: 10px; padding: 8px; border: 2px solid #ffd700; margin-bottom: 2px;">
+          <div style="text-align: center; margin-bottom: 3px;">
             <div style="font-size: 12px; font-weight: 900; color: #ffd700; letter-spacing: 0.5px;">🔥♠️ HEAD SHOT ♠️🔥</div>
             <div style="font-size: 8px; color: #94a3b8;">Based on current week plays • 1/16 & 1/8 Charts • Mirrors</div>
             <div style="font-size: 7px; color: #64748b; margin-top: 2px;">${yesterdayName} → ${todayName} • ${currentSlot} → ${nextSlot}</div>
           </div>
           
           <!-- Analysis Summary -->
-          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 4px; margin-bottom: 6px; font-size: 7px; color: #94a3b8;">
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 4px; margin-bottom: 3px; font-size: 7px; color: #94a3b8;">
             <div style="background: rgba(255,255,255,0.03); border-radius: 4px; padding: 2px 6px; text-align: center;">
               YESTERDAY: ${yesterdayCurrentWeekDraws.length > 0 ? yesterdayCurrentWeekDraws.map(n => `#${n}`).join(', ') : 'No plays'}
             </div>
@@ -8199,8 +12149,8 @@ function getChart8Family(num) {
   <!-- ================================ -->
      <!-- PATTERN ALERTS SECTION -->
   <!-- ================================ -->
-        <div style="background: rgba(255,157,0,0.05); border-radius: 10px; padding: 8px; border: 1px solid rgba(255,157,0,0.15); margin-bottom: 8px;">
-          <div style="font-size: 10px; font-weight: 700; color: #ff9d00; text-align: center; margin-bottom: 6px;">🧮 PATTERN ALERTS 🧮</div>
+        <div style="background: rgba(255,157,0,0.05); border-radius: 10px; padding: 8px; border: 1px solid rgba(255,157,0,0.15); margin-bottom: 3px;">
+          <div style="font-size: 10px; font-weight: 700; color: #ff9d00; text-align: center; margin-bottom: 3px;">🧮 PATTERN ALERTS 🧮</div>
           <div style="font-size: 8px; color: #64748b; text-align: center; margin-bottom: 4px;">
             ${hasPredictions ? 'SAGi⚡️ • ' : ''}Wappi • Pull Back • Pull Down • Dambalay • Spirit • Partner • Mirror
           </div>
@@ -8281,7 +12231,7 @@ function getChart8Family(num) {
         
    <!-- HISTORICAL PROBABILITY STATS -->
         <div style="background: rgba(255,255,255,0.02); border-radius: 10px; padding: 8px; border: 1px solid rgba(255,255,255,0.05);">
-          <div style="font-size: 10px; font-weight: 700; color: #94a3b8; text-align: center; margin-bottom: 4px;">📊 HISTORICAL PROBABILITY</div>
+          <div style="font-size: 10px; font-weight: 700; color: #94a3b8; text-align: center; margin-bottom: 2px;">📜 HISTORICAL PROBABILITY</div>
           <div style="font-size: 8px; color: #64748b; text-align: center; margin-bottom: 6px;">Last ${drawWindow} draws pattern analysis:</div>
           <div style="display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; text-align: center;">
             <div style="background: rgba(255,255,255,0.02); border-radius: 4px; padding: 4px;">
@@ -8306,7 +12256,7 @@ function getChart8Family(num) {
       </div>
       
       <!-- Footer -->
-      <div style="margin-top: 10px; padding-top: 6px; border-top: 1px solid rgba(255,255,255,0.03); display: flex; justify-content: center; align-items: center; gap: 8px; flex-wrap: wrap;">
+      <div style="margin-top: 3px; padding-top: 6px; border-top: 1px solid rgba(255,255,255,0.03); display: flex; justify-content: center; align-items: center; gap: 8px; flex-wrap: wrap;">
         <span style="font-size: 7px; color: #94a3b8;">CodeWithGlasgow Chart Analysis • CWG ©️</span>
         <span style="font-size: 7px; color: #ff9d00; font-weight: bold;">${globalTrackingCode}</span>
         <span style="font-size: 7px; color: #94a3b8;">Last: ${globalLastDraw}</span>
@@ -9927,12 +13877,13252 @@ function renderOneSixteenAnalysis(weeksData) {
     </div>
   `;
 }
+//////////////////////////////////////////
+// ======================================
+// PROBABILITY DISTRIBUTION CONTAINER (STATISTICAL ENGINE v2.0)
+// For Play Whe & Pick 2 - Professional Carousel UI
+// Features: 
+// - Bayesian Probability Engine
+// - Time Decay Weighting
+// - Markov Chain Transitions
+// - Gap Distribution Analysis
+// - Adaptive Factor Weights
+// - Confidence Calibration
+// - Monte Carlo Simulation
+// - Event Memory & Similarity
+// - Correlation Engine
+// - Historical Performance Dashboard
+// - Statistical Normalisation
+// - Modular Internal Architecture
+// - Performance Optimisation
+// ======================================
+
+// For Play Whe & Pick 2 - Professional Carousel UI
+// Features: 
+// - Pick 2: Analyzes both numbers in pair (single if same, both if different)
+// - Integrates Lines & Suites missing data from LS Charts
+// - Analyzes historical patterns by Leaving/Meeting, Surrounding Numbers, Horizontal/Vertical
+// - Probability Analysis ONLY - Not Prediction
+// ======================================
+function renderProbabilityAnalysis(weeksData, gameType, lsData) {
+  // Clear all caches before starting
+  StatisticalEngine.clearAllCaches();
+  
+  if (!weeksData || weeksData.length === 0) {
+    return `
+      <div style="background: linear-gradient(145deg, #0f172a, #1a2332); border-radius: 16px; padding: 24px; border: 1px solid rgba(88,166,255,0.1); text-align:center;">
+        <div style="font-size: 14px; color: #58a6ff; font-weight: 600;">📊 Loading Probability Distribution...</div>
+      </div>
+    `;
+  }
+
+  const now = new Date();
+  const todayIdx = now.getDay();
+  const todayName = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"][todayIdx];
+  const slots = ["MOR", "MID", "NON", "EVE"];
+  const slotDisplay = { MOR: "🌅 Morning", MID: "☀️ Midday", NON: "🌤️ Afternoon", EVE: "🌙 Evening" };
+  const slotEmoji = { MOR: "🌅", MID: "☀️", NON: "🌤️", EVE: "🌙" };
+  const currentHour = now.getHours();
+
+  // Determine current slot
+  let currentSlotIdx = 3;
+  if (currentHour >= 5 && currentHour < 10) currentSlotIdx = 0;
+  else if (currentHour >= 10 && currentHour < 14) currentSlotIdx = 1;
+  else if (currentHour >= 14 && currentHour < 18) currentSlotIdx = 2;
+  else currentSlotIdx = 3;
+
+  const isPlayWhe = (gameType === "P2WHE" || gameType === "PLAY_WHE");
+  const isPick2 = (gameType === "PIKII" || gameType === "PICK_2");
+  const gameTitle = isPlayWhe ? 'PLAY WHE' : 'PICK 2';
+
+  // Sort weeks chronologically
+  const sortedWeeks = [...weeksData].sort((a, b) => {
+    let pa = a.startDate.split(" ");
+    let pb = b.startDate.split(" ");
+    return new Date(pa[2] + "-" + pa[1] + "-" + pa[0]) - new Date(pb[2] + "-" + pb[1] + "-" + pb[0]);
+  });
+
+  const currentWeek = sortedWeeks[sortedWeeks.length - 1];
+  
+  // Find most recent non-holiday previous week
+  let previousWeek = null;
+  for (let i = sortedWeeks.length - 2; i >= 0; i--) {
+    const week = sortedWeeks[i];
+    let hasValidDraw = false;
+    if (week && week.days) {
+      for (const day of week.days) {
+        if (day && day.draws) {
+          for (const slot of slots) {
+            const val = day.draws[slot];
+            if (val && val !== "-" && val !== "PENDING" && val !== "HOLIDAY") {
+              hasValidDraw = true;
+              break;
+            }
+          }
+        }
+        if (hasValidDraw) break;
+      }
+    }
+    if (hasValidDraw) {
+      previousWeek = week;
+      break;
+    }
+  }
+  if (!previousWeek) previousWeek = currentWeek;
+
+  const currWeekStart = new Date(currentWeek.startDate);
+  const dayNames = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+
+  // =====================================
+  // LEAVING & MEETING LOGIC - UPDATED TO USE DataExtractor
+  // =====================================
+  function findLeavingMeeting() {
+    let leavingNumber = null;
+    let leavingPair = null;
+    let leavingDate = null;
+    let leavingDay = null;
+    let leavingSlot = null;
+    let leavingDayIdx = -1;
+    let leavingSlotIdx = -1;
+    let leavingAllNumbers = [];
+    
+    for (let d = todayIdx; d >= 0; d--) {
+      for (let s = slots.length - 1; s >= 0; s--) {
+        if (isPick2) {
+          const pair = DataExtractor.getDrawPair(currentWeek, dayNames[d], slots[s]);
+          if (pair) {
+            leavingNumber = pair.first;
+            leavingPair = pair;
+            leavingAllNumbers = [pair.first, pair.second];
+            leavingDate = new Date(currWeekStart);
+            leavingDate.setDate(currWeekStart.getDate() + d);
+            leavingDay = dayNames[d];
+            leavingSlot = slots[s];
+            leavingDayIdx = d;
+            leavingSlotIdx = s;
+            break;
+          }
+        } else {
+          const draw = DataExtractor.getDrawNumbers(currentWeek, dayNames[d], slots[s]);
+          if (draw.length > 0) {
+            leavingNumber = draw[0];
+            leavingAllNumbers = draw;
+            leavingDate = new Date(currWeekStart);
+            leavingDate.setDate(currWeekStart.getDate() + d);
+            leavingDay = dayNames[d];
+            leavingSlot = slots[s];
+            leavingDayIdx = d;
+            leavingSlotIdx = s;
+            break;
+          }
+        }
+      }
+      if (leavingNumber) break;
+    }
+    
+    if (!leavingNumber) {
+      for (let w = sortedWeeks.length - 2; w >= 0; w--) {
+        const week = sortedWeeks[w];
+        const weekStart = new Date(week.startDate);
+        for (let d = dayNames.length - 1; d >= 0; d--) {
+          for (let s = slots.length - 1; s >= 0; s--) {
+            if (isPick2) {
+              const pair = DataExtractor.getDrawPair(week, dayNames[d], slots[s]);
+              if (pair) {
+                leavingNumber = pair.first;
+                leavingPair = pair;
+                leavingAllNumbers = [pair.first, pair.second];
+                leavingDate = new Date(weekStart);
+                leavingDate.setDate(weekStart.getDate() + d);
+                leavingDay = dayNames[d];
+                leavingSlot = slots[s];
+                leavingDayIdx = d;
+                leavingSlotIdx = s;
+                break;
+              }
+            } else {
+              const draw = DataExtractor.getDrawNumbers(week, dayNames[d], slots[s]);
+              if (draw.length > 0) {
+                leavingNumber = draw[0];
+                leavingAllNumbers = draw;
+                leavingDate = new Date(weekStart);
+                leavingDate.setDate(weekStart.getDate() + d);
+                leavingDay = dayNames[d];
+                leavingSlot = slots[s];
+                leavingDayIdx = d;
+                leavingSlotIdx = s;
+                break;
+              }
+            }
+          }
+          if (leavingNumber) break;
+        }
+        if (leavingNumber) break;
+      }
+    }
+    
+    let meetingNumber = null;
+    let meetingPair = null;
+    let meetingDay = null;
+    let meetingSlot = null;
+    let meetingDate = null;
+    let meetingDayIdx = -1;
+    let meetingSlotIdx = -1;
+    let meetingAllNumbers = [];
+    
+    if (leavingDayIdx !== -1 && leavingSlotIdx !== -1) {
+      let nextDayIdx = leavingDayIdx;
+      let nextSlotIdx = leavingSlotIdx + 1;
+      
+      if (nextSlotIdx >= slots.length) {
+        nextSlotIdx = 0;
+        nextDayIdx = leavingDayIdx + 1;
+      }
+      
+      if (nextDayIdx >= dayNames.length) {
+        nextDayIdx = 0;
+      }
+      
+      if (nextDayIdx < dayNames.length) {
+        meetingDayIdx = nextDayIdx;
+        meetingSlotIdx = nextSlotIdx;
+        
+        // Use the global findDeepDraw or implement here
+        const result = findDeepDraw(sortedWeeks.length - 2, nextDayIdx, slots[nextSlotIdx]);
+        if (result && result.value) {
+          if (isPick2) {
+            const pair = DataExtractor.getDrawPair(result.week, dayNames[nextDayIdx], slots[nextSlotIdx]);
+            if (pair) {
+              meetingNumber = pair.first;
+              meetingPair = pair;
+              meetingAllNumbers = [pair.first, pair.second];
+              meetingDay = dayNames[nextDayIdx];
+              meetingSlot = slots[nextSlotIdx];
+              meetingDate = result.date;
+              if (meetingDate) {
+                meetingDate.setDate(meetingDate.getDate() + nextDayIdx);
+              }
+            }
+          } else {
+            const nums = DataExtractor.getDrawNumbers(result.week, dayNames[nextDayIdx], slots[nextSlotIdx]);
+            if (nums.length > 0) {
+              meetingNumber = nums[0];
+              meetingAllNumbers = nums;
+              meetingDay = dayNames[nextDayIdx];
+              meetingSlot = slots[nextSlotIdx];
+              meetingDate = result.date;
+              if (meetingDate) {
+                meetingDate.setDate(meetingDate.getDate() + nextDayIdx);
+              }
+            }
+          }
+        }
+      }
+    }
+    
+    return { 
+      leavingNumber, leavingPair, meetingNumber, meetingPair,
+      leavingSlot, meetingSlot, leavingDay, meetingDay, 
+      leavingDate, meetingDate,
+      leavingDayIdx, leavingSlotIdx, meetingDayIdx, meetingSlotIdx,
+      leavingAllNumbers, meetingAllNumbers
+    };
+  }
+
+  // =====================================
+  // DEEP SEARCH - USE DataExtractor
+  // =====================================
+  function findDeepDraw(startWeekIndex, targetDayIdx, targetSlot) {
+    const targetDayName = dayNames[targetDayIdx];
+    
+    for (let w = startWeekIndex; w >= 0; w--) {
+      const week = sortedWeeks[w];
+      
+      if (targetDayIdx === 1) {
+        const checkDay = week.days.find(d => d.dayName === "Monday");
+        const isHoliday = !checkDay || slots.every(s => {
+          const val = checkDay.draws[s];
+          return !val || val === "HOLIDAY" || val === "-" || val === "PENDING";
+        });
+        if (isHoliday) continue;
+      }
+      
+      const val = DataExtractor.getDraw(week, targetDayName, targetSlot);
+      if (val) {
+        return { value: val, week: week, date: new Date(week.startDate) };
+      }
+    }
+    return null;
+  }
+
+  const { 
+    leavingNumber, leavingPair, meetingNumber, meetingPair,
+    leavingSlot, meetingSlot, leavingDay, meetingDay, 
+    leavingDate, meetingDate,
+    leavingDayIdx, leavingSlotIdx, meetingDayIdx, meetingSlotIdx,
+    leavingAllNumbers, meetingAllNumbers
+  } = findLeavingMeeting();
+
+  // =====================================
+  // CALENDAR DAILY CHART PLAY LOGIC 
+  // =====================================
+  function getCalendarColumnNumbers(dayNumber) {
+    const nowLocal = new Date();
+    const currentYearLocal = nowLocal.getFullYear();
+    const currentMonthLocal = nowLocal.getMonth();
+    const firstDayOfMonthLocal = new Date(currentYearLocal, currentMonthLocal, 1);
+    const startingDayOfWeekLocal = firstDayOfMonthLocal.getDay();
+    const daysInMonthLocal = new Date(currentYearLocal, currentMonthLocal + 1, 0).getDate();
+    
+    let dayGridLocal = [];
+    let dayCounter = 1;
+    for (let i = 0; i < 6; i++) {
+      let weekRow = [];
+      for (let j = 0; j < 7; j++) {
+        if (i === 0 && j < startingDayOfWeekLocal) {
+          weekRow.push(null);
+        } else if (dayCounter > daysInMonthLocal) {
+          weekRow.push(null);
+        } else {
+          weekRow.push(dayCounter);
+          dayCounter++;
+        }
+      }
+      dayGridLocal.push(weekRow);
+    }
+    
+    function findColumnLocal(number) {
+      for (let col = 0; col < 7; col++) {
+        for (let row = 0; row < 6; row++) {
+          if (dayGridLocal[row][col] === number) {
+            return col;
+          }
+        }
+      }
+      return -1;
+    }
+    
+    const col = findColumnLocal(dayNumber);
+    if (col === -1) return [];
+    
+    const numbers = [];
+    for (let row = 0; row < 6; row++) {
+      const num = dayGridLocal[row][col];
+      if (num !== null && !numbers.includes(num) && num <= 36) {
+        numbers.push(num);
+      }
+    }
+    const lastNum = numbers[numbers.length - 1];
+    if (lastNum && lastNum + 7 <= 36) {
+      numbers.push(lastNum + 7);
+    }
+    return numbers;
+  }
+
+  const currentDay = now.getDate();
+  const todaysColumnNumbers = getCalendarColumnNumbers(currentDay);
+
+  // =====================================
+  // EXTRACT LINES & SUITES MISSING DATA - UPDATED TO USE LinesSuitesMapper
+  // =====================================
+  function extractMissingLinesAndSuites(lsData) {
+    if (!lsData || typeof lsData !== 'object') {
+      return { missingLines: [], missingSuites: [] };
+    }
+    
+    const missingLines = [];
+    const missingSuites = [];
+    
+ // Method 1: Extract from hitData (numbers with zero hits)
+    if (lsData.hitData) {
+      for (let i = 1; i <= 36; i++) {
+        if (!lsData.hitData[i] || lsData.hitData[i] === 0) {
+          // Use LinesSuitesMapper to check if this number belongs to a line or suit
+          const line = LinesSuitesMapper.getLineForNumber(i);
+          const suit = LinesSuitesMapper.getSuitForNumber(i);
+          
+          if (line !== null && !missingLines.includes(i)) missingLines.push(i);
+          if (suit !== null && !missingSuites.includes(i)) missingSuites.push(i);
+        }
+      }
+    }
+    
+ // Method 2: Extract from the Missing row in LS chart
+    if (lsData.missingNumbers && Array.isArray(lsData.missingNumbers)) {
+      lsData.missingNumbers.forEach(n => {
+        if (!missingLines.includes(n)) missingLines.push(n);
+        if (!missingSuites.includes(n)) missingSuites.push(n);
+      });
+    }
+    
+    // Method 3: Parse from the title
+    if (lsData.title) {
+      const match = lsData.title.match(/Missing:?\s*([\d,\s]+)/i);
+      if (match && match[1]) {
+        const nums = match[1].split(/[,\s]+/).map(n => parseInt(n, 10)).filter(n => !isNaN(n));
+        nums.forEach(n => {
+          if (!missingLines.includes(n)) missingLines.push(n);
+          if (!missingSuites.includes(n)) missingSuites.push(n);
+        });
+      }
+    }
+    
+ // Method 4: For Pick 2 - check zero hits
+    if (isPick2 && lsData.hitData) {
+      for (let i = 1; i <= 36; i++) {
+        if (!lsData.hitData[i] || lsData.hitData[i] === 0) {
+          if (!missingLines.includes(i)) missingLines.push(i);
+          if (!missingSuites.includes(i)) missingSuites.push(i);
+        }
+      }
+    }
+    
+    // Remove duplicates and sort
+    const uniqueMissingLines = [...new Set(missingLines)].sort((a, b) => a - b);
+    const uniqueMissingSuites = [...new Set(missingSuites)].sort((a, b) => a - b);
+    
+    return { missingLines: uniqueMissingLines, missingSuites: uniqueMissingSuites };
+  }
+
+  const missingData = extractMissingLinesAndSuites(lsData || {});
+  const missingLines = missingData.missingLines || [];
+  const missingSuites = missingData.missingSuites || [];
+
+  // =====================================
+  // HISTORICAL ACCURACY TRACKING - UPDATED TO USE DataExtractor
+  // =====================================
+  function calculateHistoricalAccuracy() {
+    let totalSlots = 0;
+    let correctSlots = 0;
+    const slotAccuracy = {};
+    
+    for (const slot of slots) {
+      slotAccuracy[slot] = { total: 0, correct: 0 };
+    }
+    
+    const recentWeeks = sortedWeeks.slice(-8);
+    for (const week of recentWeeks) {
+      const weekStart = new Date(week.startDate);
+      for (let d = 0; d < dayNames.length; d++) {
+        for (let s = 0; s < slots.length; s++) {
+          const slot = slots[s];
+          const draw = DataExtractor.getDrawNumbers(week, dayNames[d], slot);
+          if (draw.length > 0) {
+            slotAccuracy[slot].total++;
+            totalSlots++;
+            
+            const dayDraws = [];
+            for (const prevSlot of slots) {
+              const prevDraw = DataExtractor.getDrawNumbers(week, dayNames[d], prevSlot);
+              if (prevDraw.length > 0) dayDraws.push(prevDraw[0]);
+            }
+            
+            if (dayDraws.length > 1) {
+              const lastDraw = dayDraws[dayDraws.length - 1];
+              const prevDraw = dayDraws[dayDraws.length - 2];
+              const lastLine = LinesSuitesMapper.getLineForNumber(lastDraw);
+              const prevLine = LinesSuitesMapper.getLineForNumber(prevDraw);
+              if (lastLine === prevLine && lastLine !== null) {
+                slotAccuracy[slot].correct++;
+                correctSlots++;
+              }
+            }
+          }
+        }
+      }
+    }
+    
+    return {
+      overall: totalSlots > 0 ? Math.round((correctSlots / totalSlots) * 100) : 0,
+      slots: slotAccuracy
+    };
+  }
+
+  const historicalAccuracy = calculateHistoricalAccuracy();
+
+  // =====================================
+  // ENHANCED PICK 2 - UPDATED TO USE DataExtractor & LinesSuitesMapper
+  // =====================================
+  function analyzePick2Probability() {
+    const results = [];
+    const currentWeekPairs = [];
+    const currentWeekDraws = [];
+    
+    // Get current week data - use DataExtractor
+    for (let d = 0; d <= todayIdx; d++) {
+      for (const slot of slots) {
+        const pair = DataExtractor.getDrawPair(currentWeek, dayNames[d], slot);
+        if (pair) {
+          currentWeekPairs.push(pair);
+          currentWeekDraws.push(pair.first);
+          currentWeekDraws.push(pair.second);
+        }
+      }
+    }
+    
+    // Build comprehensive pair history with TimeDecayEngine
+    const pairHistory = {};
+    const pairFrequency = {};
+    const numberFrequency = {};
+    const lineFrequency = {};
+    const suitFrequency = {};
+    
+    for (const week of sortedWeeks.slice(-12)) {
+      const weekStart = new Date(week.startDate);
+      for (let d = 0; d < dayNames.length; d++) {
+        for (const slot of slots) {
+          const pair = DataExtractor.getDrawPair(week, dayNames[d], slot);
+          if (pair) {
+            // Track individual numbers
+            numberFrequency[pair.first] = (numberFrequency[pair.first] || 0) + 1;
+            numberFrequency[pair.second] = (numberFrequency[pair.second] || 0) + 1;
+            
+            // Track line frequencies using LinesSuitesMapper
+            const line1 = LinesSuitesMapper.getLineForNumber(pair.first);
+            const line2 = LinesSuitesMapper.getLineForNumber(pair.second);
+            if (line1) lineFrequency[line1] = (lineFrequency[line1] || 0) + 1;
+            if (line2) lineFrequency[line2] = (lineFrequency[line2] || 0) + 1;
+            
+            // Track suit frequencies
+            const suit1 = LinesSuitesMapper.getSuitForNumber(pair.first);
+            const suit2 = LinesSuitesMapper.getSuitForNumber(pair.second);
+            if (suit1 !== null) suitFrequency[suit1] = (suitFrequency[suit1] || 0) + 1;
+            if (suit2 !== null) suitFrequency[suit2] = (suitFrequency[suit2] || 0) + 1;
+            
+            // Track pairs
+            const key = [pair.first, pair.second].sort((a,b) => a-b).join(',');
+            pairFrequency[key] = (pairFrequency[key] || 0) + 1;
+            
+            if (!pairHistory[key]) {
+              pairHistory[key] = [];
+            }
+            pairHistory[key].push({
+              date: new Date(weekStart.getTime() + d * 86400000),
+              slot: slot,
+              day: dayNames[d],
+              first: pair.first,
+              second: pair.second
+            });
+          }
+        }
+      }
+    }
+    
+    // Get leaving numbers (both first and second if different)
+    const leavingNums = leavingPair ? 
+      (leavingPair.isDouble ? [leavingPair.first] : [leavingPair.first, leavingPair.second]) : 
+      [];
+    
+    const meetingNums = meetingPair ? 
+      (meetingPair.isDouble ? [meetingPair.first] : [meetingPair.first, meetingPair.second]) : 
+      [];
+    
+    // Get missing lines and suits
+    const missingLineNumbers = [];
+    const missingSuitNumbers = [];
+    
+    missingLines.forEach(lineNum => {
+      const lineNums = LinesSuitesMapper.getLineNumbers(lineNum);
+      lineNums.forEach(n => {
+        if (!currentWeekDraws.includes(n) && !missingLineNumbers.includes(n)) {
+          missingLineNumbers.push(n);
+        }
+      });
+    });
+    
+    missingSuites.forEach(suitNum => {
+      const suitNums = LinesSuitesMapper.getSuitNumbers(suitNum);
+      suitNums.forEach(n => {
+        if (!currentWeekDraws.includes(n) && !missingSuitNumbers.includes(n)) {
+          missingSuitNumbers.push(n);
+        }
+      });
+    });
+    
+    for (let s = 0; s < slots.length; s++) {
+      const targetSlot = slots[s];
+      const candidatePairs = [];
+      const factorBreakdown = {};
+      
+// =====================================
+// FACTOR 1: LINE LOGIC (35%) - UPDATED
+// =====================================
+      let lineScore = 0;
+      const processedLinePairs = new Set();
+      
+      leavingNums.forEach(num => {
+        const line = LinesSuitesMapper.getLineForNumber(num);
+        if (line) {
+          const lineNumbers = LinesSuitesMapper.getLineNumbers(line);
+          lineNumbers.forEach(partner => {
+            if (partner !== num) {
+              const pairKey = [num, partner].sort((a,b) => a-b).join(',');
+              const weight = pairFrequency[pairKey] ? 30 + (pairFrequency[pairKey] * 2) : 25;
+              const key = [num, partner].sort((a,b) => a-b).join(',');
+              if (!processedLinePairs.has(key)) {
+                candidatePairs.push({ 
+                  first: Math.min(num, partner), 
+                  second: Math.max(num, partner), 
+                  weight: weight, 
+                  factor: 'line',
+                  source: 'leaving'
+                });
+                processedLinePairs.add(key);
+                lineScore += weight;
+              }
+            }
+          });
+        }
+      });
+      
+      meetingNums.forEach(num => {
+        const line = LinesSuitesMapper.getLineForNumber(num);
+        if (line) {
+          const lineNumbers = LinesSuitesMapper.getLineNumbers(line);
+          lineNumbers.forEach(partner => {
+            if (partner !== num) {
+              const pairKey = [num, partner].sort((a,b) => a-b).join(',');
+              const weight = pairFrequency[pairKey] ? 28 + (pairFrequency[pairKey] * 2) : 22;
+              const key = [num, partner].sort((a,b) => a-b).join(',');
+              if (!processedLinePairs.has(key)) {
+                candidatePairs.push({ 
+                  first: Math.min(num, partner), 
+                  second: Math.max(num, partner), 
+                  weight: weight, 
+                  factor: 'line',
+                  source: 'meeting'
+                });
+                processedLinePairs.add(key);
+                lineScore += weight;
+              }
+            }
+          });
+        }
+      });
+      
+      missingLineNumbers.forEach(num => {
+        const line = LinesSuitesMapper.getLineForNumber(num);
+        if (line) {
+          const lineNumbers = LinesSuitesMapper.getLineNumbers(line);
+          lineNumbers.forEach(partner => {
+            if (partner !== num) {
+              const key = [num, partner].sort((a,b) => a-b).join(',');
+              if (!processedLinePairs.has(key)) {
+                candidatePairs.push({ 
+                  first: Math.min(num, partner), 
+                  second: Math.max(num, partner), 
+                  weight: 35,
+                  factor: 'missing-line',
+                  source: 'missing'
+                });
+                processedLinePairs.add(key);
+                lineScore += 35;
+              }
+            }
+          });
+        }
+      });
+      
+      factorBreakdown.line = Math.min(35, Math.round((lineScore / 150) * 35));
+      
+// =====================================
+// FACTOR 2: FREQUENT PAIRS (25%)
+// =====================================
+      let freqScore = 0;
+      const sortedPairs = Object.entries(pairFrequency)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 20);
+      
+      sortedPairs.forEach(([pairKey, count]) => {
+        const nums = pairKey.split(',').map(Number);
+        const key = [nums[0], nums[1]].sort((a,b) => a-b).join(',');
+        if (!processedLinePairs.has(key)) {
+          const weight = 15 + (count * 2);
+          candidatePairs.push({ 
+            first: Math.min(nums[0], nums[1]), 
+            second: Math.max(nums[0], nums[1]), 
+            weight: weight, 
+            factor: 'freq',
+            source: 'historical'
+          });
+          processedLinePairs.add(key);
+          freqScore += weight;
+        }
+      });
+      factorBreakdown.freq = Math.min(25, Math.round((freqScore / 100) * 25));
+      
+// =====================================
+// FACTOR 3: CURRENT WEEK TREND (15%)
+// =====================================
+      let trendScore = 0;
+      if (currentWeekPairs.length > 0) {
+        const recentPair = currentWeekPairs[currentWeekPairs.length - 1];
+        const recentNumbers = recentPair.isDouble ? [recentPair.first] : [recentPair.first, recentPair.second];
+        
+        Object.entries(pairFrequency).forEach(([pairKey, count]) => {
+          const nums = pairKey.split(',').map(Number);
+          const sharesNumber = recentNumbers.some(rn => nums.includes(rn));
+          if (sharesNumber) {
+            const key = [nums[0], nums[1]].sort((a,b) => a-b).join(',');
+            if (!processedLinePairs.has(key)) {
+              const weight = 12 + (count * 1.5);
+              candidatePairs.push({ 
+                first: Math.min(nums[0], nums[1]), 
+                second: Math.max(nums[0], nums[1]), 
+                weight: weight, 
+                factor: 'trend',
+                source: 'recent'
+              });
+              processedLinePairs.add(key);
+              trendScore += weight;
+            }
+          }
+        });
+      }
+      factorBreakdown.trend = Math.min(15, Math.round((trendScore / 80) * 15));
+      
+// =====================================
+// FACTOR 4: SAME DAY SLOT (15%)
+// =====================================
+      let slotScore = 0;
+      for (const week of sortedWeeks.slice(-12)) {
+        const pair = DataExtractor.getDrawPair(week, todayName, targetSlot);
+        if (pair) {
+          const key = [pair.first, pair.second].sort((a,b) => a-b).join(',');
+          if (!processedLinePairs.has(key)) {
+            const weight = 12;
+            candidatePairs.push({ 
+              first: Math.min(pair.first, pair.second), 
+              second: Math.max(pair.first, pair.second), 
+              weight: weight, 
+              factor: 'slot',
+              source: 'same-slot'
+            });
+            processedLinePairs.add(key);
+            slotScore += weight;
+          }
+        }
+      }
+      factorBreakdown.slot = Math.min(15, Math.round((slotScore / 60) * 15));
+      
+// ====================================
+// FACTOR 5: MISSING SUITES (10%)
+// =====================================
+      let suitScore = 0;
+      missingSuitNumbers.forEach(num => {
+        const suit = LinesSuitesMapper.getSuitForNumber(num);
+        if (suit !== null) {
+          const suitNumbers = LinesSuitesMapper.getSuitNumbers(suit);
+          suitNumbers.forEach(partner => {
+            if (partner !== num) {
+              const key = [num, partner].sort((a,b) => a-b).join(',');
+              if (!processedLinePairs.has(key)) {
+                const weight = 18;
+                candidatePairs.push({ 
+                  first: Math.min(num, partner), 
+                  second: Math.max(num, partner), 
+                  weight: weight, 
+                  factor: 'missing-suit',
+                  source: 'missing'
+                });
+                processedLinePairs.add(key);
+                suitScore += weight;
+              }
+            }
+          });
+        }
+      });
+      factorBreakdown.suit = Math.min(10, Math.round((suitScore / 80) * 10));
+      
+// ==================================
+// SCORE AND RANK - with Statistical Normalisation
+// =====================================
+      const scoredPairs = candidatePairs.reduce((acc, item) => {
+        const key = [item.first, item.second].sort((a,b) => a-b).join(',');
+        if (!acc[key]) {
+          acc[key] = { first: item.first, second: item.second, score: 0, factors: [] };
+        }
+        acc[key].score += item.weight;
+        acc[key].factors.push(item.factor);
+        return acc;
+      }, {});
+      
+      // Normalize scores using softmax
+      const scores = Object.values(scoredPairs).map(p => p.score);
+      const normalizedScores = StatisticalNormalisation.softmax(scores);
+      
+      const topPairs = Object.values(scoredPairs)
+        .map((p, idx) => ({
+          first: p.first,
+          second: p.second,
+          score: Math.round(normalizedScores[idx] * 100),
+          factors: p.factors
+        }))
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 9);
+      
+      // Calculate confidence
+      const historyCount = Object.keys(pairHistory).length;
+      const leavingConfidence = leavingPair ? 10 : 0;
+      const meetingConfidence = meetingPair ? 10 : 0;
+      const missingConfidence = (missingLines.length > 0 || missingSuites.length > 0) ? 10 : 0;
+      const confidenceBase = Math.min(85, 25 + (historyCount * 0.5) + leavingConfidence + meetingConfidence + missingConfidence);
+      const confidence = Math.min(95, confidenceBase + (topPairs.length > 0 ? 10 : 0));
+      
+      let isNextSlot = false;
+      if (meetingSlot && targetSlot === meetingSlot) {
+        isNextSlot = true;
+      }
+      
+      results.push({
+        slot: targetSlot,
+        slotDisplay: slotDisplay[targetSlot],
+        slotEmoji: slotEmoji[targetSlot],
+        pairs: topPairs,
+        confidence: confidence,
+        isNextSlot: isNextSlot,
+        factorBreakdown: factorBreakdown,
+        historicalAccuracy: historicalAccuracy.slots[targetSlot] || { total: 0, correct: 0 },
+        totalCandidates: Object.keys(scoredPairs).length,
+        missingLines: missingLines,
+        missingSuites: missingSuites
+      });
+    }
+    
+    return results;
+  }
+
+// =====================================
+// ENHANCED PLAY WHE - UPDATED TO USE DataExtractor & LinesSuitesMapper
+// =====================================
+  function analyzePlayWheProbability() {
+    const results = [];
+    const currentWeekDraws = [];
+    
+    // Use DataExtractor for all data access
+    for (let d = 0; d <= todayIdx; d++) {
+      for (const slot of slots) {
+        const draw = DataExtractor.getDrawNumbers(currentWeek, dayNames[d], slot);
+        draw.forEach(n => currentWeekDraws.push(n));
+      }
+    }
+    
+    // Build timeline
+    const timeline = [];
+    for (const week of sortedWeeks.slice(-12)) {
+      const weekStart = new Date(week.startDate);
+      for (let d = 0; d < dayNames.length; d++) {
+        for (const slot of slots) {
+          const nums = DataExtractor.getDrawNumbers(week, dayNames[d], slot);
+          nums.forEach(num => {
+            timeline.push({
+              num: num,
+              day: d,
+              slot: slot,
+              timestamp: new Date(weekStart.getTime() + d * 86400000).getTime()
+            });
+          });
+        }
+      }
+    }
+    timeline.sort((a, b) => a.timestamp - b.timestamp);
+    
+    // Calculate frequency with time decay
+    const decayedFreq = TimeDecayEngine.getDecayedFrequency(
+      timeline.slice().reverse(),
+      (entry) => entry.num
+    );
+    
+    const frequency = {};
+    for (let i = 1; i <= 36; i++) frequency[i] = 0;
+    timeline.forEach(entry => {
+      if (!currentWeekDraws.includes(entry.num)) {
+        frequency[entry.num] = (frequency[entry.num] || 0) + 1;
+      }
+    });
+    
+    // Gap analysis
+    const gaps = GapDistributionEngine.calculateGaps(timeline, (entry) => entry.num);
+    const gapStats = GapDistributionEngine.getGapStatistics(gaps);
+    
+    const nowTime = Date.now();
+    const daysSinceLast = {};
+    for (let i = 1; i <= 36; i++) {
+      const lastEntry = [...timeline].reverse().find(e => e.num === i);
+      if (lastEntry) {
+        daysSinceLast[i] = Math.floor((nowTime - lastEntry.timestamp) / 86400000);
+      } else {
+        daysSinceLast[i] = 99;
+      }
+    }
+    
+    // Get surrounding numbers using LinesSuitesMapper
+    function getSurroundingNumbers(targetNum) {
+      if (!targetNum) return [];
+      const surrounding = [];
+      const targetLine = LinesSuitesMapper.getLineForNumber(targetNum);
+      if (targetLine) {
+        const lineNums = LinesSuitesMapper.getLineNumbers(targetLine);
+        lineNums.forEach(n => {
+          if (n !== targetNum) surrounding.push(n);
+        });
+      }
+      const targetSuit = LinesSuitesMapper.getSuitForNumber(targetNum);
+      if (targetSuit !== null) {
+        const suitNums = LinesSuitesMapper.getSuitNumbers(targetSuit);
+        suitNums.forEach(n => {
+          if (n !== targetNum && !surrounding.includes(n)) surrounding.push(n);
+        });
+      }
+      return surrounding;
+    }
+    
+    const meetingSurrounding = getSurroundingNumbers(meetingNumber);
+    const leavingSurrounding = getSurroundingNumbers(leavingNumber);
+    
+    // Horizontal and vertical analysis
+    const horizontalNumbers = [];
+    const verticalNumbers = [];
+    
+    const currentDayNum = now.getDate();
+    for (let i = -2; i <= 2; i++) {
+      const adjDay = currentDayNum + i;
+      if (adjDay > 0 && adjDay <= 31) {
+        const colNums = getCalendarColumnNumbers(adjDay);
+        colNums.forEach(n => {
+          if (n !== currentDayNum && !horizontalNumbers.includes(n) && n <= 36) {
+            horizontalNumbers.push(n);
+          }
+        });
+      }
+    }
+    verticalNumbers.push(...todaysColumnNumbers);
+    
+    for (let s = 0; s < slots.length; s++) {
+      const targetSlot = slots[s];
+      
+      const sameDaySlotDraws = [];
+      for (const week of sortedWeeks.slice(-12)) {
+        const nums = DataExtractor.getDrawNumbers(week, todayName, targetSlot);
+        nums.forEach(n => sameDaySlotDraws.push(n));
+      }
+      
+      const candidates = {};
+      const factorBreakdown = {};
+      
+// =====================================
+// FACTOR 1: LINE CHART (25%) - UPDATED
+// =====================================
+      let lineScore = 0;
+      if (leavingNumber) {
+        const leavingLine = LinesSuitesMapper.getLineForNumber(leavingNumber);
+        if (leavingLine) {
+          const lineNumbers = LinesSuitesMapper.getLineNumbers(leavingLine);
+          lineNumbers.forEach(num => {
+            if (num !== leavingNumber && !currentWeekDraws.includes(num)) {
+              candidates[num] = (candidates[num] || 0) + 25;
+              lineScore += 25;
+            }
+          });
+        }
+      }
+      
+      if (meetingNumber) {
+        const meetingLine = LinesSuitesMapper.getLineForNumber(meetingNumber);
+        if (meetingLine) {
+          const lineNumbers = LinesSuitesMapper.getLineNumbers(meetingLine);
+          lineNumbers.forEach(num => {
+            if (num !== meetingNumber && !currentWeekDraws.includes(num)) {
+              candidates[num] = (candidates[num] || 0) + 20;
+              lineScore += 20;
+            }
+          });
+        }
+      }
+      factorBreakdown.line = Math.min(25, Math.round((lineScore / 100) * 25));
+      
+// =====================================
+// FACTOR 2: SURROUNDING NUMBERS (20%)
+// =====================================
+      let surroundScore = 0;
+      meetingSurrounding.forEach(num => {
+        if (!currentWeekDraws.includes(num)) {
+          candidates[num] = (candidates[num] || 0) + 20;
+          surroundScore += 20;
+        }
+      });
+      leavingSurrounding.forEach(num => {
+        if (!currentWeekDraws.includes(num) && !candidates[num]) {
+          candidates[num] = (candidates[num] || 0) + 15;
+          surroundScore += 15;
+        }
+      });
+      factorBreakdown.surround = Math.min(20, Math.round((surroundScore / 80) * 20));
+      
+// =====================================
+// FACTOR 3: HORIZONTAL/VERTICAL (15%)
+// =====================================
+      let hvScore = 0;
+      horizontalNumbers.forEach(num => {
+        if (!currentWeekDraws.includes(num)) {
+          candidates[num] = (candidates[num] || 0) + 15;
+          hvScore += 15;
+        }
+      });
+      verticalNumbers.forEach(num => {
+        if (!currentWeekDraws.includes(num) && !candidates[num]) {
+          candidates[num] = (candidates[num] || 0) + 12;
+          hvScore += 12;
+        }
+      });
+      factorBreakdown.hv = Math.min(15, Math.round((hvScore / 80) * 15));
+      
+// =====================================
+// FACTOR 4: MISSING LINES & SUITES (20%)
+// =====================================
+      let missingScore = 0;
+      missingLines.forEach(lineNum => {
+        const lineNums = LinesSuitesMapper.getLineNumbers(lineNum);
+        lineNums.forEach(num => {
+          if (!currentWeekDraws.includes(num) && !candidates[num]) {
+            candidates[num] = (candidates[num] || 0) + 20;
+            missingScore += 20;
+          }
+        });
+      });
+      missingSuites.forEach(suitNum => {
+        const suitNums = LinesSuitesMapper.getSuitNumbers(suitNum);
+        suitNums.forEach(num => {
+          if (!currentWeekDraws.includes(num) && !candidates[num]) {
+            candidates[num] = (candidates[num] || 0) + 15;
+            missingScore += 15;
+          }
+        });
+      });
+      factorBreakdown.missing = Math.min(20, Math.round((missingScore / 80) * 20));
+      
+ // =====================================
+ // FACTOR 5: HISTORICAL FREQUENCY (20%)
+ // =====================================
+      let freqScore = 0;
+      const sortedByFreq = Object.entries(frequency)
+        .filter(([num]) => !currentWeekDraws.includes(parseInt(num)))
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 12);
+      
+      sortedByFreq.forEach(([num, count]) => {
+        const freqWeight = Math.min(20, Math.round((count / (Math.max(...Object.values(frequency)) || 1)) * 20));
+        candidates[parseInt(num)] = (candidates[parseInt(num)] || 0) + freqWeight;
+        freqScore += freqWeight;
+      });
+      factorBreakdown.freq = Math.min(20, Math.round((freqScore / 100) * 20));
+      
+// =====================================
+// NORMALIZE AND SORT - with Statistical Normalisation
+// =====================================
+      const scores = Object.values(candidates);
+      const normalizedScores = scores.length > 0 ? StatisticalNormalisation.softmax(scores) : [];
+      
+      const scored = Object.keys(candidates)
+        .map((num, idx) => ({
+          num: parseInt(num),
+          score: Math.round(normalizedScores[idx] * 100)
+        }))
+        .sort((a, b) => b.score - a.score)
+        .slice(0, 8);
+      
+      // CALCULATE CONFIDENCE
+      const slotHistory = sameDaySlotDraws.length;
+      const leavingConfidence = leavingNumber ? 10 : 0;
+      const meetingConfidence = meetingNumber ? 10 : 0;
+      const missingConfidence = (missingLines.length > 0 || missingSuites.length > 0) ? 10 : 0;
+      const surroundConfidence = (meetingSurrounding.length > 0 || leavingSurrounding.length > 0) ? 10 : 0;
+      const confidenceBase = Math.min(85, 25 + (slotHistory * 2) + leavingConfidence + meetingConfidence + missingConfidence + surroundConfidence);
+      const confidence = Math.min(95, confidenceBase + (scored.length > 0 ? 10 : 0));
+      
+      let isNextSlot = false;
+      if (meetingSlot && targetSlot === meetingSlot) {
+        isNextSlot = true;
+      }
+      
+      results.push({
+        slot: targetSlot,
+        slotDisplay: slotDisplay[targetSlot],
+        slotEmoji: slotEmoji[targetSlot],
+        numbers: scored,
+        confidence: confidence,
+        isNextSlot: isNextSlot,
+        factorBreakdown: factorBreakdown,
+        historicalAccuracy: historicalAccuracy.slots[targetSlot] || { total: 0, correct: 0 },
+        totalCandidates: Object.keys(candidates).length,
+        missingLines: missingLines,
+        missingSuites: missingSuites
+      });
+    }
+    
+    return results;
+  }
+
+  // =====================================
+  // SELECT ANALYZER - UNCHANGED
+  // =====================================
+  let analysisResults;
+  if (isPlayWhe) {
+    analysisResults = analyzePlayWheProbability();
+  } else {
+    analysisResults = analyzePick2Probability();
+  }
+
+  // =====================================
+  // SPIRIT EMOJI MAPPING - UNCHANGED
+  // =====================================
+  const spiritEmoji = {
+    1: "🔪", 2: "👵🏾", 3: "🚕", 4: "⚰️", 5: "👨🏾‍🦳", 6: "🤰🏽", 7: "🐗", 8: "🐯",
+    9: "🐮", 10: "🐒", 11: "🦅", 12: "🤴🏽", 13: "🐸", 14: "💰", 15: "🤧", 16: "💃🏽",
+    17: "🐦‍⬛", 18: "🚤", 19: "🐎", 20: "🐶", 21: "👄", 22: "🐀", 23: "🏡", 24: "🫅🏽",
+    25: "🐢", 26: "🐔", 27: "🐍", 28: "🐟", 29: "🍻", 30: "🐈‍⬛", 31: "👵🏾", 32: "🦐",
+    33: "🕷️", 34: "👨🏾‍🦯", 35: "🐍", 36: "🫏"
+  };
+
+  // Build leaving/meeting display
+  const leavingDisplay = leavingNumber ? 
+    `<span style="color: #58a6ff; font-weight: 900;">#${leavingNumber}${spiritEmoji[leavingNumber] || ''}</span>` : '—';
+  
+  let leavingPairDisplay = '';
+  if (isPick2 && leavingPair) {
+    if (leavingPair.isDouble) {
+      leavingPairDisplay = ` (${leavingPair.first}/${leavingPair.first})`;
+    } else {
+      leavingPairDisplay = ` (${leavingPair.first}/${leavingPair.second})`;
+    }
+  }
+  
+  const meetingDisplay = meetingNumber ? 
+    `<span style="color: #ff9d00; font-weight: 900;">#${meetingNumber}${spiritEmoji[meetingNumber] || ''}</span>` : '—';
+  
+  let meetingPairDisplay = '';
+  if (isPick2 && meetingPair) {
+    if (meetingPair.isDouble) {
+      meetingPairDisplay = ` (${meetingPair.first}/${meetingPair.first})`;
+    } else {
+      meetingPairDisplay = ` (${meetingPair.first}/${meetingPair.second})`;
+    }
+  }
+  
+  const leavingSlotDisplay = leavingSlot ? ` • ${leavingSlot}` : '';
+  const meetingSlotDisplay = meetingSlot ? ` • ${meetingSlot}` : '';
+  
+  const nextDrawDate = new Date(now);
+  if (currentHour >= 18) nextDrawDate.setDate(now.getDate() + 1);
+  const dateStr = nextDrawDate.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+
+  // Build missing lines/suites indicator
+  const missingIndicator = (missingLines.length > 0 || missingSuites.length > 0) ? 
+    `<span style="font-size: 7px; color: #ff9d00; background: rgba(255,157,0,0.1); padding: 2px 8px; border-radius: 10px;">
+      ⚠️ ${missingLines.length > 0 ? `${missingLines.length} lines` : ''}${missingLines.length > 0 && missingSuites.length > 0 ? ' • ' : ''}${missingSuites.length > 0 ? `${missingSuites.length} suites` : ''} missing
+    </span>` : 
+    '<span style="font-size: 7px; color: #32d74b; background: rgba(50,215,75,0.1); padding: 2px 8px; border-radius: 10px;">✅ No missing lines/suites</span>';
+
+  // =====================================
+  // BUILD CAROUSEL SLIDES - UNCHANGED
+  // =====================================
+  const slidesHtml = analysisResults.map((result, idx) => {
+    const slotColor = ['#ff6b6b', '#ffd93d', '#6bcb77', '#4d96ff'][idx];
+    const isNext = result.isNextSlot;
+    
+    const accTotal = result.historicalAccuracy.total || 0;
+    const accCorrect = result.historicalAccuracy.correct || 0;
+    const accRate = accTotal > 0 ? Math.round((accCorrect / accTotal) * 100) : 0;
+    const accColor = accRate >= 60 ? '#32d74b' : accRate >= 40 ? '#ff9f0a' : '#ff453a';
+    
+    let candidatesHtml;
+    if (isPick2) {
+      candidatesHtml = result.pairs.map((p, cidx) => {
+        const colors = ['#ef4444', '#f97316', '#ff9d00', '#58a6ff'];
+        const color = colors[cidx % colors.length];
+        const emoji1 = spiritEmoji[p.first] || '';
+        const emoji2 = spiritEmoji[p.second] || '';
+        const barWidth = p.score;
+        
+        const isMissingLineRelated = result.missingLines && result.missingLines.some(l => {
+          const lineNums = LinesSuitesMapper.getLineNumbers(l);
+          return lineNums.includes(p.first) || lineNums.includes(p.second);
+        });
+        
+        const isMissingSuitRelated = result.missingSuites && result.missingSuites.some(s => {
+          const suitNums = LinesSuitesMapper.getSuitNumbers(s);
+          return suitNums.includes(p.first) || suitNums.includes(p.second);
+        });
+        
+        const missingBadge = (isMissingLineRelated || isMissingSuitRelated) ? 
+          '<span style="font-size: 5px; color: #ff9d00; background: rgba(255,157,0,0.2); padding: 1px 4px; border-radius: 4px;">MISSING</span>' : '';
+        
+        return `
+          <div style="
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            background: rgba(255,255,255,0.03);
+            border-radius: 10px;
+            padding: 6px 8px;
+            min-width: 70px;
+            border: 1px solid ${color}40;
+            transition: all 0.2s ease;
+            position: relative;
+          ">
+            <div style="display: flex; align-items: center; gap: 2px;">
+              <span style="font-size: 18px; font-weight: 900; color: ${color};">${p.first}</span>
+              <span style="font-size: 12px; color: ${color};">/</span>
+              <span style="font-size: 18px; font-weight: 900; color: ${color};">${p.second}</span>
+            </div>
+            <div style="display: flex; gap: 4px; font-size: 10px; color: ${color};">
+              <span>${emoji1}</span>
+              <span>${emoji2}</span>
+            </div>
+            <div style="display: flex; align-items: center; gap: 4px;">
+              <span style="font-size: 9px; font-weight: 700; color: ${color};">${p.score}%</span>
+              ${missingBadge}
+            </div>
+            <div style="
+              width: 100%;
+              height: 3px;
+              background: rgba(255,255,255,0.05);
+              border-radius: 3px;
+              overflow: hidden;
+              margin-top: 2px;
+            ">
+              <div style="
+                width: ${barWidth}%;
+                height: 100%;
+                background: ${color};
+                border-radius: 3px;
+                transition: width 0.6s ease;
+              "></div>
+            </div>
+          </div>
+        `;
+      }).join('');
+    } else {
+      candidatesHtml = result.numbers.map((c, cidx) => {
+        const colors = ['#ef4444', '#f97316', '#ff9d00', '#58a6ff'];
+        const color = colors[cidx % colors.length];
+        const emoji = spiritEmoji[c.num] || '';
+        const barWidth = c.score;
+        
+        const isMissingLine = result.missingLines && result.missingLines.some(l => {
+          const lineNums = LinesSuitesMapper.getLineNumbers(l);
+          return lineNums.includes(c.num);
+        });
+        
+        const isMissingSuit = result.missingSuites && result.missingSuites.some(s => {
+          const suitNums = LinesSuitesMapper.getSuitNumbers(s);
+          return suitNums.includes(c.num);
+        });
+        
+        const missingBadge = (isMissingLine || isMissingSuit) ? 
+          '<span style="font-size: 5px; color: #ff9d00; background: rgba(255,157,0,0.2); padding: 1px 4px; border-radius: 4px;">MISSING</span>' : '';
+        
+        return `
+          <div style="
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            background: rgba(255,255,255,0.03);
+            border-radius: 10px;
+            padding: 6px 8px;
+            min-width: 55px;
+            border: 1px solid ${color}40;
+            transition: all 0.2s ease;
+          ">
+            <span style="font-size: 22px; font-weight: 900; color: ${color};">${c.num}</span>
+            <span style="font-size: 12px; color: ${color};">${emoji}</span>
+            <div style="display: flex; align-items: center; gap: 4px;">
+              <span style="font-size: 9px; font-weight: 700; color: ${color};">${c.score}%</span>
+              ${missingBadge}
+            </div>
+            <div style="
+              width: 100%;
+              height: 3px;
+              background: rgba(255,255,255,0.05);
+              border-radius: 3px;
+              overflow: hidden;
+              margin-top: 2px;
+            ">
+              <div style="
+                width: ${barWidth}%;
+                height: 100%;
+                background: ${color};
+                border-radius: 3px;
+                transition: width 0.6s ease;
+              "></div>
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+
+    // Build factor breakdown display
+    const factors = result.factorBreakdown || {};
+    const factorKeys = isPick2 ? 
+      ['line', 'freq', 'trend', 'slot', 'suit'] : 
+      ['line', 'surround', 'hv', 'missing', 'freq'];
+    const factorLabels = isPick2 ? 
+      { line: 'Line', freq: 'Pairs', trend: 'Trend', slot: 'DaySlot', suit: 'MissingSuit' } :
+      { line: 'Line', surround: 'Surround', hv: 'H/V', missing: 'Missing', freq: 'Freq' };
+    const factorColors = isPick2 ?
+      { line: '#ff6b6b', freq: '#ffd93d', trend: '#6bcb77', slot: '#4d96ff', suit: '#9b59b6' } :
+      { line: '#ff6b6b', surround: '#ffd93d', hv: '#6bcb77', missing: '#4d96ff', freq: '#9b59b6' };
+
+    const factorBars = factorKeys.map(key => {
+      const value = factors[key] || 0;
+      return `
+        <div style="display: flex; align-items: center; gap: 3px; flex: 1;">
+          <span style="font-size: 6px; color: #64748b; min-width: 55px;">${factorLabels[key]}</span>
+          <div style="flex: 1; height: 2px; background: rgba(255,255,255,0.05); border-radius: 2px; overflow: hidden;">
+            <div style="width: ${value}%; height: 100%; background: ${factorColors[key]}; border-radius: 2px;"></div>
+          </div>
+          <span style="font-size: 6px; color: ${factorColors[key]}; min-width: 20px;">${value}%</span>
+        </div>
+      `;
+    }).join('');
+
+    return `
+      <div class="pa-slide" style="
+        min-width: 100%;
+        scroll-snap-align: start;
+        padding: 4px 2px;
+      ">
+        <div style="
+          background: ${isNext ? 'rgba(255,157,0,0.08)' : 'rgba(255,255,255,0.02)'};
+          border-radius: 14px;
+          padding: 12px;
+          border: ${isNext ? '2px solid #ff9d00' : '1px solid rgba(255,255,255,0.06)'};
+          box-shadow: ${isNext ? '0 0 20px rgba(255,157,0,0.1)' : 'none'};
+        ">
+          <!-- Slot Header -->
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; flex-wrap: wrap; gap: 4px;">
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <span style="font-size: 20px;">${result.slotEmoji}</span>
+              <div>
+                <div style="font-size: 14px; font-weight: 800; color: ${slotColor};">${result.slot}</div>
+                <div style="font-size: 8px; color: #64748b;">${result.slotDisplay}</div>
+              </div>
+            </div>
+            <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap;">
+              ${isNext ? '<span style="font-size: 8px; font-weight: 700; color: #ff9d00; background: rgba(255,157,0,0.15); padding: 2px 10px; border-radius: 10px;">⬆️ NEXT</span>' : ''}
+              <span style="font-size: 7px; color: ${accColor}; background: rgba(255,255,255,0.05); padding: 2px 8px; border-radius: 10px;">
+                📊 ${accRate}% accuracy
+              </span>
+              <span style="font-size: 7px; color: #64748b; background: rgba(255,255,255,0.03); padding: 2px 8px; border-radius: 10px;">
+                ${result.totalCandidates || 0} candidates
+              </span>
+            </div>
+          </div>
+          
+          <!-- Missing Indicator -->
+          <div style="margin-bottom: 4px;">
+            ${missingIndicator}
+          </div>
+          
+          <!-- Candidates Grid -->
+          <div style="display: flex; justify-content: center; gap: 6px; flex-wrap: wrap; min-height: 70px;">
+            ${candidatesHtml || '<span style="font-size: 12px; color: #64748b; padding: 12px;">No candidates available</span>'}
+          </div>
+          
+          <!-- Confidence Bar -->
+          <div style="margin-top: 6px;">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+              <span style="font-size: 7px; color: #64748b;">Confidence</span>
+              <span style="font-size: 8px; font-weight: 700; color: ${slotColor};">${result.confidence}%</span>
+            </div>
+            <div style="
+              width: 100%;
+              height: 4px;
+              background: rgba(255,255,255,0.05);
+              border-radius: 4px;
+              overflow: hidden;
+              margin-top: 2px;
+            ">
+              <div style="
+                width: ${result.confidence}%;
+                height: 100%;
+                background: linear-gradient(90deg, ${slotColor}40, ${slotColor});
+                border-radius: 4px;
+                transition: width 0.8s ease;
+              "></div>
+            </div>
+          </div>
+          
+          <!-- Factor Breakdown -->
+          <div style="
+            margin-top: 6px;
+            padding-top: 6px;
+            border-top: 1px solid rgba(255,255,255,0.04);
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+          ">
+            <div style="display: flex; gap: 6px; align-items: center; flex-wrap: wrap;">
+              <span style="font-size: 6px; color: #64748b; font-weight: 700;">Factors:</span>
+              ${factorBars}
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  const carouselId = 'pa-carousel-' + Date.now() + '-' + gameType;
+
+  // Build data quality indicator
+  const totalDraws = sortedWeeks.reduce((sum, week) => sum + week.days.length, 0);
+  const dataQuality = totalDraws > 200 ? 'HIGH' : totalDraws > 100 ? 'MEDIUM' : 'LOW';
+  const qualityColor = dataQuality === 'HIGH' ? '#32d74b' : dataQuality === 'MEDIUM' ? '#ff9f0a' : '#ff453a';
+
+  return `
+    <style>
+      .pa-carousel {
+        overflow-x: auto;
+        scroll-snap-type: x mandatory;
+        scroll-behavior: smooth;
+        -webkit-overflow-scrolling: touch;
+        scrollbar-width: thin;
+        display: flex;
+        gap: 12px;
+        padding: 4px 2px 12px 2px;
+      }
+      .pa-carousel::-webkit-scrollbar {
+        height: 4px;
+      }
+      .pa-carousel::-webkit-scrollbar-track {
+        background: rgba(255,255,255,0.05);
+        border-radius: 10px;
+      }
+      .pa-carousel::-webkit-scrollbar-thumb {
+        background: #ff9d00;
+        border-radius: 10px;
+      }
+      .pa-dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: #334155;
+        display: inline-block;
+        margin: 0 4px;
+        cursor: pointer;
+        transition: all 0.3s ease;
+      }
+      .pa-dot.active {
+        background: #ff9d00;
+        width: 20px;
+        border-radius: 4px;
+      }
+      .pa-slide {
+        scroll-snap-align: start;
+        flex: 0 0 100%;
+        min-width: 0;
+      }
+      @keyframes slideFade {
+        from { opacity: 0; transform: translateY(10px); }
+        to { opacity: 1; transform: translateY(0); }
+      }
+      .pa-slide {
+        animation: slideFade 0.4s ease;
+      }
+    </style>
+
+    <div style="
+      background: linear-gradient(145deg, #0f172a, #1a2332);
+      border-radius: 16px;
+      padding: 16px;
+      border: 1px solid rgba(88,166,255,0.1);
+      margin-bottom: 12px;
+    ">
+      <!-- Header -->
+      <div style="
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 8px;
+        flex-wrap: wrap;
+        gap: 6px;
+      ">
+        <div>
+          <div style="font-size: 16px; font-weight: 800; color: #ff9d00; letter-spacing: 0.3px;">
+            ♠️ PROBABILITY DISTRIBUTION
+          </div>
+          <div style="display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 2px;">
+            <span style="font-size: 9px; color: #64748b;">${gameTitle} • ${dateStr}</span>
+            <span style="font-size: 7px; color: ${qualityColor}; background: rgba(255,255,255,0.05); padding: 2px 8px; border-radius: 10px;">
+              📈 Data Quality: ${dataQuality} (${totalDraws} draws)
+            </span>
+            <span style="font-size: 7px; color: #64748b; background: rgba(255,255,255,0.03); padding: 2px 8px; border-radius: 10px;">
+              ${isPick2 ? '♠️🃏♥️' : '♥️🃏♠️'}
+            </span>
+          </div>
+        </div>
+        <div style="display: flex; gap: 12px; font-size: 9px; background: rgba(255,255,255,0.03); padding: 4px 12px; border-radius: 8px; flex-wrap: wrap;">
+          <span>🔵 Leaving: ${leavingDisplay}${leavingPairDisplay}${leavingSlotDisplay}</span>
+          <span>🟡 Meeting: ${meetingDisplay}${meetingPairDisplay}${meetingSlotDisplay}</span>
+        </div>
+      </div>
+
+      <!-- Historical Accuracy Banner -->
+      <div style="
+        background: rgba(50,215,75,0.05);
+        border-radius: 8px;
+        padding: 4px 12px;
+        margin-bottom: 8px;
+        border: 1px solid rgba(50,215,75,0.1);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 16px;
+        flex-wrap: wrap;
+      ">
+        <span style="font-size: 8px; color: #94a3b8;">
+          📜 Overall Historical Accuracy: 
+          <span style="font-weight: 700; color: ${historicalAccuracy.overall >= 60 ? '#32d74b' : historicalAccuracy.overall >= 40 ? '#ff9f0a' : '#ff453a'};">
+            ${historicalAccuracy.overall}%
+          </span>
+        </span>
+        <span style="font-size: 7px; color: #64748b;">
+          Based on ${Object.values(historicalAccuracy.slots).reduce((sum, s) => sum + s.total, 0)} analyzed draws
+        </span>
+        <span style="font-size: 7px; color: #64748b; font-style: italic;">
+          ⚠️ Probability Analysis • Not Prediction
+        </span>
+      </div>
+
+      <!-- Carousel Navigation -->
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <span style="font-size: 8px; color: #94a3b8;">${analysisResults.length} time slots</span>
+          ${missingIndicator}
+        </div>
+        <div style="display: flex; gap: 8px;">
+          <button class="pa-prev" style="
+            background: rgba(255,255,255,0.05);
+            border: 1px solid rgba(255,255,255,0.08);
+            border-radius: 20px;
+            padding: 2px 14px;
+            color: #94a3b8;
+            font-size: 10px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+          ">◀ Prev</button>
+          <button class="pa-next" style="
+            background: rgba(255,255,255,0.05);
+            border: 1px solid rgba(255,255,255,0.08);
+            border-radius: 20px;
+            padding: 2px 14px;
+            color: #94a3b8;
+            font-size: 10px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s ease;
+          ">Next ▶</button>
+        </div>
+      </div>
+
+      <!-- Carousel Container -->
+      <div id="${carouselId}" class="pa-carousel">
+        ${slidesHtml}
+      </div>
+
+      <!-- Pagination Dots -->
+      <div style="display: flex; justify-content: center; gap: 6px; margin-top: 4px;" id="${carouselId}-dots">
+        ${analysisResults.map((_, i) => `
+          <span class="pa-dot ${i === 0 ? 'active' : ''}" data-index="${i}"></span>
+        `).join('')}
+      </div>
+
+      <!-- Enhanced Factors Footer -->
+      <div style="
+        background: rgba(255,255,255,0.02);
+        border-radius: 8px;
+        padding: 6px 10px;
+        margin-top: 8px;
+        border: 1px solid rgba(255,255,255,0.04);
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: center;
+        gap: 4px 10px;
+      ">
+        <span style="font-size: 7px; font-weight: 700; color: #58a6ff; letter-spacing: 0.3px;">♠️ Analysis Factors:</span>
+        ${isPick2 ? `
+          <span style="font-size: 6px; color: #94a3b8;"><span style="color: #ff6b6b; font-weight: 700;">35%</span> Line Logic</span>
+          <span style="font-size: 6px; color: #94a3b8;"><span style="color: #ffd93d; font-weight: 700;">25%</span> Frequent Pairs</span>
+          <span style="font-size: 6px; color: #94a3b8;"><span style="color: #6bcb77; font-weight: 700;">15%</span> Current Trend</span>
+          <span style="font-size: 6px; color: #94a3b8;"><span style="color: #4d96ff; font-weight: 700;">15%</span> Same Day Slot</span>
+          <span style="font-size: 6px; color: #94a3b8;"><span style="color: #9b59b6; font-weight: 700;">10%</span> Missing Suites</span>
+        ` : `
+          <span style="font-size: 6px; color: #94a3b8;"><span style="color: #ff6b6b; font-weight: 700;">25%</span> Line Chart</span>
+          <span style="font-size: 6px; color: #94a3b8;"><span style="color: #ffd93d; font-weight: 700;">20%</span> Surrounding</span>
+          <span style="font-size: 6px; color: #94a3b8;"><span style="color: #6bcb77; font-weight: 700;">15%</span> H/V Analysis</span>
+          <span style="font-size: 6px; color: #94a3b8;"><span style="color: #4d96ff; font-weight: 700;">20%</span> Missing Lines/Suits</span>
+          <span style="font-size: 6px; color: #94a3b8;"><span style="color: #9b59b6; font-weight: 700;">20%</span> Historical Freq</span>
+        `}
+        <span style="font-size: 6px; color: #475569;">• Distribution Analysis</span>
+      </div>
+    </div>
+
+    <script>
+      (function() {
+        var container = document.getElementById('${carouselId}');
+        var dots = document.querySelectorAll('#${carouselId}-dots .pa-dot');
+        var prevBtn = container.parentElement.querySelector('.pa-prev');
+        var nextBtn = container.parentElement.querySelector('.pa-next');
+        var currentIndex = 0;
+        var totalSlides = ${analysisResults.length};
+        var scrollTimeout;
+        
+        function updateDots() {
+          dots.forEach(function(dot, idx) {
+            if (idx === currentIndex) {
+              dot.classList.add('active');
+            } else {
+              dot.classList.remove('active');
+            }
+          });
+        }
+        
+        function scrollToSlide(index) {
+          if (index < 0) index = 0;
+          if (index >= totalSlides) index = totalSlides - 1;
+          currentIndex = index;
+          var slideWidth = container.children[0] ? container.children[0].offsetWidth : 0;
+          if (slideWidth > 0) {
+            container.scrollTo({ left: index * (slideWidth + 12), behavior: 'smooth' });
+          }
+          updateDots();
+        }
+        
+        function handleScroll() {
+          if (scrollTimeout) clearTimeout(scrollTimeout);
+          scrollTimeout = setTimeout(function() {
+            var slideWidth = container.children[0] ? container.children[0].offsetWidth : 0;
+            var scrollPosition = container.scrollLeft;
+            var newIndex = Math.round(scrollPosition / (slideWidth + 12));
+            if (newIndex !== currentIndex && newIndex >= 0 && newIndex < totalSlides) {
+              currentIndex = newIndex;
+              updateDots();
+            }
+          }, 100);
+        }
+        
+        if (container) {
+          container.addEventListener('scroll', handleScroll);
+          dots.forEach(function(dot, idx) {
+            dot.addEventListener('click', function() {
+              scrollToSlide(idx);
+            });
+          });
+          if (prevBtn) {
+            prevBtn.addEventListener('click', function() { scrollToSlide(currentIndex - 1); });
+          }
+          if (nextBtn) {
+            nextBtn.addEventListener('click', function() { scrollToSlide(currentIndex + 1); });
+          }
+        }
+        
+        updateDots();
+        setTimeout(function() { scrollToSlide(0); }, 100);
+      })();
+    </script>
+  `;
+}
+//////////////////////////////////////////
+// ======================================
+// PICK 2 DAY TO DAY LINE CHART
+// Displays pairs as Line1/Line2 (e.g., "3L/5L")
+// ======================================
+
+function buildPick2LineTable(weeks) {
+  const numToLineMap = {
+    1:1, 10:1, 19:1, 28:1, 2:2, 11:2, 20:2, 29:2, 3:3, 12:3, 21:3, 30:3,
+    4:4, 13:4, 22:4, 31:4, 5:5, 14:5, 23:5, 32:5, 6:6, 15:6, 24:6, 33:6,
+    7:7, 16:7, 25:7, 34:7, 8:8, 17:8, 26:8, 35:8, 9:9, 18:9, 27:9, 36:9
+  };
+
+  // Helper function to check if a specific draw time has passed
+  function isDrawTimePassed(weekStartDate, dayName, slot) {
+    if (!weekStartDate) return false;
+    const parts = weekStartDate.split(" ");
+    const monthMap = {"Jan":0,"Feb":1,"Mar":2,"Apr":3,"May":4,"Jun":5,"Jul":6,"Aug":7,"Sep":8,"Oct":9,"Nov":10,"Dec":11};
+    const startDate = new Date(parts[2], monthMap[parts[1]], parseInt(parts[0]));
+    const dayIndex = daysOfWeek.indexOf(dayName);
+    if (dayIndex === -1) return false;
+    const drawDate = new Date(startDate);
+    drawDate.setDate(startDate.getDate() + dayIndex);
+    const timeOffsets = { "MOR": 9, "MID": 12, "NON": 15, "EVE": 18 };
+    drawDate.setHours(timeOffsets[slot] || 12);
+    return drawDate < new Date();
+  }
+
+  // Helper function to check if a day is a HOLIDAY (no draws and EVE has passed)
+  function isHolidayDay(weekStartDate, day, dayIndex) {
+    if (!day) return false;
+    const allSlotsEmpty = timeOrder.every(slot => {
+      const val = day.draws[slot];
+      return !val || val === "-" || val === "PENDING";
+    });
+    if (!allSlotsEmpty) return false;
+    return isDrawTimePassed(weekStartDate, day.dayName, "EVE");
+  }
+
+  let isAfterEvening = false;
+  let highlightDayName = todayName;
+  const currentWeekData = weeks.find(wk => wk.isCurrentWeek);
+  
+  if (currentWeekData) {
+    let lastCompletedDayIndex = -1;
+    for (let i = 0; i < daysOfWeek.length; i++) {
+      const dayData = currentWeekData.days.find(d => d.dayName === daysOfWeek[i]);
+      if (dayData) {
+        const hasEveDraw = dayData.draws.EVE && dayData.draws.EVE !== "-" && dayData.draws.EVE !== "PENDING";
+        const isHoliday = isHolidayDay(currentWeekData.startDate, dayData, i);
+        
+        if (hasEveDraw || isHoliday) {
+          lastCompletedDayIndex = i;
+          if (hasEveDraw || isHoliday) {
+            isAfterEvening = true;
+          }
+        }
+      }
+    }
+    
+    if (lastCompletedDayIndex !== -1) {
+      if (isAfterEvening) {
+        highlightDayName = daysOfWeek[(lastCompletedDayIndex + 1) % 7];
+      } else {
+        highlightDayName = daysOfWeek[lastCompletedDayIndex];
+      }
+    }
+  }
+
+  // Line colors for each line (1-9)
+  const lineColors = [
+    "#00f2ff", "#ff9f0a", "#32d74b", "#ff375f", 
+    "#ffd60a", "#bf5af2", "#1e90ff", "#ff1493", "#00ff7f"
+  ];
+
+  // Helper to get line for a number
+  function getLine(num) {
+    return numToLineMap[num] || null;
+  }
+
+  // Helper to format a single number as line
+  function formatNumberAsLine(num) {
+    const line = getLine(num);
+    if (line === null) return "?";
+    return `${line}L`;
+  }
+
+  // Helper to parse a Pick 2 draw into two numbers
+  function parsePick2Draw(val) {
+    if (!val || val === "-" || val === "PENDING") return null;
+    const strVal = String(val);
+    const parts = strVal.split(/[,/ ]+/);
+    if (parts.length < 2) return null;
+    const num1 = parseInt(parts[0], 10);
+    const num2 = parseInt(parts[1], 10);
+    if (isNaN(num1) || isNaN(num2)) return null;
+    return { num1, num2 };
+  }
+
+  return weeks.map(wk => {
+    // --- Parse Week Range Header ---
+    let headerRange = wk.isCurrentWeek ? "CURRENT WEEK" : "PREVIOUS WEEK";
+    if (wk.startDate) {
+      let start = new Date(wk.startDate);
+      if (!isNaN(start.getTime())) {
+        let end = new Date(start.getTime() + 6 * 24 * 60 * 60 * 1000);
+        let opt = { day: 'numeric', month: 'short', year: '2-digit' };
+        headerRange += ` (${start.toLocaleDateString('en-GB', opt)} - ${end.toLocaleDateString('en-GB', opt)})`;
+      }
+    }
+
+    return `
+    <div class="table-wrapper">
+      <div class="table-header" style="background: #1e293b; color: #ff9d00;">
+        <span>${headerRange.toUpperCase()} • 🔸 PK 2 LINE CHART</span>
+      </div>
+      <table>
+        <tr><th>DAY</th><th>MOR</th><th>MID</th><th>NON</th><th>EVE</th></tr>
+        ${wk.days.map((d, index) => {
+          let isHighlighted = (d.dayName === highlightDayName);
+          
+          // --- Calculate Day Number ---
+          let dayDisplay = d.dayName.slice(0,3).toUpperCase();
+          if (wk.startDate) {
+            let start = new Date(wk.startDate);
+            if (!isNaN(start.getTime())) {
+              let currentDayDate = new Date(start.getTime() + index * 24 * 60 * 60 * 1000);
+              dayDisplay += ` ${currentDayDate.getDate()}`;
+            }
+          }
+          
+          // Check if this entire day has no draws
+          const allSlotsEmpty = timeOrder.every(slot => {
+            const val = d.draws[slot];
+            return !val || val === "-" || val === "PENDING";
+          });
+          
+          // For previous weeks: if all slots empty, show HOLIDAY
+          if (!wk.isCurrentWeek && allSlotsEmpty) {
+            return `<tr class="${isHighlighted ? 'current-day' : ''}">
+              <td class="day-label">${(isHighlighted && isAfterEvening) ? "▶ " : ""}${dayDisplay}</td>
+              <td colspan="4" style="text-align: center; padding: 8px; background: rgba(0,0,0,0.2);">
+                <span style="color: #ff453a; font-weight: bold; font-size: 14px;">🇹🇹 HOLIDAY 🇹🇹</span>
+              </td>
+            </tr>`;
+          }
+          
+          // For current week: check if the day has no draws AND EVE has passed
+          if (wk.isCurrentWeek && allSlotsEmpty) {
+            const isEvePassed = isDrawTimePassed(wk.startDate, d.dayName, "EVE");
+            if (isEvePassed) {
+              return `<tr class="${isHighlighted ? 'current-day' : ''}">
+                <td class="day-label">${(isHighlighted && isAfterEvening) ? "▶ " : ""}${dayDisplay}</td>
+                <td colspan="4" style="text-align: center; padding: 8px; background: rgba(0,0,0,0.2);">
+                  <span style="color: #ff453a; font-weight: bold; font-size: 14px;">🇹🇹 HOLIDAY 🇹🇹</span>
+                </td>
+              </tr>`;
+            }
+          }
+
+          // Normal row with individual "..." for missing draws
+          return `<tr class="${isHighlighted ? 'current-day' : ''}">
+            <td class="day-label">${(isHighlighted && isAfterEvening) ? "▶ " : ""}${dayDisplay}</td>
+            ${timeOrder.map(s => {
+              let val = String(d.draws[s]).trim();
+              if (val === "-" || val === "PENDING" || val === "") return `<td>...</td>`;
+              
+              const parsed = parsePick2Draw(val);
+              if (!parsed) return `<td>...</td>`;
+              
+              const { num1, num2 } = parsed;
+              const line1 = getLine(num1);
+              const line2 = getLine(num2);
+              
+              if (line1 === null || line2 === null) return `<td>...</td>`;
+              
+              const color1 = lineColors[(line1 - 1) % lineColors.length];
+              const color2 = lineColors[(line2 - 1) % lineColors.length];
+              
+              // If both numbers are in the same line, show it as a single line with a highlight
+              if (line1 === line2) {
+                return `<td style="color:${color1}; font-weight:900; background:rgba(255,215,0,0.08); border-radius:4px; padding:2px 4px;">
+                  ${line1}L/${line2}L
+                </td>`;
+              }
+              
+              // Different lines - show both with their respective colors
+              return `<td style="font-weight:900;">
+                <span style="color:${color1};">${line1}L</span>
+                <span style="color:${color2};">/${line2}L</span>
+              </td>`;
+            }).join("")}
+          </tr>`;
+        }).join("")}
+      </table>
+    </div>`;
+  }).join('<div style="text-align:center; padding:3px 3px; opacity:0.15; font-weight:900; letter-spacing:3px; pointer-events:none; user-select:none;"><div style="display: flex; justify-content: center; align-items: center; gap: 4px; flex-wrap: wrap;"><span style="font-size:9px;">CODEWITHGLASGOW 🌐 PICK 2 LINE CHART</span><span style="color: #ff9d00; font-weight: bold; font-size: 8px;">' + globalTrackingCode + '</span><span style="color: #666; font-size: 8px;">Last: ' + globalLastDraw + '</span></div></div>');
+}
+/////////////////////////////////////////
+// ======================================
+// PICK 2 LINE RULES & MAPPING
+// Shows all 9 lines with their pull rules and active numbers
+// + Line Chart with last 24 weeks stats (count + last played date)
+// Pick 2: both numbers from each draw are counted
+// ======================================
+function renderPick2LineRulesMapping(weeksData) {
+  if (!weeksData || weeksData.length === 0) {
+    return `
+      <div style="background: linear-gradient(135deg, #0f172a, #1e293b); border-radius: 16px; padding: 16px; margin-bottom: 15px; border: 1px solid #58a6ff; text-align:center;">
+        📊 Loading Pick 2 Line Rules...
+      </div>
+    `;
+  }
+
+  // ======================================
+  // CONSTANTS & MAPPINGS
+  // ======================================
+
+  const dayNames = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+  const slots = ["MOR", "MID", "NON", "EVE"];
+  const now = new Date();
+
+  const numToLineMap = {
+    1:1, 10:1, 19:1, 28:1, 2:2, 11:2, 20:2, 29:2, 3:3, 12:3, 21:3, 30:3,
+    4:4, 13:4, 22:4, 31:4, 5:5, 14:5, 23:5, 32:5, 6:6, 15:6, 24:6, 33:6,
+    7:7, 16:7, 25:7, 34:7, 8:8, 17:8, 26:8, 35:8, 9:9, 18:9, 27:9, 36:9
+  };
+
+  const lineColors = [
+    "#00f2ff", "#ff9f0a", "#32d74b", "#ff375f", 
+    "#ffd60a", "#bf5af2", "#1e90ff", "#ff1493", "#00ff7f"
+  ];
+
+  const lineNames = {
+    1: "1 Line",
+    2: "2 Line",
+    3: "3 Line",
+    4: "4 Line",
+    5: "5 Line",
+    6: "6 Line",
+    7: "7 Line",
+    8: "8 Line",
+    9: "9 Line"
+  };
+
+  const lineMembers = {
+    1: [1, 10, 19, 28],
+    2: [2, 11, 20, 29],
+    3: [3, 12, 21, 30],
+    4: [4, 13, 22, 31],
+    5: [5, 14, 23, 32],
+    6: [6, 15, 24, 33],
+    7: [7, 16, 25, 34],
+    8: [8, 17, 26, 35],
+    9: [9, 18, 27, 36]
+  };
+
+  const lineRules = {
+    1: { pulls: [5], description: "1 line does pull 5 line mainly because 5/1 is mark and spirit", related: "5/1 mark and spirit" },
+    2: { pulls: [7], description: "2 line does pull 7 line", related: "2/7 pull" },
+    3: { pulls: [7, 5], description: "3 line does play with 7 line and 5 line mostly to complete the 357 play", related: "357 play" },
+    4: { pulls: [8, 7], description: "4 line does pull 8 line and 7 line", related: "4/8/7" },
+    5: { pulls: [1, 9], description: "5 line does pull 1 line and 9 line", related: "5/1/9" },
+    6: { pulls: [6], description: "6 line does pull 6 line", related: "self-pull" },
+    7: { pulls: [7, 4], description: "7 line does pull 7 line and 4 line", related: "7/4" },
+    8: { pulls: [8, 4], description: "8 line does pull 8 line and 4 line", related: "8/4" },
+    9: { pulls: [5, 4, 8], description: "9 line does pull 5 line and 4 line and sometimes 8 line", related: "9/5/4/8" }
+  };
+
+  // ======================================
+  // HELPER FUNCTIONS
+  // ======================================
+
+  function getRawDraw(week, dayName, slot) {
+    if (!week) return null;
+    const day = week.days.find(d => d.dayName === dayName);
+    if (!day) return null;
+    const val = day.draws[slot];
+    return val && val !== "-" && val !== "PENDING" && val !== "HOLIDAY" ? val.toString() : null;
+  }
+
+  // Parse Pick 2 draw like "25,5" or "12/21" into an array of numbers
+  function parsePick2Draw(val) {
+    if (!val) return [];
+    const parts = String(val).split(/[,/ ]+/);
+    const nums = [];
+    for (const p of parts) {
+      const n = parseInt(p, 10);
+      if (!isNaN(n) && n >= 1 && n <= 36) nums.push(n);
+    }
+    return nums;
+  }
+
+  // Get ALL numbers from a Pick 2 draw
+  function getDrawNumbers(week, dayName, slot) {
+    const raw = getRawDraw(week, dayName, slot);
+    if (!raw) return [];
+    return parsePick2Draw(raw);
+  }
+
+  function getLine(num) {
+    return numToLineMap[num] || null;
+  }
+
+  function getLineColor(num) {
+    const line = getLine(num);
+    if (line === null) return "#94a3b8";
+    return lineColors[(line - 1) % lineColors.length];
+  }
+
+  function getLineName(num) {
+    const line = getLine(num);
+    if (line === null) return "?";
+    return lineNames[line] || `Line ${line}`;
+  }
+
+  const spiritEmoji = {
+    1: "🔪", 2: "👵🏾", 3: "🚕", 4: "⚰️", 5: "👨🏾‍🦳", 6: "🤰🏽", 7: "🐗", 8: "🐯",
+    9: "🐮", 10: "🐒", 11: "🦅", 12: "🤴🏽", 13: "🐸", 14: "💰", 15: "🤧", 16: "💃🏽",
+    17: "🐦‍⬛", 18: "🚤", 19: "🐎", 20: "🐶", 21: "👄", 22: "🐀", 23: "🏡", 24: "🫅🏽",
+    25: "🐢", 26: "🐔", 27: "🐍", 28: "🐟", 29: "🍻", 30: "🐈‍⬛", 31: "👵🏾", 32: "🦐",
+    33: "🕷️", 34: "👨🏾‍🦯", 35: "🐍", 36: "🫏"
+  };
+
+  const sortedWeeks = [...weeksData].sort((a, b) => {
+    let pa = a.startDate.split(" ");
+    let pb = b.startDate.split(" ");
+    return new Date(pa[2] + "-" + pa[1] + "-" + pa[0]) - new Date(pb[2] + "-" + pb[1] + "-" + pb[0]);
+  });
+
+  const currentWeek = sortedWeeks[sortedWeeks.length - 1];
+
+  // ======================================
+  // GET LEAVING NUMBER (from Pick 2, taking first number of the pair)
+  // ======================================
+
+  function getLeavingNumber() {
+    let leavingNumber = null;
+    let leavingSlot = null;
+    const todayIdx = now.getDay();
+    const currentHour = now.getHours();
+
+    let currentSlotIdx = -1;
+    if (currentHour >= 9 && currentHour < 12) currentSlotIdx = 0;
+    else if (currentHour >= 12 && currentHour < 15) currentSlotIdx = 1;
+    else if (currentHour >= 15 && currentHour < 18) currentSlotIdx = 2;
+    else if (currentHour >= 18) currentSlotIdx = 3;
+
+    for (let d = todayIdx; d >= 0; d--) {
+      const maxSlot = (d === todayIdx) ? currentSlotIdx : slots.length - 1;
+      for (let s = maxSlot; s >= 0; s--) {
+        const nums = getDrawNumbers(currentWeek, dayNames[d], slots[s]);
+        if (nums.length > 0) {
+          leavingNumber = nums[0];
+          leavingSlot = slots[s];
+          break;
+        }
+      }
+      if (leavingNumber) break;
+    }
+
+    if (!leavingNumber) {
+      for (let w = sortedWeeks.length - 2; w >= 0; w--) {
+        const week = sortedWeeks[w];
+        for (let d = dayNames.length - 1; d >= 0; d--) {
+          for (let s = slots.length - 1; s >= 0; s--) {
+            const nums = getDrawNumbers(week, dayNames[d], slots[s]);
+            if (nums.length > 0) {
+              leavingNumber = nums[0];
+              leavingSlot = slots[s];
+              break;
+            }
+          }
+          if (leavingNumber) break;
+        }
+        if (leavingNumber) break;
+      }
+    }
+
+    return { leavingNumber, leavingSlot };
+  }
+
+  const { leavingNumber, leavingSlot } = getLeavingNumber();
+
+  // ======================================
+  // CURRENT WEEK DRAWS (all numbers, split from pairs)
+  // ======================================
+
+  function getWeekDraws(week) {
+    const draws = [];
+    if (!week) return draws;
+    for (const day of dayNames) {
+      for (const slot of slots) {
+        const nums = getDrawNumbers(week, day, slot);
+        nums.forEach(n => draws.push(n));
+      }
+    }
+    return draws;
+  }
+
+  const currentWeekDraws = getWeekDraws(currentWeek);
+
+  // ======================================
+  // ANALYZE LINE PULLS
+  // ======================================
+
+  function analyzeLinePulls() {
+    const results = [];
+    const leavingLine = leavingNumber ? getLine(leavingNumber) : null;
+
+    for (let line = 1; line <= 9; line++) {
+      const rule = lineRules[line];
+      if (!rule) continue;
+
+      const pulls = rule.pulls || [];
+      const pullLines = pulls.map(l => ({
+        line: l,
+        name: lineNames[l] || `Line ${l}`,
+        color: lineColors[(l - 1) % lineColors.length]
+      }));
+
+      const lineNumbers = Object.keys(numToLineMap)
+        .filter(key => numToLineMap[key] === line)
+        .map(Number);
+
+      const activeNumbers = lineNumbers.filter(n => currentWeekDraws.includes(n));
+      const isLeavingLine = leavingLine === line;
+
+      results.push({
+        line: line,
+        name: lineNames[line] || `Line ${line}`,
+        color: lineColors[(line - 1) % lineColors.length],
+        rule: rule,
+        pullLines: pullLines,
+        activeNumbers: activeNumbers,
+        isLeavingLine: isLeavingLine
+      });
+    }
+
+    return results;
+  }
+
+  const lineAnalysis = analyzeLinePulls();
+
+  // ======================================
+  // LINE STATS — LAST 24 WEEKS
+  // ======================================
+  const last24Weeks = sortedWeeks.slice(-24);
+
+  function getActualDateForDraw(week, dayName) {
+    if (!week || !week.startDate) return null;
+    const parts = week.startDate.split(" ");
+    const monthMap = {"Jan":0,"Feb":1,"Mar":2,"Apr":3,"May":4,"Jun":5,"Jul":6,"Aug":7,"Sep":8,"Oct":9,"Nov":10,"Dec":11};
+    const startDate = new Date(parts[2], monthMap[parts[1]], parseInt(parts[0]));
+    const dayIndex = dayNames.indexOf(dayName);
+    if (dayIndex === -1) return null;
+    const drawDate = new Date(startDate);
+    drawDate.setDate(startDate.getDate() + dayIndex);
+    return drawDate;
+  }
+
+  const numberStats = {};
+  for (let i = 1; i <= 36; i++) {
+    numberStats[i] = { count: 0, lastDate: null };
+  }
+
+  last24Weeks.forEach(week => {
+    dayNames.forEach(dayName => {
+      const actualDate = getActualDateForDraw(week, dayName);
+      slots.forEach(slot => {
+        const nums = getDrawNumbers(week, dayName, slot);
+        nums.forEach(num => {
+          if (numberStats[num]) {
+            numberStats[num].count++;
+            if (!numberStats[num].lastDate || actualDate > numberStats[num].lastDate) {
+              numberStats[num].lastDate = actualDate;
+            }
+          }
+        });
+      });
+    });
+  });
+
+  function getLineHits(line) {
+    const members = lineMembers[line] || [];
+    return members.reduce((sum, num) => sum + (numberStats[num]?.count || 0), 0);
+  }
+
+  function formatShortDate(date) {
+    if (!date) return "—";
+    const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    return `${date.getDate()} ${months[date.getMonth()]}`;
+  }
+
+  // ======================================
+  // RENDER: LINE RULES
+  // ======================================
+
+  function renderLineRules() {
+    let rowsHtml = '';
+
+    for (const item of lineAnalysis) {
+      const pullHtml = item.pullLines.map(pl => `
+        <span style="display: inline-block; padding: 1px 6px; border-radius: 3px; background: ${pl.color}33; color: ${pl.color}; font-weight: 700; font-size: 9px; margin: 0 2px;">
+          ${pl.name}
+        </span>
+      `).join('');
+
+      const activeHtml = item.activeNumbers.length > 0 ?
+        item.activeNumbers.map(n => `
+          <span style="display: inline-block; padding: 1px 4px; border-radius: 3px; background: ${item.color}33; color: ${item.color}; font-weight: 700; font-size: 9px; margin: 0 1px;">
+            ${n}${spiritEmoji[n] || ''}
+          </span>
+        `).join(' ') :
+        '<span style="color: var(--text-dim, #64748b); font-size: 8px;">None</span>';
+
+      const isActive = item.isLeavingLine;
+
+      rowsHtml += `
+        <div style="display: flex; align-items: center; padding: 3px 6px; border-bottom: 1px solid var(--border-color, rgba(255,255,255,0.04)); ${isActive ? 'background: var(--card-bg, rgba(255,255,255,0.05)); border-left: 3px solid ' + item.color : ''}">
+          <div style="min-width: 60px; display: flex; align-items: center; gap: 4px;">
+            <span style="font-weight: 800; font-size: 11px; color: ${item.color};">${item.name}</span>
+            ${isActive ? '<span style="font-size: 7px; color: #ff9d00; font-weight: 700;">🟢⚡️</span>' : ''}
+          </div>
+          <div style="flex: 1; display: flex; align-items: center; gap: 4px; flex-wrap: wrap;">
+            <span style="font-size: 7px; color: var(--text-dim, #64748b); font-weight: 600;">→</span>
+            ${pullHtml}
+            <span style="font-size: 7px; color: var(--text-dim, #64748b); margin-left: 4px;">${item.rule.description || ''}</span>
+          </div>
+          <div style="font-size: 8px; color: var(--text-dim, #64748b); min-width: 60px; text-align: right;">
+            ${activeHtml}
+          </div>
+        </div>
+      `;
+    }
+
+    return `
+      <div style="margin-top: 6px; padding-top: 6px; border-top: 1px dashed var(--border-color, rgba(255,255,255,0.06));">
+        <div style="font-size: 10px; font-weight: 800; color: var(--text-main, #ff9d00); margin-bottom: 4px; text-align: center; letter-spacing: 0.3px;">
+          📊 LINE CHART RULES & MAPPING
+        </div>
+        <div style="background: var(--card-bg, rgba(255,255,255,0.02)); border-radius: 6px; overflow: hidden; border: 1px solid var(--border-color, rgba(255,255,255,0.04));">
+          ${rowsHtml}
+        </div>
+        <div style="font-size: 6px; color: var(--text-dim, #64748b); text-align: center; margin-top: 3px;">
+          Based on Play Whe line pull rules • Active numbers shown in current week
+        </div>
+      </div>
+    `;
+  }
+
+  // ======================================
+  // RENDER: LINE CHART — Compact, no leaving highlight
+  // Columns: LINE | HITS | MARKS CHART (merged 3 sub-columns)
+  // ======================================
+
+  function renderLineChart() {
+    const textColor = 'var(--text-main, #ffffff)';
+    const dimColor = 'var(--text-dim, #64748b)';
+
+    const headerHtml = `
+      <tr style="background: var(--header-bg, rgba(255,255,255,0.04));">
+        <th style="
+          padding:4px 4px;
+          text-align:center;
+          font-size:8px;
+          font-weight:800;
+          color:${textColor};
+          border-bottom:1px solid var(--border-color, rgba(255,255,255,0.1));
+          letter-spacing:0.4px;
+          width:38px;
+        ">LINE</th>
+        <th style="
+          padding:4px 4px;
+          text-align:center;
+          font-size:8px;
+          font-weight:800;
+          color:${textColor};
+          border-bottom:1px solid var(--border-color, rgba(255,255,255,0.1));
+          letter-spacing:0.4px;
+          width:38px;
+        ">HITS</th>
+        <th colspan="3" style="
+          padding:4px 4px;
+          text-align:center;
+          font-size:8px;
+          font-weight:800;
+          color:${textColor};
+          border-bottom:1px solid var(--border-color, rgba(255,255,255,0.1));
+          letter-spacing:0.4px;
+        ">MARKS CHART</th>
+      </tr>
+    `;
+
+    let bodyHtml = '';
+
+    function makeMemberCell(num) {
+      const stats = numberStats[num] || { count: 0, lastDate: null };
+
+      return `
+        <div style="
+          display:flex;
+          flex-direction:column;
+          align-items:center;
+          justify-content:center;
+          padding:2px 2px;
+          border-radius:4px;
+          min-width:0;
+          flex:1;
+        ">
+          <span style="
+            font-size:11px;
+            font-weight:900;
+            color:${textColor};
+            line-height:1.1;
+          ">${num}</span>
+          <span style="
+            font-size:8px;
+            font-weight:700;
+            color:${textColor};
+            margin-top:1px;
+            line-height:1.1;
+          ">${stats.count}x</span>
+          <span style="
+            font-size:7px;
+            color:${dimColor};
+            margin-top:1px;
+            line-height:1.1;
+          ">${formatShortDate(stats.lastDate)}</span>
+        </div>
+      `;
+    }
+
+    for (let line = 1; line <= 9; line++) {
+      const members = lineMembers[line];
+      const hits = getLineHits(line);
+
+      bodyHtml += `
+        <tr>
+          <td style="
+            padding:3px 4px;
+            text-align:center;
+            font-size:11px;
+            font-weight:900;
+            color:${textColor};
+            border-bottom:1px solid var(--border-color, rgba(255,255,255,0.05));
+            vertical-align:middle;
+          ">${line} L</td>
+          <td style="
+            padding:3px 4px;
+            text-align:center;
+            font-size:11px;
+            font-weight:900;
+            color:${textColor};
+            border-bottom:1px solid var(--border-color, rgba(255,255,255,0.05));
+            vertical-align:middle;
+          ">${hits}</td>
+          <td style="
+            padding:2px 3px;
+            border-bottom:1px solid var(--border-color, rgba(255,255,255,0.05));
+            vertical-align:middle;
+          ">
+            <div style="display:flex; gap:2px;">
+              ${makeMemberCell(members[0])}
+            </div>
+          </td>
+          <td style="
+            padding:2px 3px;
+            border-bottom:1px solid var(--border-color, rgba(255,255,255,0.05));
+            vertical-align:middle;
+          ">
+            <div style="display:flex; gap:2px;">
+              ${makeMemberCell(members[1])}
+            </div>
+          </td>
+          <td style="
+            padding:2px 3px;
+            border-bottom:1px solid var(--border-color, rgba(255,255,255,0.05));
+            vertical-align:middle;
+          ">
+            <div style="display:flex; gap:2px;">
+              ${makeMemberCell(members[2])}
+              ${makeMemberCell(members[3])}
+            </div>
+          </td>
+        </tr>
+      `;
+    }
+
+    return `
+      <div style="margin-top: 6px;">
+        <div style="
+          font-size:10px;
+          font-weight:800;
+          color:${textColor};
+          margin-bottom:4px;
+          text-align:center;
+          letter-spacing:0.4px;
+        ">📈 LINE CHART (LAST 24 WEEKS)</div>
+        <div style="
+          background: var(--card-bg, rgba(255,255,255,0.02));
+          border-radius:5px;
+          overflow:hidden;
+          border:1px solid var(--border-color, rgba(255,255,255,0.04));
+        ">
+          <div style="overflow-x:auto; -webkit-overflow-scrolling:touch;">
+            <table style="width:100%; border-collapse:collapse; font-size:10px; min-width:280px;">
+              <thead>${headerHtml}</thead>
+              <tbody>${bodyHtml}</tbody>
+            </table>
+          </div>
+        </div>
+        <div style="
+          font-size:6px;
+          color:${dimColor};
+          text-align:center;
+          margin-top:2px;
+        ">HITS = total line plays over last 24 weeks • #x = number's count • Date = last played (day month)</div>
+      </div>
+    `;
+  }
+
+  // ======================================
+  // BUILD THE HTML
+  // ======================================
+
+  const lineRulesHtml = renderLineRules();
+  const lineChartHtml = renderLineChart();
+
+  const thickDivider = `
+    <div style="
+      margin: 10px 0;
+      height: 3px;
+      border-radius: 2px;
+      background: var(--text-main, #ffffff);
+    "></div>
+  `;
+
+  return `
+    <div style="
+      background: var(--bg-start, linear-gradient(135deg, #0f172a, #1e293b));
+      border-radius: 16px; 
+      padding: 10px; 
+      margin-bottom: 15px; 
+      border: 1px solid var(--border-color, #ff9d00);
+    ">
+      
+      <!-- Header -->
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; flex-wrap: wrap; gap: 4px;">
+        <div>
+          <div style="font-size: 13px; font-weight: 800; color: var(--text-main, #ff9d00); letter-spacing: 0.3px;">
+            ♠️ PICK 2 LINE RULES & MAPPING
+          </div>
+          <div style="font-size: 7px; color: var(--text-dim, #64748b); margin-top: 1px;">
+            All 9 lines • Pull rules • Active numbers (both picks counted)
+          </div>
+        </div>
+        <div style="display: flex; align-items: center; gap: 4px; font-size: 6px; color: var(--text-dim, #94a3b8);">
+          <span style="color: #ff9d00; font-weight: bold; font-size: 6px;">${globalTrackingCode}</span>
+        </div>
+      </div>
+      
+      <!-- Line Rules -->
+      ${lineRulesHtml}
+
+      <!-- Thick Divider (white / black) -->
+      ${thickDivider}
+
+      <!-- Line Chart (last 24 weeks) -->
+      ${lineChartHtml}
+      
+      <!-- Footer -->
+      <div style="margin-top: 6px; padding-top: 4px; border-top: 1px solid var(--border-color, rgba(255,255,255,0.02)); display: flex; justify-content: center; align-items: center; gap: 6px; flex-wrap: wrap;">
+        <span style="font-size: 6px; color: var(--text-dim, #64748b);">CodeWithGlasgow • CWG Chart Analysis ©️</span>
+        <span style="font-size: 6px; color: var(--text-dim, #64748b);">Updated: ${new Date().toLocaleDateString()}</span>
+      </div>
+      
+    </div>
+  `;
+}
+////////////////////////////////////////
+// ======================================
+// PICK 2 LINE CHART CAROUSEL
+// Displays pairs as Line1/Line2 (e.g., "3L/5L") with swipeable carousel
+// ======================================
+function renderCarouselWithPick2LineChart(weeks, containerId) {
+  if (!weeks || weeks.length === 0) return "";
+  
+  const previousWeeks = weeks.slice(0, -1);
+  const currentWeek = weeks[weeks.length - 1];
+  
+  const formatDate = (dateStr) => {
+    if (!dateStr) return "N/A";
+    const d = new Date(dateStr);
+    const months = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
+    return `${d.getDate()} ${months[d.getMonth()]} ${d.getFullYear()}`;
+  };
+
+  const currentStartDate = formatDate(currentWeek.startDate);
+  const currentEndDate = currentWeek.endDate ? formatDate(currentWeek.endDate) : (() => {
+    const sDate = new Date(currentWeek.startDate);
+    const eDate = new Date(sDate);
+    eDate.setDate(sDate.getDate() + 6);
+    return formatDate(eDate);
+  })();
+
+  // Build previous weeks carousel slides with line chart
+  const prevSlidesHtml = previousWeeks.reverse().map((wk, idx) => {
+    const weekNum = previousWeeks.length - idx;
+    const startLbl = formatDate(wk.startDate);
+    const endLbl = wk.endDate ? formatDate(wk.endDate) : (() => {
+      const sDate = new Date(wk.startDate);
+      const eDate = new Date(sDate);
+      eDate.setDate(sDate.getDate() + 6);
+      return formatDate(eDate);
+    })();
+
+    // Generate line chart for this week
+    let tableHtml = buildPick2LineTable([wk]);
+    
+    // Replace header with week number and date range
+    tableHtml = tableHtml.replace(/<div class="table-header"[^>]*>.*?<\/div>/, 
+      `<div class="table-header" style="background: #1e293b; color: #ff9d00;">
+        <span>⌛ WEEK ${weekNum}</span>
+        <span>${startLbl} - ${endLbl}</span>
+      </div>`);
+      
+    return `<div class="carousel-slide">${tableHtml}</div>`;
+  }).join('');
+
+  // Build current week (fixed at bottom)
+  let currentTableHtml = buildPick2LineTable([currentWeek]);
+  currentTableHtml = currentTableHtml.replace(/<div class="table-header"[^>]*>.*?<\/div>/, 
+    `<div class="table-header current-header" style="background: #1e293b; color: #ff9d00; border-left: 4px solid #00ff88;">
+      <span>⚜️ CURRENT WEEK</span>
+      <span>${currentStartDate} - ${currentEndDate}</span>
+      <span>LIVE RESULTS</span>
+    </div>`);
+  
+  currentTableHtml = `<div class="current-section"><div class="current-label" style="font-size: 14px; font-weight: bold; color: #00ff88; text-align: center; margin-bottom: 8px; letter-spacing: 2px;">⚜️ CURRENT WEEK ⚜️</div>${currentTableHtml}</div>`;
+  
+  const carouselHtml = previousWeeks.length > 0 ? `
+  <div class="carousel-container" id="${containerId}-carousel" style="margin-bottom: 8px; padding: 4px 0;">
+    <div class="carousel-track" id="${containerId}-track" style="gap: 12px; overflow-x: scroll; scroll-snap-type: x mandatory; scroll-behavior: smooth; -webkit-overflow-scrolling: touch; display: flex; padding: 2px 2px;">
+      ${prevSlidesHtml}
+    </div>
+    <div class="carousel-indicators" id="${containerId}-dots" style="display: flex; justify-content: center; gap: 6px; margin-top: 8px;"></div>
+  </div>
+  <div style="text-align:center; padding:3px 3px; opacity:0.15; font-weight:900; letter-spacing:3px; pointer-events:none; user-select:none;">
+    <p style="margin:0; font-size:9px;">CODEWITHGLASGOW 🌐 PICK 2 LINE CHART CAROUSEL</p>
+  </div>
+  <script>initPrevCarousel('${containerId}', ${previousWeeks.length});</script>
+  ` : '<div style="text-align:center;padding:20px;color:#64748b;">📅 No previous weeks available</div>';
+  
+  return carouselHtml + currentTableHtml;
+}
+
+// ======================================
+// HELPER: PICK 2 LINE CHART (SINGLE WEEK)
+// ======================================
+
+function buildPick2LineTable(weeks) {
+  const numToLineMap = {
+    1:1, 10:1, 19:1, 28:1, 2:2, 11:2, 20:2, 29:2, 3:3, 12:3, 21:3, 30:3,
+    4:4, 13:4, 22:4, 31:4, 5:5, 14:5, 23:5, 32:5, 6:6, 15:6, 24:6, 33:6,
+    7:7, 16:7, 25:7, 34:7, 8:8, 17:8, 26:8, 35:8, 9:9, 18:9, 27:9, 36:9
+  };
+
+  // Helper function to check if a specific draw time has passed
+  function isDrawTimePassed(weekStartDate, dayName, slot) {
+    if (!weekStartDate) return false;
+    const parts = weekStartDate.split(" ");
+    const monthMap = {"Jan":0,"Feb":1,"Mar":2,"Apr":3,"May":4,"Jun":5,"Jul":6,"Aug":7,"Sep":8,"Oct":9,"Nov":10,"Dec":11};
+    const startDate = new Date(parts[2], monthMap[parts[1]], parseInt(parts[0]));
+    const dayIndex = daysOfWeek.indexOf(dayName);
+    if (dayIndex === -1) return false;
+    const drawDate = new Date(startDate);
+    drawDate.setDate(startDate.getDate() + dayIndex);
+    const timeOffsets = { "MOR": 9, "MID": 12, "NON": 15, "EVE": 18 };
+    drawDate.setHours(timeOffsets[slot] || 12);
+    return drawDate < new Date();
+  }
+
+  // Helper function to check if a day is a HOLIDAY
+  function isHolidayDay(weekStartDate, day, dayIndex) {
+    if (!day) return false;
+    const allSlotsEmpty = timeOrder.every(slot => {
+      const val = day.draws[slot];
+      return !val || val === "-" || val === "PENDING";
+    });
+    if (!allSlotsEmpty) return false;
+    return isDrawTimePassed(weekStartDate, day.dayName, "EVE");
+  }
+
+  let isAfterEvening = false;
+  let highlightDayName = todayName;
+  const currentWeekData = weeks.find(wk => wk.isCurrentWeek);
+  
+  if (currentWeekData) {
+    let lastCompletedDayIndex = -1;
+    for (let i = 0; i < daysOfWeek.length; i++) {
+      const dayData = currentWeekData.days.find(d => d.dayName === daysOfWeek[i]);
+      if (dayData) {
+        const hasEveDraw = dayData.draws.EVE && dayData.draws.EVE !== "-" && dayData.draws.EVE !== "PENDING";
+        const isHoliday = isHolidayDay(currentWeekData.startDate, dayData, i);
+        
+        if (hasEveDraw || isHoliday) {
+          lastCompletedDayIndex = i;
+          if (hasEveDraw || isHoliday) {
+            isAfterEvening = true;
+          }
+        }
+      }
+    }
+    
+    if (lastCompletedDayIndex !== -1) {
+      if (isAfterEvening) {
+        highlightDayName = daysOfWeek[(lastCompletedDayIndex + 1) % 7];
+      } else {
+        highlightDayName = daysOfWeek[lastCompletedDayIndex];
+      }
+    }
+  }
+
+  // Line colors for each line (1-9)
+  const lineColors = [
+    "#00f2ff", "#ff9f0a", "#32d74b", "#ff375f", 
+    "#ffd60a", "#bf5af2", "#1e90ff", "#ff1493", "#00ff7f"
+  ];
+
+  // Helper to get line for a number
+  function getLine(num) {
+    return numToLineMap[num] || null;
+  }
+
+  // Helper to parse a Pick 2 draw into two numbers
+  function parsePick2Draw(val) {
+    if (!val || val === "-" || val === "PENDING") return null;
+    const strVal = String(val);
+    const parts = strVal.split(/[,/ ]+/);
+    if (parts.length < 2) return null;
+    const num1 = parseInt(parts[0], 10);
+    const num2 = parseInt(parts[1], 10);
+    if (isNaN(num1) || isNaN(num2)) return null;
+    return { num1, num2 };
+  }
+
+  return weeks.map(wk => {
+    // --- Parse Week Range Header ---
+    let headerRange = wk.isCurrentWeek ? "CURRENT WEEK" : "PREVIOUS WEEK";
+    if (wk.startDate) {
+      let start = new Date(wk.startDate);
+      if (!isNaN(start.getTime())) {
+        let end = new Date(start.getTime() + 6 * 24 * 60 * 60 * 1000);
+        let opt = { day: 'numeric', month: 'short', year: '2-digit' };
+        headerRange += ` (${start.toLocaleDateString('en-GB', opt)} - ${end.toLocaleDateString('en-GB', opt)})`;
+      }
+    }
+
+    return `
+    <div class="table-wrapper">
+      <div class="table-header" style="background: #1e293b; color: #ff9d00; display: flex; justify-content: space-between; padding: 8px; font-size: 12px; font-weight: 900;">
+        <span>${headerRange.toUpperCase()} • 🔸 PK 2 LINE CHART</span>
+      </div>
+      <table>
+        <tr><th>DAY</th><th>MOR</th><th>MID</th><th>NON</th><th>EVE</th></tr>
+        ${wk.days.map((d, index) => {
+          let isHighlighted = (d.dayName === highlightDayName);
+          
+          // --- Calculate Day Number ---
+          let dayDisplay = d.dayName.slice(0,3).toUpperCase();
+          if (wk.startDate) {
+            let start = new Date(wk.startDate);
+            if (!isNaN(start.getTime())) {
+              let currentDayDate = new Date(start.getTime() + index * 24 * 60 * 60 * 1000);
+              dayDisplay += ` ${currentDayDate.getDate()}`;
+            }
+          }
+          
+          // Check if this entire day has no draws
+          const allSlotsEmpty = timeOrder.every(slot => {
+            const val = d.draws[slot];
+            return !val || val === "-" || val === "PENDING";
+          });
+          
+          // For previous weeks: if all slots empty, show HOLIDAY
+          if (!wk.isCurrentWeek && allSlotsEmpty) {
+            return `<tr class="${isHighlighted ? 'current-day' : ''}">
+              <td class="day-label">${(isHighlighted && isAfterEvening) ? "▶ " : ""}${dayDisplay}</td>
+              <td colspan="4" style="text-align: center; padding: 8px; background: rgba(0,0,0,0.2);">
+                <span style="color: #ff453a; font-weight: bold; font-size: 14px;">🇹🇹 HOLIDAY 🇹🇹</span>
+              </td>
+            </tr>`;
+          }
+          
+          // For current week: check if the day has no draws AND EVE has passed
+          if (wk.isCurrentWeek && allSlotsEmpty) {
+            const isEvePassed = isDrawTimePassed(wk.startDate, d.dayName, "EVE");
+            if (isEvePassed) {
+              return `<tr class="${isHighlighted ? 'current-day' : ''}">
+                <td class="day-label">${(isHighlighted && isAfterEvening) ? "▶ " : ""}${dayDisplay}</td>
+                <td colspan="4" style="text-align: center; padding: 8px; background: rgba(0,0,0,0.2);">
+                  <span style="color: #ff453a; font-weight: bold; font-size: 14px;">🇹🇹 HOLIDAY 🇹🇹</span>
+                </td>
+              </tr>`;
+            }
+          }
+
+          // Normal row
+          return `<tr class="${isHighlighted ? 'current-day' : ''}">
+            <td class="day-label">${(isHighlighted && isAfterEvening) ? "▶ " : ""}${dayDisplay}</td>
+            ${timeOrder.map(s => {
+              let val = String(d.draws[s]).trim();
+              if (val === "-" || val === "PENDING" || val === "") return `<td>...</td>`;
+              
+              const parsed = parsePick2Draw(val);
+              if (!parsed) return `<td>...</td>`;
+              
+              const { num1, num2 } = parsed;
+              const line1 = getLine(num1);
+              const line2 = getLine(num2);
+              
+              if (line1 === null || line2 === null) return `<td>...</td>`;
+              
+              const color1 = lineColors[(line1 - 1) % lineColors.length];
+              const color2 = lineColors[(line2 - 1) % lineColors.length];
+              
+              // If both numbers are in the same line, show with gold highlight
+              if (line1 === line2) {
+                return `<td style="color:${color1}; font-weight:900; background:rgba(255,215,0,0.15); border-radius:4px; padding:2px 4px;">
+                  ${line1}L/${line2}L
+                </td>`;
+              }
+              
+              // Different lines - show both with their respective colors
+              return `<td style="font-weight:900;">
+                <span style="color:${color1};">${line1}L</span>
+                <span style="color:${color2};">/${line2}L</span>
+              </td>`;
+            }).join("")}
+          </tr>`;
+        }).join("")}
+      </table>
+    </div>`;
+  }).join('');
+}
+///////////////////////////////////////////
+// ======================================
+// PICK 2 OUTSTANDING PLAYS & LOOKUP CONTAINER
+// With scrollable search results (max 9 items visible)
+// ======================================
+
+function renderPick2OutstandingPlays(weeksData) {
+  if (!weeksData || weeksData.length === 0) {
+    return `
+      <div style="background: linear-gradient(135deg, #0f172a, #1e293b); border-radius: 20px; padding: 16px; margin-bottom: 15px; border: 1px solid #58a6ff; text-align:center;">
+        📊 Loading Pick 2 data...
+      </div>
+    `;
+  }
+
+  // ======================================
+  // HELPER FUNCTIONS
+  // ======================================
+
+  const dayNames = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+  const slots = ["MOR", "MID", "NON", "EVE"];
+  const now = new Date();
+  const currentYear = now.getFullYear();
+
+  // Line mapping
+  const numToLineMap = {
+    1:1, 10:1, 19:1, 28:1, 2:2, 11:2, 20:2, 29:2, 3:3, 12:3, 21:3, 30:3,
+    4:4, 13:4, 22:4, 31:4, 5:5, 14:5, 23:5, 32:5, 6:6, 15:6, 24:6, 33:6,
+    7:7, 16:7, 25:7, 34:7, 8:8, 17:8, 26:8, 35:8, 9:9, 18:9, 27:9, 36:9
+  };
+
+  const lineColors = [
+    "#00f2ff", "#ff9f0a", "#32d74b", "#ff375f", 
+    "#ffd60a", "#bf5af2", "#1e90ff", "#ff1493", "#00ff7f"
+  ];
+
+  function getLine(num) {
+    return numToLineMap[num] || null;
+  }
+
+  function formatLineDisplay(num) {
+    const line = getLine(num);
+    if (line === null) return "?";
+    return `${line}L`;
+  }
+
+  function getLineColor(num) {
+    const line = getLine(num);
+    if (line === null) return "#94a3b8";
+    return lineColors[(line - 1) % lineColors.length];
+  }
+
+  function parsePick2Draw(val) {
+    if (!val || val === "-" || val === "PENDING") return null;
+    const strVal = String(val);
+    const parts = strVal.split(/[,/ ]+/);
+    if (parts.length < 2) return null;
+    const num1 = parseInt(parts[0], 10);
+    const num2 = parseInt(parts[1], 10);
+    if (isNaN(num1) || isNaN(num2)) return null;
+    return { num1, num2 };
+  }
+
+  function getDraw(week, dayName, slot) {
+    if (!week) return null;
+    const day = week.days.find(d => d.dayName === dayName);
+    if (!day) return null;
+    const val = day.draws[slot];
+    return val && val !== "-" && val !== "PENDING" ? val.toString() : null;
+  }
+
+  function formatDate(date) {
+    if (!date) return "Never";
+    const days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    return `${days[date.getDay()]} ${date.getDate()} ${months[date.getMonth()]} '${date.getFullYear().toString().slice(-2)}`;
+  }
+
+  function getDaysAgo(date) {
+    if (!date) return "—";
+    const diff = Math.floor((now - date) / (1000 * 60 * 60 * 24));
+    if (diff === 0) return "Today";
+    if (diff === 1) return "Yesterday";
+    return `${diff}d`;
+  }
+
+  function isCurrentYear(date) {
+    if (!date) return false;
+    return date.getFullYear() === currentYear;
+  }
+
+  // ======================================
+  // BUILD COMPLETE PAIR HISTORY - Same as carousel
+  // ======================================
+
+function buildPairHistory() {
+  const pairHistory = {};
+  const sortedWeeks = [...weeksData].sort((a, b) => {
+    let pa = a.startDate.split(" ");
+    let pb = b.startDate.split(" ");
+    return new Date(pa[2] + "-" + pa[1] + "-" + pa[0]) - new Date(pb[2] + "-" + pb[1] + "-" + pb[0]);
+  });
+
+  for (const week of sortedWeeks) {
+    const weekStart = new Date(week.startDate);
+    for (let d = 0; d < dayNames.length; d++) {
+      for (const slot of slots) {
+        const val = getDraw(week, dayNames[d], slot);
+        if (!val) continue;
+        
+        const parsed = parsePick2Draw(val);
+        if (!parsed) continue;
+
+        const { num1, num2 } = parsed;
+        const drawDate = new Date(weekStart);
+        drawDate.setDate(weekStart.getDate() + d);
+        
+        // Store the EXACT pair as it was drawn
+        const key = `${num1}/${num2}`;
+        
+        if (!pairHistory[key]) {
+          pairHistory[key] = { 
+            first: num1, 
+            second: num2, 
+            hits: 0, 
+            lastDate: null,
+            occurrences: []
+          };
+        }
+        pairHistory[key].hits++;
+        pairHistory[key].occurrences.push({ date: drawDate, slot, day: dayNames[d] });
+        if (!pairHistory[key].lastDate || drawDate > pairHistory[key].lastDate) {
+          pairHistory[key].lastDate = drawDate;
+        }
+      }
+    }
+  }
+
+  return pairHistory;
+}
+  const pairHistory = buildPairHistory();
+
+  // ======================================
+  // GET TOP 11 SAME NUMBER PAIRS
+  // ======================================
+
+  function getTopSamePairs(includeCurrentYear = true) {
+    const samePairs = [];
+    for (let i = 1; i <= 36; i++) {
+      const key = `${i}/${i}`;
+      if (pairHistory[key]) {
+        const data = pairHistory[key];
+        if (!includeCurrentYear && data.lastDate && isCurrentYear(data.lastDate)) {
+          continue;
+        }
+        samePairs.push({
+          key: key,
+          first: i,
+          second: i,
+          hits: data.hits,
+          lastDate: data.lastDate,
+          daysAgo: getDaysAgo(data.lastDate)
+        });
+      }
+    }
+    samePairs.sort((a, b) => b.hits - a.hits);
+    return samePairs.slice(0, 11);
+  }
+
+  // ======================================
+  // RENDER FUNCTIONS
+  // ======================================
+
+  const containerId = 'p2-container-' + Date.now();
+  const searchId = 'search-' + Date.now();
+  const resultsId = 'results-' + Date.now();
+
+  let topPairs = getTopSamePairs(true);
+
+  function renderPairRow(pair) {
+    const line1 = formatLineDisplay(pair.first);
+    const line2 = formatLineDisplay(pair.second);
+    const color1 = getLineColor(pair.first);
+    const color2 = getLineColor(pair.second);
+    const isSame = pair.first === pair.second;
+    const isReverse = pair.key.includes('/') && pair.first !== pair.second && 
+      pair.key === `${pair.second}/${pair.first}`;
+
+    return `
+      <tr style="border-bottom: 1px solid rgba(255,255,255,0.05); ${isReverse ? 'background: rgba(88,166,255,0.08);' : ''}">
+        <td style="padding: 8px 6px; text-align: center; font-weight: 700; font-size: 14px;">
+          ${isSame ? 
+            `<span style="color: #ffd700;">${pair.first}/${pair.second}</span>` :
+            `<span>${pair.first}/${pair.second}</span>`
+          }
+          ${isReverse ? ' <span style="font-size: 8px; color: #58a6ff;">↻</span>' : ''}
+        </td>
+        <td style="padding: 8px 6px; text-align: center; font-weight: 700;">
+          <span style="color: ${color1};">${line1}</span>
+          <span style="color: #64748b;">/</span>
+          <span style="color: ${color2};">${line2}</span>
+        </td>
+        <td style="padding: 8px 6px; text-align: center; font-weight: 700; color: #32d74b;">
+          ${pair.hits}x
+        </td>
+        <td style="padding: 8px 6px; text-align: center; font-size: 11px; color: #94a3b8;">
+          ${pair.lastDate ? formatDate(pair.lastDate) : 'Never'}
+        </td>
+        <td style="padding: 8px 6px; text-align: center; font-weight: 700; color: ${pair.daysAgo === 'Today' ? '#32d74b' : pair.daysAgo === 'Yesterday' ? '#ff9d00' : '#ff6b6b'};">
+          ${pair.daysAgo}
+        </td>
+      </tr>
+    `;
+  }
+
+  // ======================================
+  // BUILD THE HTML
+  // ======================================
+
+  return `
+    <div id="${containerId}" style="
+      background: linear-gradient(135deg, #0f172a, #1e293b);
+      border-radius: 20px;
+      padding: 16px;
+      margin-bottom: 15px;
+      border: 1px solid #58a6ff;
+    ">
+      
+      <!-- Header -->
+      <div style="
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 12px;
+        flex-wrap: wrap;
+        gap: 6px;
+      ">
+        <div>
+          <div style="font-size: 16px; font-weight: 800; color: #ff9d00; letter-spacing: 0.3px;">
+    ♠️ PICK 2 OUTSTANDING PLAYS & LOOKUP
+          </div>
+          <div style="font-size: 9px; color: #64748b; margin-top: 2px;">
+            Top same-number pairs • Search any pair or number
+          </div>
+        </div>
+        <div style="display: flex; align-items: center; gap: 8px; font-size: 9px; color: #94a3b8;">
+          <span>📊 ${Object.keys(pairHistory).length} unique pairs</span>
+          <span style="color: #ff9d00; font-weight: bold; font-size: 8px;">${globalTrackingCode}</span>
+        </div>
+      </div>
+
+      <!-- OUTSTANDING PLAYS SECTION -->
+      <div id="${containerId}-outstanding" style="display: block;">
+        <!-- Year Toggle -->
+        <div style="
+          display: flex;
+          align-items: center;
+          justify-content: flex-end;
+          gap: 12px;
+          margin-bottom: 10px;
+          padding: 6px 12px;
+          background: rgba(255,255,255,0.03);
+          border-radius: 10px;
+          border: 1px solid rgba(255,255,255,0.06);
+        ">
+          <span style="font-size: 10px; color: #94a3b8; font-weight: 600;">Show:</span>
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <span id="${containerId}-year-label" style="font-size: 10px; color: #ff9d00; font-weight: 700;">${currentYear}</span>
+            <label style="position: relative; display: inline-block; width: 44px; height: 24px; cursor: pointer;">
+              <input type="checkbox" id="${containerId}-year-toggle" checked onchange="toggleP2Year('${containerId}')" style="opacity:0; width:0; height:0;">
+              <span style="position: absolute; inset: 0; background: #334155; border-radius: 24px; transition: 0.3s ease;"></span>
+              <span style="position: absolute; height: 18px; width: 18px; left: 3px; bottom: 3px; background: #94a3b8; border-radius: 50%; transition: 0.3s ease;"></span>
+            </label>
+            <span style="font-size: 10px; color: #64748b;">All Time</span>
+          </div>
+        </div>
+
+        <!-- Outstanding Table -->
+        <div style="overflow-x: auto; -webkit-overflow-scrolling: touch;">
+          <table style="width: 100%; border-collapse: collapse; font-size: 12px;">
+            <thead>
+              <tr style="background: rgba(255,255,255,0.03); border-bottom: 2px solid rgba(255,157,0,0.2);">
+                <th style="padding: 10px 8px; text-align: center; color: #ff9d00; font-weight: 800; font-size: 11px;">PICK 2</th>
+                <th style="padding: 10px 8px; text-align: center; color: #ff9d00; font-weight: 800; font-size: 11px;">LINE/LINE</th>
+                <th style="padding: 10px 8px; text-align: center; color: #ff9d00; font-weight: 800; font-size: 11px;">HITS</th>
+                <th style="padding: 10px 8px; text-align: center; color: #ff9d00; font-weight: 800; font-size: 11px;">LAST PLAYED</th>
+                <th style="padding: 10px 8px; text-align: center; color: #ff9d00; font-weight: 800; font-size: 11px;">DAYS AGO</th>
+              </tr>
+            </thead>
+            <tbody id="${containerId}-outstanding-body">
+              ${topPairs.map(pair => renderPairRow(pair)).join('') || `
+                <tr>
+                  <td colspan="5" style="padding: 20px; text-align: center; color: #64748b;">
+                    No same-number pairs found
+                  </td>
+                </tr>
+              `}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- PICK 2 LOOKUP SECTION -->
+      <div id="${containerId}-lookup" style="display: none;">
+        <!-- Search Bar -->
+        <div style="
+          background: rgba(255,255,255,0.03);
+          border-radius: 12px;
+          padding: 12px;
+          margin-bottom: 12px;
+          border: 1px solid rgba(255,255,255,0.06);
+        ">
+          <div style="display: flex; gap: 8px; flex-wrap: wrap; align-items: center;">
+            <div style="flex: 1; min-width: 180px;">
+              <input 
+                id="${searchId}-input"
+                type="text"
+                placeholder="5 or 14/14 or 25/5"
+                style="
+                  width: 90%;
+                  padding: 10px 14px;
+                  border-radius: 10px;
+                  border: 1px solid rgba(255,255,255,0.1);
+                  background: rgba(255,255,255,0.05);
+                  color: #e2e8f0;
+                  font-size: 13px;
+                  font-weight: 600;
+                  outline: none;
+                  transition: all 0.3s ease;
+                  box-sizing: border-box;
+                "
+                onfocus="this.style.borderColor='#ff9d00'"
+                onblur="this.style.borderColor='rgba(255,255,255,0.1)'"
+                onkeydown="if(event.key==='Enter') performP2Search('${searchId}', '${resultsId}')"
+              >
+            </div>
+            <button 
+              onclick="performP2Search('${searchId}', '${resultsId}')"
+              style="
+                padding: 10px 20px;
+                border: none;
+                border-radius: 10px;
+                background: #ff9d00;
+                color: #000;
+                font-weight: 800;
+                font-size: 13px;
+                cursor: pointer;
+                transition: all 0.3s ease;
+                white-space: nowrap;
+              "
+              onmouseover="this.style.transform='scale(1.02)'"
+              onmouseout="this.style.transform='scale(1)'"
+            >
+              🔍 Search
+            </button>
+            <button 
+              onclick="clearP2Search('${searchId}', '${resultsId}')"
+              style="
+                padding: 10px 10px;
+                border: 1px solid rgba(255,255,255,0.1);
+                border-radius: 10px;
+                background: transparent;
+                color: #94a3b8;
+                font-weight: 600;
+                font-size: 12px;
+                cursor: pointer;
+                transition: all 0.3s ease;
+                white-space: nowrap;
+              "
+              onmouseover="this.style.borderColor='#ff9d00'; this.style.color='#ff9d00'"
+              onmouseout="this.style.borderColor='rgba(255,255,255,0.1)'; this.style.color='#94a3b8'"
+            >
+              ✕ Clear
+            </button>
+          </div>
+          <div style="font-size: 8px; color: #64748b; margin-top: 6px; text-align: center;">
+            💡 Tip: Enter "5" for all pairs with 5 • "24/4" shows both 24/4 and 4/24 • "5/5" shows historical play record
+          </div>
+        </div>
+
+        <!-- Search Results with Scroll - Max 9 items visible -->
+        <div id="${resultsId}" style="display: block; min-height: 80px; max-height: 480px; overflow-y: auto; -webkit-overflow-scrolling: touch; padding-right: 4px;">
+          <div style="text-align:center; padding:30px 20px; color:#64748b; font-size:13px;">
+            🔍 Enter a mark or Pick 2 you would like to know about
+          </div>
+        </div>
+        
+        <!-- Scroll indicator -->
+        <div id="${resultsId}-scroll-indicator" style="display: none; text-align: center; padding: 4px 0; font-size: 8px; color: #64748b;">
+          <span>⬇️ Scroll for more results ⬇️</span>
+        </div>
+      </div>
+
+      <!-- Footer with legend -->
+      <div style="
+        margin-top: 12px;
+        padding-top: 10px;
+        border-top: 1px solid rgba(255,255,255,0.05);
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 6px;
+        font-size: 8px;
+        color: #64748b;
+      ">
+        <div style="display: flex; align-items: center; gap: 12px; flex-wrap: wrap;">
+          <span>🟡 Same</span>
+          <span>🔵 Reverse</span>
+          <span>🔄 Reverse Match</span>
+        </div>
+        <div style="display: flex; align-items: center; gap: 6px;">
+          <span style="color: #ff9d00; font-weight: bold; font-size: 7px;">${globalTrackingCode}</span>
+          <span style="color: #666; font-size: 7px;">Last: ${globalLastDraw}</span>
+        </div>
+      </div>
+      <br>
+            <!-- TAB BUTTONS -->
+      <div style="
+        display: flex;
+        gap: 8px;
+        margin-bottom: 12px;
+        border-bottom: 2px solid rgba(255,255,255,0.1);
+        padding-bottom: 8px;
+      ">
+        <button 
+          id="${containerId}-tab1"
+          onclick="switchP2Tab('${containerId}', 'outstanding', 'lookup')"
+          style="
+            flex: 1;
+            padding: 10px 16px;
+            border: none;
+            border-radius: 12px;
+            font-size: 13px;
+            font-weight: 800;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            background: #ff9d00;
+            color: #000;
+            box-shadow: 0 4px 15px rgba(255,157,0,0.3);
+          "
+        >
+          🏆 Outstanding Plays
+        </button>
+        <button 
+          id="${containerId}-tab2"
+          onclick="switchP2Tab('${containerId}', 'lookup', 'outstanding')"
+          style="
+            flex: 1;
+            padding: 10px 16px;
+            border: none;
+            border-radius: 12px;
+            font-size: 13px;
+            font-weight: 800;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            background: rgba(255,255,255,0.05);
+            color: #94a3b8;
+            border: 1px solid rgba(255,255,255,0.1);
+          "
+        >
+          🔍 Pick 2 LookUp
+        </button>
+      </div>
+    </div>
+
+    <script>
+      // ======================================
+      // TAB SWITCHING
+      // ======================================
+      function switchP2Tab(containerId, showTab, hideTab) {
+        const container = document.getElementById(containerId);
+        if (!container) return;
+        
+        const showEl = document.getElementById(containerId + '-' + showTab);
+        const hideEl = document.getElementById(containerId + '-' + hideTab);
+        const btn1 = document.getElementById(containerId + '-tab1');
+        const btn2 = document.getElementById(containerId + '-tab2');
+        
+        if (showEl) showEl.style.display = 'block';
+        if (hideEl) hideEl.style.display = 'none';
+        
+        if (showTab === 'outstanding') {
+          btn1.style.background = '#ff9d00';
+          btn1.style.color = '#000';
+          btn1.style.boxShadow = '0 4px 15px rgba(255,157,0,0.3)';
+          btn1.style.border = 'none';
+          btn2.style.background = 'rgba(255,255,255,0.05)';
+          btn2.style.color = '#94a3b8';
+          btn2.style.boxShadow = 'none';
+          btn2.style.border = '1px solid rgba(255,255,255,0.1)';
+        } else {
+          btn2.style.background = '#ff9d00';
+          btn2.style.color = '#000';
+          btn2.style.boxShadow = '0 4px 15px rgba(255,157,0,0.3)';
+          btn2.style.border = 'none';
+          btn1.style.background = 'rgba(255,255,255,0.05)';
+          btn1.style.color = '#94a3b8';
+          btn1.style.boxShadow = 'none';
+          btn1.style.border = '1px solid rgba(255,255,255,0.1)';
+        }
+      }
+
+      // ======================================
+      // YEAR TOGGLE - Using window._pairHistoryData
+      // ======================================
+      function toggleP2Year(containerId) {
+        const toggle = document.getElementById(containerId + '-year-toggle');
+        const label = document.getElementById(containerId + '-year-label');
+        const body = document.getElementById(containerId + '-outstanding-body');
+        
+        if (!toggle || !body) return;
+        
+        const includeCurrent = toggle.checked;
+        label.textContent = includeCurrent ? '${currentYear}' : 'All Time';
+        
+        const slider = toggle.parentElement.querySelector('span:last-child');
+        if (slider) {
+          if (includeCurrent) {
+            slider.style.transform = 'translateX(20px)';
+            slider.style.background = '#ff9d00';
+          } else {
+            slider.style.transform = 'translateX(0)';
+            slider.style.background = '#94a3b8';
+          }
+        }
+        const track = toggle.parentElement.querySelector('span:first-child');
+        if (track) {
+          track.style.background = includeCurrent ? 'rgba(255,157,0,0.3)' : '#334155';
+        }
+        
+        // Use the data from window._pairHistoryData
+        const pairHistory = window._pairHistoryData || {};
+        const allPairs = [];
+        const currentYearNum = ${currentYear};
+        
+        for (let i = 1; i <= 36; i++) {
+          const key = i + '/' + i;
+          if (pairHistory[key]) {
+            const data = pairHistory[key];
+            if (!includeCurrent && data.lastDate) {
+              const lastDate = new Date(data.lastDate);
+              if (lastDate.getFullYear() === currentYearNum) {
+                continue;
+              }
+            }
+            allPairs.push({
+              key: key,
+              first: i,
+              second: i,
+              hits: data.hits,
+              lastDate: data.lastDate ? new Date(data.lastDate) : null,
+              daysAgo: data.lastDate ? getDaysAgo(new Date(data.lastDate)) : '—'
+            });
+          }
+        }
+        allPairs.sort((a, b) => b.hits - a.hits);
+        const topPairs = allPairs.slice(0, 11);
+        
+        let rowsHtml = '';
+        if (topPairs.length === 0) {
+          rowsHtml = '<tr><td colspan="5" style="padding: 20px; text-align: center; color: #64748b;">No same-number pairs found</td></tr>';
+        } else {
+          topPairs.forEach(pair => {
+            const line1 = formatLineDisplay(pair.first);
+            const line2 = formatLineDisplay(pair.second);
+            const color1 = getLineColor(pair.first);
+            const color2 = getLineColor(pair.second);
+            const isSame = pair.first === pair.second;
+            const isReverse = pair.key.includes('/') && pair.first !== pair.second && 
+              pair.key === pair.second + '/' + pair.first;
+
+            rowsHtml += '<tr style="border-bottom: 1px solid rgba(255,255,255,0.05);' + (isReverse ? 'background: rgba(88,166,255,0.08);' : '') + '">';
+            rowsHtml += '<td style="padding: 8px 6px; text-align: center; font-weight: 700; font-size: 14px;">';
+            if (isSame) {
+              rowsHtml += '<span style="color: #ffd700;">' + pair.first + '/' + pair.second + '</span>';
+            } else {
+              rowsHtml += '<span>' + pair.first + '/' + pair.second + '</span>';
+            }
+            if (isReverse) {
+              rowsHtml += ' <span style="font-size: 8px; color: #58a6ff;">↻</span>';
+            }
+            rowsHtml += '</td>';
+            rowsHtml += '<td style="padding: 8px 6px; text-align: center; font-weight: 700;">';
+            rowsHtml += '<span style="color: ' + color1 + ';">' + line1 + '</span>';
+            rowsHtml += '<span style="color: #64748b;">/</span>';
+            rowsHtml += '<span style="color: ' + color2 + ';">' + line2 + '</span>';
+            rowsHtml += '</td>';
+            rowsHtml += '<td style="padding: 8px 6px; text-align: center; font-weight: 700; color: #32d74b;">' + pair.hits + 'x</td>';
+            rowsHtml += '<td style="padding: 8px 6px; text-align: center; font-size: 11px; color: #94a3b8;">' + (pair.lastDate ? formatDate(pair.lastDate) : 'Never') + '</td>';
+            rowsHtml += '<td style="padding: 8px 6px; text-align: center; font-weight: 700; color: ' + (pair.daysAgo === 'Today' ? '#32d74b' : pair.daysAgo === 'Yesterday' ? '#ff9d00' : '#ff6b6b') + ';">' + pair.daysAgo + '</td>';
+            rowsHtml += '</tr>';
+          });
+        }
+        body.innerHTML = rowsHtml;
+      }
+
+      // ======================================
+      // SEARCH FUNCTIONS - Using window._pairHistoryData
+      // ======================================
+function performP2Search(searchId, resultsId) {
+  const input = document.getElementById(searchId + '-input');
+  const resultsContainer = document.getElementById(resultsId);
+  const scrollIndicator = document.getElementById(resultsId + '-scroll-indicator');
+  
+  if (!input || !resultsContainer) return;
+  
+  const query = input.value.trim();
+  if (!query) {
+    resultsContainer.innerHTML = '<div style="text-align:center; padding:30px 20px; color:#64748b; font-size:13px;">🔍 Enter a mark or Pick 2 you would like to know about</div>';
+    if (scrollIndicator) scrollIndicator.style.display = 'none';
+    return;
+  }
+
+  const pairHistory = window._pairHistoryData || {};
+  const results = [];
+  const cleanInput = query;
+  
+  if (cleanInput.includes('/')) {
+    const parts = cleanInput.split('/');
+    if (parts.length === 2) {
+      const num1 = parseInt(parts[0]);
+      const num2 = parseInt(parts[1]);
+      if (!isNaN(num1) && !isNaN(num2) && num1 >= 1 && num1 <= 36 && num2 >= 1 && num2 <= 36) {
+        // Always check the exact pair entered
+        const exactKey = num1 + '/' + num2;
+        if (pairHistory[exactKey]) {
+          const data = pairHistory[exactKey];
+          results.push({
+            key: exactKey,
+            first: num1,
+            second: num2,
+            hits: data.hits,
+            lastDate: data.lastDate ? new Date(data.lastDate) : null,
+            daysAgo: data.lastDate ? getDaysAgo(new Date(data.lastDate)) : '—'
+          });
+        }
+        
+        // If it's NOT a same-number pair, also check the reverse
+        if (num1 !== num2) {
+          const reverseKey = num2 + '/' + num1;
+          if (pairHistory[reverseKey]) {
+            const data = pairHistory[reverseKey];
+            results.push({
+              key: reverseKey,
+              first: num2,
+              second: num1,
+              hits: data.hits,
+              lastDate: data.lastDate ? new Date(data.lastDate) : null,
+              daysAgo: data.lastDate ? getDaysAgo(new Date(data.lastDate)) : '—'
+            });
+          }
+        }
+      }
+    }
+  } else {
+    const num = parseInt(cleanInput);
+    if (!isNaN(num) && num >= 1 && num <= 36) {
+      for (const [key, data] of Object.entries(pairHistory)) {
+        const parts = key.split('/').map(Number);
+        if (parts.includes(num)) {
+          results.push({
+            key: key,
+            first: parts[0],
+            second: parts[1],
+            hits: data.hits,
+            lastDate: data.lastDate ? new Date(data.lastDate) : null,
+            daysAgo: data.lastDate ? getDaysAgo(new Date(data.lastDate)) : '—'
+          });
+        }
+      }
+      results.sort((a, b) => b.hits - a.hits);
+    }
+  }
+  
+  let html = '';
+  if (results.length === 0) {
+    html = '<div style="text-align:center; padding:20px; color:#64748b;">❌ No results found for "' + cleanInput + '"</div>';
+    if (scrollIndicator) scrollIndicator.style.display = 'none';
+  } else {
+    const showScroll = results.length > 9;
+    if (scrollIndicator) {
+      scrollIndicator.style.display = showScroll ? 'block' : 'none';
+    }
+    
+    html = '<div style="overflow-x: auto; -webkit-overflow-scrolling: touch;">';
+    html += '<table style="width: 100%; border-collapse: collapse; font-size: 12px;">';
+    html += '<thead>';
+    html += '<tr style="background: rgba(255,255,255,0.03); border-bottom: 2px solid rgba(88,166,255,0.2);">';
+    html += '<th style="padding: 8px 6px; text-align: center; color: #94a3b8; font-weight: 700; font-size: 10px;">PICK 2</th>';
+    html += '<th style="padding: 8px 6px; text-align: center; color: #94a3b8; font-weight: 700; font-size: 10px;">LINE/LINE</th>';
+    html += '<th style="padding: 8px 6px; text-align: center; color: #94a3b8; font-weight: 700; font-size: 10px;">HITS</th>';
+    html += '<th style="padding: 8px 6px; text-align: center; color: #94a3b8; font-weight: 700; font-size: 10px;">LAST PLAYED</th>';
+    html += '<th style="padding: 8px 6px; text-align: center; color: #94a3b8; font-weight: 700; font-size: 10px;">DAYS AGO</th>';
+    html += '</tr>';
+    html += '</thead>';
+    html += '<tbody>';
+    
+    // Sort results by hits (descending)
+    results.sort((a, b) => b.hits - a.hits);
+    
+    results.forEach(pair => {
+      const line1 = formatLineDisplay(pair.first);
+      const line2 = formatLineDisplay(pair.second);
+      const color1 = getLineColor(pair.first);
+      const color2 = getLineColor(pair.second);
+      const isSame = pair.first === pair.second;
+      // Check if this is a reverse match (only applies when searching a specific pair)
+      const isReverse = pair.key.includes('/') && pair.first !== pair.second && 
+        pair.key === pair.second + '/' + pair.first;
+
+      html += '<tr style="border-bottom: 1px solid rgba(255,255,255,0.05);' + (isReverse ? 'background: rgba(88,166,255,0.08);' : '') + '">';
+      html += '<td style="padding: 8px 6px; text-align: center; font-weight: 700; font-size: 14px;">';
+      if (isSame) {
+        html += '<span style="color: #ffd700;">' + pair.first + '/' + pair.second + '</span>';
+      } else {
+        html += '<span>' + pair.first + '/' + pair.second + '</span>';
+      }
+      if (isReverse) {
+        html += ' <span style="font-size: 8px; color: #58a6ff;">↻</span>';
+      }
+      html += '</td>';
+      html += '<td style="padding: 8px 6px; text-align: center; font-weight: 700;">';
+      html += '<span style="color: ' + color1 + ';">' + line1 + '</span>';
+      html += '<span style="color: #64748b;">/</span>';
+      html += '<span style="color: ' + color2 + ';">' + line2 + '</span>';
+      html += '</td>';
+      html += '<td style="padding: 8px 6px; text-align: center; font-weight: 700; color: #32d74b;">' + pair.hits + 'x</td>';
+      html += '<td style="padding: 8px 6px; text-align: center; font-size: 11px; color: #94a3b8;">' + (pair.lastDate ? formatDate(pair.lastDate) : 'Never') + '</td>';
+      html += '<td style="padding: 8px 6px; text-align: center; font-weight: 700; color: ' + (pair.daysAgo === 'Today' ? '#32d74b' : pair.daysAgo === 'Yesterday' ? '#ff9d00' : '#ff6b6b') + ';">' + pair.daysAgo + '</td>';
+      html += '</tr>';
+    });
+    
+    html += '</tbody>';
+    html += '</table>';
+    html += '</div>';
+  }
+  resultsContainer.innerHTML = html;
+  
+  // Scroll to top of results
+  resultsContainer.scrollTop = 0;
+}
+      function clearP2Search(searchId, resultsId) {
+        const input = document.getElementById(searchId + '-input');
+        const resultsContainer = document.getElementById(resultsId);
+        const scrollIndicator = document.getElementById(resultsId + '-scroll-indicator');
+        
+        if (input) input.value = '';
+        if (resultsContainer) {
+          resultsContainer.innerHTML = '<div style="text-align:center; padding:30px 20px; color:#64748b; font-size:13px;">🔍 Enter a mark or Pick 2 you would like to know about</div>';
+          resultsContainer.scrollTop = 0;
+        }
+        if (scrollIndicator) scrollIndicator.style.display = 'none';
+      }
+
+      // ======================================
+      // HELPER FUNCTIONS AVAILABLE IN JAVASCRIPT
+      // ======================================
+      function getDaysAgo(date) {
+        if (!date) return "—";
+        const now = new Date();
+        const diff = Math.floor((now - date) / (1000 * 60 * 60 * 24));
+        if (diff === 0) return "Today";
+        if (diff === 1) return "Yesterday";
+        return diff + 'd';
+      }
+
+      function formatDate(date) {
+        if (!date) return "Never";
+        const days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+        const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+        return days[date.getDay()] + ' ' + date.getDate() + ' ' + months[date.getMonth()] + " '" + date.getFullYear().toString().slice(-2);
+      }
+
+      function formatLineDisplay(num) {
+        const numToLineMap = {
+          1:1, 10:1, 19:1, 28:1, 2:2, 11:2, 20:2, 29:2, 3:3, 12:3, 21:3, 30:3,
+          4:4, 13:4, 22:4, 31:4, 5:5, 14:5, 23:5, 32:5, 6:6, 15:6, 24:6, 33:6,
+          7:7, 16:7, 25:7, 34:7, 8:8, 17:8, 26:8, 35:8, 9:9, 18:9, 27:9, 36:9
+        };
+        const line = numToLineMap[num] || null;
+        if (line === null) return "?";
+        return line + 'L';
+      }
+
+      function getLineColor(num) {
+        const numToLineMap = {
+          1:1, 10:1, 19:1, 28:1, 2:2, 11:2, 20:2, 29:2, 3:3, 12:3, 21:3, 30:3,
+          4:4, 13:4, 22:4, 31:4, 5:5, 14:5, 23:5, 32:5, 6:6, 15:6, 24:6, 33:6,
+          7:7, 16:7, 25:7, 34:7, 8:8, 17:8, 26:8, 35:8, 9:9, 18:9, 27:9, 36:9
+        };
+        const lineColors = [
+          "#00f2ff", "#ff9f0a", "#32d74b", "#ff375f", 
+          "#ffd60a", "#bf5af2", "#1e90ff", "#ff1493", "#00ff7f"
+        ];
+        const line = numToLineMap[num] || null;
+        if (line === null) return "#94a3b8";
+        return lineColors[(line - 1) % lineColors.length];
+      }
+
+      // ======================================
+      // EXPOSE DATA TO JAVASCRIPT
+      // ======================================
+      window._pairHistoryData = ${JSON.stringify(Object.fromEntries(
+        Object.entries(pairHistory).map(([key, val]) => [key, { 
+          first: val.first, 
+          second: val.second, 
+          hits: val.hits, 
+          lastDate: val.lastDate ? val.lastDate.toISOString() : null 
+        }])
+      ))};
+    </script>
+  `;
+}
+//////////////////////////////////////////
+// =====================================
+// TAB CONTAINER WITH TWO VIEWS
+// =====================================
+function renderTabContainer(weeksData, allWeeksP2, p2Data, p2TotalHits, p2StartHeader) {
+  // Generate unique IDs for this instance
+  const containerId = 'tab-container-' + Date.now();
+  const tab1Id = 'tab1-' + Date.now();
+  const tab2Id = 'tab2-' + Date.now();
+  
+  // Pre-render both views (so they're ready when tabs are clicked)
+  const view1Html = renderPick2CurrentWeekPlays(allWeeksP2, "p2");
+  const view2Html = renderProbabilityAnalysis(p2Data.data.weeks, "PIKII", { 
+    hitData: p2TotalHits,
+    title: `LINES (${p2StartHeader})`
+  });
+  
+  return `
+    <div class="tab-container" id="${containerId}" style="
+      background: linear-gradient(135deg, #0f172a, #1e293b);
+      border-radius: 20px;
+      padding: 12px;
+      margin-bottom: 15px;
+      border: 1px solid #58a6ff;
+    ">
+      <!-- Tab Content -->
+      <div id="${tab1Id}" style="display: block;">
+        ${view1Html}
+      </div>
+      <div id="${tab2Id}" style="display: none;">
+        ${view2Html}
+      </div>
+      
+      <!-- Footer -->
+      <div style="
+        margin-top: 8px;
+        padding-top: 6px;
+        border-top: 1px solid rgba(255,255,255,0.03);
+        display: flex;
+        justify-content: center;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+        font-size: 7px;
+        color: #64748b;
+      ">
+        <span>⚡ CodeWithGlasgow • Tabbed Analysis</span>
+        <span style="color: #ff9d00; font-weight: bold; font-size: 7px;">${globalTrackingCode}</span>
+        <span style="color: #666; font-size: 7px;">Last: ${globalLastDraw}</span>
+      </div>
+    <br>
+    <!-- Tab Buttons -->
+      <div style="
+        display: flex;
+        gap: 8px;
+        margin-bottom: 12px;
+        border-bottom: 2px solid rgba(255,255,255,0.1);
+        padding-bottom: 8px;
+      ">
+        <button 
+          id="${tab1Id}-btn"
+          onclick="switchTabView('${containerId}', '${tab1Id}', '${tab2Id}')"
+          style="
+            flex: 1;
+            padding: 10px 16px;
+            border: none;
+            border-radius: 12px;
+            font-size: 14px;
+            font-weight: 800;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            background: #ff9d00;
+            color: #000;
+            box-shadow: 0 4px 15px rgba(255,157,0,0.3);
+          "
+        >
+          📆 Current Week Plays
+        </button>
+        <button 
+          id="${tab2Id}-btn"
+          onclick="switchTabView('${containerId}', '${tab2Id}', '${tab1Id}')"
+          style="
+            flex: 1;
+            padding: 10px 16px;
+            border: none;
+            border-radius: 12px;
+            font-size: 14px;
+            font-weight: 800;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            background: rgba(255,255,255,0.05);
+            color: #94a3b8;
+            border: 1px solid rgba(255,255,255,0.1);
+          "
+        >
+          📈 Probability Analysis
+        </button>
+      </div>
+    </div>
+    
+    <script>
+      function switchTabView(containerId, showId, hideId) {
+        // Show the selected tab content
+        const showEl = document.getElementById(showId);
+        const hideEl = document.getElementById(hideId);
+        
+        if (showEl) showEl.style.display = 'block';
+        if (hideEl) hideEl.style.display = 'none';
+        
+        // Update button styles
+        const container = document.getElementById(containerId);
+        if (container) {
+          const buttons = container.querySelectorAll('button');
+          buttons.forEach(btn => {
+            if (btn.id === showId + '-btn') {
+              btn.style.background = '#ff9d00';
+              btn.style.color = '#000';
+              btn.style.boxShadow = '0 4px 15px rgba(255,157,0,0.3)';
+              btn.style.border = 'none';
+            } else {
+              btn.style.background = 'rgba(255,255,255,0.05)';
+              btn.style.color = '#94a3b8';
+              btn.style.boxShadow = 'none';
+              btn.style.border = '1px solid rgba(255,255,255,0.1)';
+            }
+          });
+        }
+      }
+    </script>
+  `;
+}
+//////////////////////////////////////////
+// ======================================
+// PLAY WHE GREEN CHART - Version 1
+// WITH LEAVING/MEETING HIGHLIGHTS
+// Leaving = Blue highlight, Meeting = Gold/Orange highlight
+// 25 weeks of data with green background, black text, red shelf marks (no border)
+// Shelf marks ONLY appear on the LAST time the number was played
+// Numbers are bold and trimmed (no leading zeros)
+// Fully responsive - fits any screen without horizontal scroll
+// ======================================
+function renderPlayWheGreenChart(weeksData) {
+  if (!weeksData || weeksData.length === 0) {
+    return `
+      <div style="background: #e8f5e9; border-radius: 4px; padding: 20px; text-align:center; border: 2px solid #2d8a4e; font-family: 'Courier New', monospace;">
+        <span style="color: #2d8a4e; font-weight: bold;">📊 Loading Green Chart...</span>
+      </div>
+    `;
+  }
+
+  // Sort weeks chronologically
+  const sortedWeeks = [...weeksData].sort((a, b) => {
+    let pa = a.startDate.split(" ");
+    let pb = b.startDate.split(" ");
+    return new Date(pa[2] + "-" + pa[1] + "-" + pa[0]) - new Date(pb[2] + "-" + pb[1] + "-" + pb[0]);
+  });
+
+  // Get the last 25 weeks
+  const displayWeeks = sortedWeeks.slice(-25);
+  
+  // Get current week
+  const currentWeek = displayWeeks[displayWeeks.length - 1];
+
+  const dayNames = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+  const dayShort = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
+  const slots = ["MOR", "MID", "NON", "EVE"];
+
+  // Helper to trim leading zeros
+  function trimLeadingZeros(str) {
+    if (!str) return "";
+    const num = parseInt(str, 10);
+    return !isNaN(num) ? num.toString() : str;
+  }
+
+  // Helper to get draw number - ONLY returns if it's a valid played number
+  function getDrawNumber(week, dayName, slot) {
+    if (!week) return null;
+    const day = week.days.find(d => d.dayName === dayName);
+    if (!day) return null;
+    const val = day.draws[slot];
+    if (!val || val === "-" || val === "PENDING" || val === "HOLIDAY") return null;
+    const num = parseInt(val, 10);
+    return !isNaN(num) && num >= 1 && num <= 36 ? num : null;
+  }
+
+  // Helper to check if a draw has actually occurred
+  function hasDrawOccurred(weekStartDate, dayIndex, slotIndex) {
+    if (!weekStartDate) return false;
+    const parts = weekStartDate.split(" ");
+    const monthMap = {"Jan":0,"Feb":1,"Mar":2,"Apr":3,"May":4,"Jun":5,"Jul":6,"Aug":7,"Sep":8,"Oct":9,"Nov":10,"Dec":11};
+    const startDate = new Date(parts[2], monthMap[parts[1]], parseInt(parts[0]));
+    const targetDate = new Date(startDate);
+    targetDate.setDate(startDate.getDate() + dayIndex);
+    const timeOffsets = [9, 12, 15, 18];
+    targetDate.setHours(timeOffsets[slotIndex] || 12);
+    return targetDate < new Date();
+  }
+
+  // Helper to get the date of a specific draw
+  function getDrawDate(weekStartDate, dayIndex, slotIndex) {
+    if (!weekStartDate) return null;
+    const parts = weekStartDate.split(" ");
+    const monthMap = {"Jan":0,"Feb":1,"Mar":2,"Apr":3,"May":4,"Jun":5,"Jul":6,"Aug":7,"Sep":8,"Oct":9,"Nov":10,"Dec":11};
+    const startDate = new Date(parts[2], monthMap[parts[1]], parseInt(parts[0]));
+    const targetDate = new Date(startDate);
+    targetDate.setDate(startDate.getDate() + dayIndex);
+    return targetDate;
+  }
+
+  // SCAN ALL WEEKS to find the LAST occurrence of each number
+  // We ONLY consider draws that have actually occurred
+  const lastOccurrence = {};
+  
+  // Get today's information
+  const today = new Date();
+  const todayDay = today.getDay();
+  const todayHour = today.getHours();
+  
+  // Determine current slot
+  let currentSlot = -1;
+  if (todayHour >= 9 && todayHour < 12) currentSlot = 0;
+  else if (todayHour >= 12 && todayHour < 15) currentSlot = 1;
+  else if (todayHour >= 15 && todayHour < 18) currentSlot = 2;
+  else if (todayHour >= 18) currentSlot = 3;
+  
+  // SCAN BACKWARDS from current moment
+  // First scan current week from current day backwards
+  for (let d = todayDay; d >= 0; d--) {
+    const maxSlot = (d === todayDay) ? currentSlot : slots.length - 1;
+    for (let s = maxSlot; s >= 0; s--) {
+      if (hasDrawOccurred(currentWeek.startDate, d, s)) {
+        const num = getDrawNumber(currentWeek, dayNames[d], slots[s]);
+        if (num && !lastOccurrence[num]) {
+          lastOccurrence[num] = {
+            week: currentWeek,
+            weekIndex: displayWeeks.length - 1,
+            day: dayNames[d],
+            slot: slots[s],
+            dayIndex: d,
+            slotIndex: s,
+            date: getDrawDate(currentWeek.startDate, d, s)
+          };
+        }
+      }
+    }
+  }
+  
+  // Then scan previous weeks from last to first
+  for (let w = sortedWeeks.length - 2; w >= 0; w--) {
+    const week = sortedWeeks[w];
+    for (let d = dayNames.length - 1; d >= 0; d--) {
+      for (let s = slots.length - 1; s >= 0; s--) {
+        if (hasDrawOccurred(week.startDate, d, s)) {
+          const num = getDrawNumber(week, dayNames[d], slots[s]);
+          if (num && !lastOccurrence[num]) {
+            lastOccurrence[num] = {
+              week: week,
+              weekIndex: w,
+              day: dayNames[d],
+              slot: slots[s],
+              dayIndex: d,
+              slotIndex: s,
+              date: getDrawDate(week.startDate, d, s)
+            };
+          }
+        }
+      }
+    }
+  }
+
+  // Calculate days since last played for each number
+// ======================================
+// SHELF MARKS - CORRECTED DAYS AGO
+// ======================================
+
+function getDaysSince(num) {
+  if (!lastOccurrence[num]) return 999;
+  const lastDate = lastOccurrence[num].date;
+  if (!lastDate) return 999;
+  
+  // Create a date at midnight for the last occurrence
+  const lastMidnight = new Date(lastDate);
+  lastMidnight.setHours(0, 0, 0, 0);
+  
+  // Create a date at midnight for today
+  const todayMidnight = new Date();
+  todayMidnight.setHours(0, 0, 0, 0);
+  
+  // Calculate the difference in days
+  const diffTime = todayMidnight.getTime() - lastMidnight.getTime();
+  const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+  
+  return Math.max(0, diffDays);
+}
+
+  // Get the date string for display
+  function getDateString(num) {
+    if (!lastOccurrence[num]) return "Never";
+    const last = lastOccurrence[num];
+    if (!last.date) return "Never";
+    const date = new Date(last.date);
+    const day = date.getDate();
+    const month = date.toLocaleString('default', { month: 'short' });
+    const year = date.getFullYear();
+    return `${day} ${month} ${year}`;
+  }
+
+  // Get ALL draws from the current week that have already occurred
+  const currentWeekDraws = [];
+  for (let d = 0; d < dayNames.length; d++) {
+    for (let s = 0; s < slots.length; s++) {
+      if (hasDrawOccurred(currentWeek.startDate, d, s)) {
+        const num = getDrawNumber(currentWeek, dayNames[d], slots[s]);
+        if (num) currentWeekDraws.push(num);
+      }
+    }
+  }
+
+  // Determine if a number is a shelf mark
+  function isShelfMark(num) {
+    const days = getDaysSince(num);
+    if (days === "Never") return false;
+    if (days === 0) return false;
+    
+    // If played in current week, NOT a shelf mark
+    if (currentWeekDraws.includes(num)) return false;
+    
+    // Check if scheduled for future in current week
+    for (let d = 0; d < dayNames.length; d++) {
+      for (let s = 0; s < slots.length; s++) {
+        if (d < todayDay || (d === todayDay && s <= currentSlot)) continue;
+        const draw = getDrawNumber(currentWeek, dayNames[d], slots[s]);
+        if (draw === num) {
+          return false; // Scheduled for future
+        }
+      }
+    }
+    
+    // Shelf mark if over 14 days
+    return days > 14;
+  }
+
+  // Get shelf marks with their data
+  const shelfMarksData = [];
+  for (let i = 1; i <= 36; i++) {
+    if (isShelfMark(i)) {
+      const days = getDaysSince(i);
+      const dateStr = getDateString(i);
+      shelfMarksData.push({
+        number: i,
+        days: days,
+        lastPlayed: dateStr,
+        displayNum: trimLeadingZeros(String(i))
+      });
+    }
+  }
+  
+  // Sort shelf marks by days (most overdue first)
+  shelfMarksData.sort((a, b) => b.days - a.days);
+
+  // =====================================
+  // LEAVING & MEETING LOGIC
+  // =====================================
+  function findLeavingMeeting() {
+    let leavingNumber = null;
+    let meetingNumber = null;
+    let leavingSlot = null;
+    let meetingSlot = null;
+    let leavingDay = null;
+    let meetingDay = null;
+    let leavingDayIdx = -1;
+    let leavingSlotIdx = -1;
+    
+    // Find leaving number - scan backwards from current position
+    for (let d = todayDay; d >= 0; d--) {
+      const maxSlot = (d === todayDay) ? currentSlot : slots.length - 1;
+      for (let s = maxSlot; s >= 0; s--) {
+        if (hasDrawOccurred(currentWeek.startDate, d, s)) {
+          const draw = getDrawNumber(currentWeek, dayNames[d], slots[s]);
+          if (draw) {
+            leavingNumber = draw;
+            leavingSlot = slots[s];
+            leavingDay = dayNames[d];
+            leavingDayIdx = d;
+            leavingSlotIdx = s;
+            break;
+          }
+        }
+      }
+      if (leavingNumber) break;
+    }
+    
+    // If no leaving number in current week, search previous weeks
+    if (!leavingNumber) {
+      for (let w = sortedWeeks.length - 2; w >= 0; w--) {
+        const week = sortedWeeks[w];
+        for (let d = dayNames.length - 1; d >= 0; d--) {
+          for (let s = slots.length - 1; s >= 0; s--) {
+            if (hasDrawOccurred(week.startDate, d, s)) {
+              const draw = getDrawNumber(week, dayNames[d], slots[s]);
+              if (draw) {
+                leavingNumber = draw;
+                leavingSlot = slots[s];
+                leavingDay = dayNames[d];
+                leavingDayIdx = d;
+                leavingSlotIdx = s;
+                break;
+              }
+            }
+          }
+          if (leavingNumber) break;
+        }
+        if (leavingNumber) break;
+      }
+    }
+    
+    // Find meeting number - next slot after leaving
+    if (leavingDayIdx !== -1 && leavingSlotIdx !== -1) {
+      let nextDayIdx = leavingDayIdx;
+      let nextSlotIdx = leavingSlotIdx + 1;
+      
+      if (nextSlotIdx >= slots.length) {
+        nextSlotIdx = 0;
+        nextDayIdx = leavingDayIdx + 1;
+      }
+      
+      if (nextDayIdx >= dayNames.length) {
+        nextDayIdx = 0;
+      }
+      
+      // Try current week first
+      if (hasDrawOccurred(currentWeek.startDate, nextDayIdx, nextSlotIdx)) {
+        const draw = getDrawNumber(currentWeek, dayNames[nextDayIdx], slots[nextSlotIdx]);
+        if (draw) {
+          meetingNumber = draw;
+          meetingSlot = slots[nextSlotIdx];
+          meetingDay = dayNames[nextDayIdx];
+        }
+      }
+      
+      // If not found in current week, try previous weeks
+      if (!meetingNumber) {
+        for (let w = sortedWeeks.length - 2; w >= 0; w--) {
+          if (hasDrawOccurred(sortedWeeks[w].startDate, nextDayIdx, nextSlotIdx)) {
+            const draw = getDrawNumber(sortedWeeks[w], dayNames[nextDayIdx], slots[nextSlotIdx]);
+            if (draw) {
+              meetingNumber = draw;
+              meetingSlot = slots[nextSlotIdx];
+              meetingDay = dayNames[nextDayIdx];
+              break;
+            }
+          }
+        }
+      }
+    }
+    
+    return { leavingNumber, meetingNumber, leavingSlot, meetingSlot, leavingDay, meetingDay };
+  }
+
+  const { leavingNumber, meetingNumber, leavingSlot, meetingSlot, leavingDay, meetingDay } = findLeavingMeeting();
+
+  // Build the HTML
+  let html = `
+  <style>
+    .green-chart-wrapper {
+      background: #e8f5e9;
+      border-radius: 4px;
+      padding: 4px 2px;
+      border: 2px solid #2d8a4e;
+      font-family: 'Courier New', monospace;
+      max-width: 100%;
+      overflow: hidden;
+    }
+    
+    .green-chart-wrapper table {
+      width: 100%;
+      border-collapse: collapse;
+      background: #e8f5e9;
+      table-layout: fixed;
+    }
+    
+    .green-chart-wrapper th {
+      background: #2d8a4e;
+      color: #ffffff;
+      padding: 2px 1px;
+      text-align: center;
+      font-weight: bold;
+      font-size: 7px;
+      border: 1px solid #1a6b3a;
+    }
+    
+    .green-chart-wrapper td {
+      padding: 2px 1px;
+      text-align: center;
+      border: 1px solid #2d8a4e;
+      font-weight: bold;
+      font-size: 12px;
+      background: #e8f5e9;
+      color: #000000;
+    }
+    
+    .green-chart-wrapper .time-header {
+      background: #c8e6c9;
+      color: #1a6b3a;
+      font-size: 6px;
+      font-weight: bold;
+      padding: 1px 0;
+    }
+    
+    .green-chart-wrapper .day-header {
+      background: #a5d6a7;
+      color: #1a6b3a;
+      font-size: 7px;
+      font-weight: bold;
+      padding: 2px 0;
+    }
+    
+    .green-chart-wrapper .number-cell {
+      font-weight: 900;
+      font-size: 14px;
+      padding: 1px 0;
+      color: #000000;
+      background: #e8f5e9;
+    }
+    
+    .green-chart-wrapper .number-cell.leaving-highlight {
+      background: #00f2ff !important;
+      color: #000000 !important;
+      font-weight: 900;
+      font-size: 14px;
+      border-color: #00d4e6 !important;
+      box-shadow: inset 0 0 8px rgba(0, 242, 255, 0.3);
+    }
+    
+    .green-chart-wrapper .number-cell.meeting-highlight {
+      background: #ff9d00 !important;
+      color: #000000 !important;
+      font-weight: 900;
+      font-size: 14px;
+      border-color: #e68a00 !important;
+      box-shadow: inset 0 0 8px rgba(255, 157, 0, 0.3);
+    }
+    
+    .green-chart-wrapper .number-cell.shelf-mark {
+      color: #ff0000 !important;
+      font-weight: 900;
+      font-size: 14px;
+      background: #e8f5e9 !important;
+      border-color: #2d8a4e !important;
+    }
+    
+    .green-chart-wrapper .number-cell.holiday {
+      background: #e8f5e9 !important;
+      color: #999 !important;
+      font-size: 8px;
+      padding: 3px 0;
+      font-weight: normal;
+    }
+    
+    .green-chart-wrapper .number-cell.pending {
+      background: #e8f5e9 !important;
+      color: #aaa !important;
+      font-size: 8px;
+      font-weight: normal;
+    }
+    
+    .green-chart-wrapper .number-cell.missing {
+      background: #e8f5e9 !important;
+      color: #ccc !important;
+      font-size: 8px;
+      font-weight: normal;
+    }
+    
+    /* Shelf Marks Table */
+    .shelf-marks-table-wrapper {
+      background: #e8f5e9;
+      border: 1px solid #2d8a4e;
+      border-top: none;
+      padding: 4px 6px;
+      font-family: 'Courier New', monospace;
+    }
+    
+    .shelf-marks-table-wrapper .shelf-title {
+      font-size: 14px;
+      font-weight: bold;
+      color: #000000;
+      margin-bottom: 4px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    
+    .shelf-marks-table-wrapper .shelf-title .count {
+      color: #ff0000;
+      font-size: 10px;
+    }
+    
+    .shelf-marks-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 8px;
+    }
+    
+    .shelf-marks-table th {
+      background: #2d8a4e;
+      color: #ffffff;
+      padding: 3px 4px;
+      text-align: left;
+      font-weight: bold;
+      font-size: 7px;
+      border: 1px solid #1a6b3a;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    
+    .shelf-marks-table td {
+      padding: 3px 4px;
+      border: 1px solid #2d8a4e;
+      font-size: 8px;
+      color: #000000;
+      background: #e8f5e9;
+    }
+    
+    .shelf-marks-table .mark-cell {
+      font-weight: 900;
+      font-size: 10px;
+      color: #ff0000;
+      text-align: center;
+      width: 15%;
+    }
+    
+    .shelf-marks-table .last-played-cell {
+      text-align: center;
+      width: 50%;
+      font-size: 7px;
+      color: #333;
+    }
+    
+    .shelf-marks-table .days-cell {
+      text-align: center;
+      width: 35%;
+      font-weight: bold;
+    }
+    
+    .shelf-marks-table .days-cell .days-badge {
+      display: inline-block;
+      padding: 1px 6px;
+      border-radius: 10px;
+      font-size: 8px;
+      font-weight: 900;
+    }
+    
+    .shelf-marks-table .days-cell .days-badge.critical {
+      background: #ff453a;
+      color: #ffffff;
+    }
+    
+    .shelf-marks-table .days-cell .days-badge.warning {
+      background: #ff9f0a;
+      color: #ffffff;
+    }
+    
+    .shelf-marks-table .days-cell .days-badge.monitor {
+      background: #ffd60a;
+      color: #000000;
+    }
+    
+    .shelf-marks-table .no-data {
+      text-align: center;
+      padding: 10px;
+      color: #32d74b;
+      font-weight: bold;
+      font-size: 9px;
+    }
+    
+    .green-chart-legend {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      padding: 2px 4px;
+      background: #e8f5e9;
+      border: 1px solid #2d8a4e;
+      border-top: none;
+      font-size: 6px;
+      font-family: 'Courier New', monospace;
+      flex-wrap: wrap;
+      color: #000000;
+    }
+    
+    .green-chart-legend .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 2px;
+      color: #000000;
+    }
+    
+    .green-chart-legend .legend-dot {
+      display: inline-block;
+      width: 6px;
+      height: 6px;
+      border-radius: 1px;
+      border: 1px solid #2d8a4e;
+      flex-shrink: 0;
+    }
+    
+    .green-chart-legend .legend-dot.shelf {
+      background: #e8f5e9;
+      border-color: #ff0000;
+    }
+    
+    .green-chart-legend .legend-dot.normal {
+      background: #e8f5e9;
+    }
+    
+    .green-chart-legend .legend-dot.holiday-dot {
+      background: #e8f5e9;
+      border-color: #ccc;
+    }
+    
+    .green-chart-legend .legend-dot.pending-dot {
+      background: #e8f5e9;
+      border-color: #ccc;
+    }
+    
+    .green-chart-legend .legend-spacer {
+      color: #999;
+    }
+    
+    @media (max-width: 768px) {
+      .green-chart-wrapper {
+        padding: 3px 1px;
+      }
+      
+      .green-chart-wrapper th {
+        font-size: 6px;
+        padding: 2px 0;
+      }
+      
+      .green-chart-wrapper td {
+        font-size: 12px;
+        padding: 2px 0;
+      }
+      
+      .green-chart-wrapper .number-cell {
+        font-size: 14px;
+      }
+      
+      .green-chart-wrapper .number-cell.leaving-highlight,
+      .green-chart-wrapper .number-cell.meeting-highlight,
+      .green-chart-wrapper .number-cell.shelf-mark {
+        font-size: 12px;
+      }
+      
+      .green-chart-wrapper .time-header {
+        font-size: 5px;
+        padding: 1px 0;
+      }
+      
+      .green-chart-wrapper .day-header {
+        font-size: 6px;
+        padding: 2px 0;
+      }
+      
+      .shelf-marks-table {
+        font-size: 7px;
+      }
+      
+      .shelf-marks-table th {
+        font-size: 6px;
+        padding: 2px 3px;
+      }
+      
+      .shelf-marks-table td {
+        font-size: 7px;
+        padding: 2px 3px;
+      }
+      
+      .shelf-marks-table .mark-cell {
+        font-size: 9px;
+      }
+      
+      .shelf-marks-table .last-played-cell {
+        font-size: 6px;
+      }
+      
+      .shelf-marks-table .days-cell .days-badge {
+        font-size: 7px;
+        padding: 1px 4px;
+      }
+    }
+    
+    @media (max-width: 480px) {
+      .green-chart-wrapper {
+        padding: 2px 1px;
+      }
+      
+      .green-chart-wrapper th {
+        font-size: 5px;
+        padding: 1px 0;
+      }
+      
+      .green-chart-wrapper td {
+        font-size: 12px;
+        padding: 1px 0;
+      }
+      
+      .green-chart-wrapper .number-cell {
+        font-size: 12px;
+      }
+      
+      .green-chart-wrapper .number-cell.leaving-highlight,
+      .green-chart-wrapper .number-cell.meeting-highlight,
+      .green-chart-wrapper .number-cell.shelf-mark {
+        font-size: 10px;
+      }
+      
+      .green-chart-wrapper .time-header {
+        font-size: 4px;
+        padding: 0;
+      }
+      
+      .green-chart-wrapper .day-header {
+        font-size: 5px;
+        padding: 1px 0;
+      }
+      
+      .shelf-marks-table-wrapper {
+        padding: 2px 3px;
+      }
+      
+      .shelf-marks-table-wrapper .shelf-title {
+        font-size: 7px;
+      }
+      
+      .shelf-marks-table {
+        font-size: 6px;
+      }
+      
+      .shelf-marks-table th {
+        font-size: 5px;
+        padding: 2px 2px;
+      }
+      
+      .shelf-marks-table td {
+        font-size: 6px;
+        padding: 2px 2px;
+      }
+      
+      .shelf-marks-table .mark-cell {
+        font-size: 8px;
+      }
+      
+      .shelf-marks-table .last-played-cell {
+        font-size: 5px;
+      }
+      
+      .shelf-marks-table .days-cell .days-badge {
+        font-size: 6px;
+        padding: 1px 3px;
+      }
+      
+      .green-chart-legend {
+        padding: 2px 3px;
+        gap: 3px;
+        font-size: 5px;
+      }
+      
+      .green-chart-legend .legend-dot {
+        width: 5px;
+        height: 5px;
+      }
+    }
+  </style>
+
+  <div class="green-chart-wrapper">
+    <table>
+      <thead>
+        <tr>
+          ${dayShort.map(day => `
+            <th colspan="4" class="day-header">${day}</th>
+          `).join('')}
+        </tr>
+        <tr>
+          ${dayShort.map(() => `
+            <th class="time-header">10:30</th>
+            <th class="time-header">1:00</th>
+            <th class="time-header">4:00</th>
+            <th class="time-header">7:00</th>
+          `).join('')}
+        </tr>
+      </thead>
+      <tbody>
+  `;
+
+  // Render all 25 weeks
+  displayWeeks.forEach((week) => {
+    const isCurrent = week.isCurrentWeek === true;
+    
+    html += `<tr>`;
+
+    for (let d = 0; d < dayNames.length; d++) {
+      const day = week.days.find(dy => dy.dayName === dayNames[d]);
+      
+      // Check if all slots are empty (HOLIDAY)
+      const allSlotsEmpty = slots.every(slot => {
+        const val = day ? day.draws[slot] : null;
+        return !val || val === "-" || val === "PENDING";
+      });
+
+      if (allSlotsEmpty) {
+        const isPast = hasDrawOccurred(week.startDate, d, 0);
+        if (isPast) {
+          html += `<td colspan="4" class="number-cell holiday">HOLIDAY</td>`;
+          continue;
+        }
+      }
+
+      for (let s = 0; s < slots.length; s++) {
+        const slot = slots[s];
+        const val = day ? day.draws[slot] : null;
+        const hasOccurred = hasDrawOccurred(week.startDate, d, s);
+        const num = val && val !== "-" && val !== "PENDING" ? parseInt(val, 10) : null;
+        
+        // Check if this is a pending draw (future)
+        const isPending = !hasOccurred && (!num || val === "PENDING" || val === "-");
+        
+        if (isPending) {
+          html += `<td class="number-cell pending">...</td>`;
+          continue;
+        }
+
+        if (num && hasOccurred) {
+          // Check if this is the LAST occurrence of this number
+          const isLast = lastOccurrence[num] && 
+                         lastOccurrence[num].week === week && 
+                         lastOccurrence[num].day === dayNames[d] &&
+                         lastOccurrence[num].slot === slot;
+          
+          const isShelf = isShelfMark(num);
+          
+          // Check if this is Leaving or Meeting number
+          const isLeaving = (num === leavingNumber);
+          const isMeeting = (num === meetingNumber);
+          
+          let cellClass = 'number-cell';
+          let style = '';
+          
+          const displayNum = trimLeadingZeros(String(num));
+          
+          if (isLeaving) {
+            cellClass += ' leaving-highlight';
+            style = 'background:#00f2ff !important; color:#000000 !important; font-weight:900;';
+          } else if (isMeeting) {
+            cellClass += ' meeting-highlight';
+            style = 'background:#ff9d00 !important; color:#000000 !important; font-weight:900;';
+          } else if (isShelf && isLast) {
+            cellClass += ' shelf-mark';
+            style = 'color:#ff0000 !important; font-weight:900; background:#e8f5e9 !important;';
+          }
+          
+          html += `
+            <td class="${cellClass}" style="${style}">
+              ${displayNum}
+            </td>
+          `;
+        } else if (!num && hasOccurred) {
+          html += `<td class="number-cell missing">--</td>`;
+        } else {
+          html += `<td class="number-cell pending">...</td>`;
+        }
+      }
+    }
+    html += `</tr>`;
+  });
+
+  html += `
+      </tbody>
+    </table>
+    
+    <!-- Shelf Marks Table -->
+    <div class="shelf-marks-table-wrapper">
+      <div class="shelf-title">
+        <span>🔴 SHELF MARKS</span>
+        <span class="count">${shelfMarksData.length} marks • ${shelfMarksData.filter(m => m.days > 21).length} overdue</span>
+      </div>
+      <table class="shelf-marks-table">
+        <thead>
+          <tr>
+            <th>MARK</th>
+            <th>LAST PLAYED</th>
+            <th>DAYS AGO</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${shelfMarksData.length > 0 ? shelfMarksData.map(m => {
+            let badgeClass = 'monitor';
+            if (m.days > 21) badgeClass = 'critical';
+            else if (m.days > 14) badgeClass = 'warning';
+            
+            return `
+              <tr>
+                <td class="mark-cell">${m.displayNum}</td>
+                <td class="last-played-cell">${m.lastPlayed}</td>
+                <td class="days-cell"><span class="days-badge ${badgeClass}">${m.days}d</span></td>
+              </tr>
+            `;
+          }).join('') : `
+            <tr>
+              <td colspan="3" class="no-data">✅ No shelf marks</td>
+            </tr>
+          `}
+        </tbody>
+      </table>
+    </div>
+    
+    <!-- Compact Legend -->
+    <div class="green-chart-legend">
+      <span style="font-weight:bold; color:#000000;">LEGEND:</span>
+      <div class="legend-item">
+        <span class="legend-dot leaving"></span>
+        <span style="color:#000000;">Leaving</span>
+      </div>
+      <span class="legend-spacer">|</span>
+      <div class="legend-item">
+        <span class="legend-dot meeting"></span>
+        <span style="color:#000000;">Meeting</span>
+      </div>
+      <span class="legend-spacer">|</span>
+      <div class="legend-item">
+        <span class="legend-dot shelf"></span>
+        <span style="color:#000000;">Shelf</span>
+      </div>
+      <span class="legend-spacer">|</span>
+      <div class="legend-item">
+        <span class="legend-dot normal"></span>
+        <span style="color:#000000;">Played</span>
+      </div>
+      <span class="legend-spacer">|</span>
+      <div class="legend-item">
+        <span class="legend-dot holiday-dot"></span>
+        <span style="color:#000000;">Holiday</span>
+      </div>
+      <span class="legend-spacer">|</span>
+      <div class="legend-item">
+        <span class="legend-dot pending-dot"></span>
+        <span style="color:#000000;">Pending</span>
+      </div>
+      <div class="legend-item" style="margin-left:auto;">
+        <span style="font-size:5px; color:#666;">${new Date().toLocaleDateString()}</span>
+      </div>
+    </div>
+  </div>
+  `;
+
+  return html;
+}
+//////////////////////////////////////////
+// Play Whe Green Chart V2
+// ======================================
+// PLAY WHE GREEN CHART - Version 2
+// 25 weeks of data with green background, black text, red shelf marks (no border)
+// Shelf marks ONLY appear on the LAST time the number was played
+// Numbers are bold and trimmed (no leading zeros)
+// THREE CATEGORIES: Doubles, Triples, Quadruples with colored ball indicators
+// Legend shows: White = Missing, Purple = Pending from Last Week, Green = 1 Hit Current Week
+// Fully responsive - fits any screen without horizontal scroll
+// ======================================
+function renderPlayWheGreenChartv2(weeksData) {
+  if (!weeksData || weeksData.length === 0) {
+    return `
+      <div style="background: #e8f5e9; border-radius: 4px; padding: 20px; text-align:center; border: 2px solid #2d8a4e; font-family: 'Courier New', monospace;">
+        <span style="color: #2d8a4e; font-weight: bold;">📊 Loading Green Chart...</span>
+      </div>
+    `;
+  }
+
+  // Sort weeks chronologically
+  const sortedWeeks = [...weeksData].sort((a, b) => {
+    let pa = a.startDate.split(" ");
+    let pb = b.startDate.split(" ");
+    return new Date(pa[2] + "-" + pa[1] + "-" + pa[0]) - new Date(pb[2] + "-" + pb[1] + "-" + pb[0]);
+  });
+
+  // Get the last 25 weeks
+  const displayWeeks = sortedWeeks.slice(-25);
+  
+  // Get current week and previous week
+  const currentWeek = displayWeeks[displayWeeks.length - 1];
+  const previousWeek = displayWeeks.length >= 2 ? displayWeeks[displayWeeks.length - 2] : currentWeek;
+
+  const dayNames = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+  const dayShort = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
+  const slots = ["MOR", "MID", "NON", "EVE"];
+  const doubleNumbers = [8, 11, 22, 33];
+
+  // Helper to trim leading zeros
+  function trimLeadingZeros(str) {
+    if (!str) return "";
+    const num = parseInt(str, 10);
+    return !isNaN(num) ? num.toString() : str;
+  }
+
+  // Helper to get draw number
+  function getDrawNumber(week, dayName, slot) {
+    if (!week) return null;
+    const day = week.days.find(d => d.dayName === dayName);
+    if (!day) return null;
+    const val = day.draws[slot];
+    if (!val || val === "-" || val === "PENDING" || val === "HOLIDAY") return null;
+    const num = parseInt(val, 10);
+    return !isNaN(num) && num >= 1 && num <= 36 ? num : null;
+  }
+
+  // Helper to check if a draw has actually occurred
+  function hasDrawOccurred(weekStartDate, dayIndex, slotIndex) {
+    if (!weekStartDate) return false;
+    const parts = weekStartDate.split(" ");
+    const monthMap = {"Jan":0,"Feb":1,"Mar":2,"Apr":3,"May":4,"Jun":5,"Jul":6,"Aug":7,"Sep":8,"Oct":9,"Nov":10,"Dec":11};
+    const startDate = new Date(parts[2], monthMap[parts[1]], parseInt(parts[0]));
+    const targetDate = new Date(startDate);
+    targetDate.setDate(startDate.getDate() + dayIndex);
+    const timeOffsets = [9, 12, 15, 18];
+    targetDate.setHours(timeOffsets[slotIndex] || 12);
+    return targetDate < new Date();
+  }
+
+  // Helper to get the date of a specific draw
+  function getDrawDate(weekStartDate, dayIndex, slotIndex) {
+    if (!weekStartDate) return null;
+    const parts = weekStartDate.split(" ");
+    const monthMap = {"Jan":0,"Feb":1,"Mar":2,"Apr":3,"May":4,"Jun":5,"Jul":6,"Aug":7,"Sep":8,"Oct":9,"Nov":10,"Dec":11};
+    const startDate = new Date(parts[2], monthMap[parts[1]], parseInt(parts[0]));
+    const targetDate = new Date(startDate);
+    targetDate.setDate(startDate.getDate() + dayIndex);
+    return targetDate;
+  }
+
+  // Helper to check if a specific draw time has passed
+  function isDrawTimePassed(weekStartDate, dayIndex, slotIndex) {
+    if (!weekStartDate) return false;
+    const parts = weekStartDate.split(" ");
+    const monthMap = {"Jan":0,"Feb":1,"Mar":2,"Apr":3,"May":4,"Jun":5,"Jul":6,"Aug":7,"Sep":8,"Oct":9,"Nov":10,"Dec":11};
+    const startDate = new Date(parts[2], monthMap[parts[1]], parseInt(parts[0]));
+    const targetDate = new Date(startDate);
+    targetDate.setDate(startDate.getDate() + dayIndex);
+    const timeOffsets = [9, 12, 15, 18];
+    targetDate.setHours(timeOffsets[slotIndex] || 12);
+    return targetDate < new Date();
+  }
+
+  // Helper to check if a day has passed
+  function isDayPassed(weekStartDate, dayIndex) {
+    if (!weekStartDate) return false;
+    const parts = weekStartDate.split(" ");
+    const monthMap = {"Jan":0,"Feb":1,"Mar":2,"Apr":3,"May":4,"Jun":5,"Jul":6,"Aug":7,"Sep":8,"Oct":9,"Nov":10,"Dec":11};
+    const startDate = new Date(parts[2], monthMap[parts[1]], parseInt(parts[0]));
+    const targetDate = new Date(startDate);
+    targetDate.setDate(startDate.getDate() + dayIndex);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    return targetDate < today;
+  }
+
+  // SCAN ALL WEEKS to find the LAST occurrence of each number
+  const lastOccurrence = {};
+  
+  // Get today's information
+  const today = new Date();
+  const todayDay = today.getDay();
+  const todayHour = today.getHours();
+  
+  // Determine current slot
+  let currentSlot = -1;
+  if (todayHour >= 9 && todayHour < 12) currentSlot = 0;
+  else if (todayHour >= 12 && todayHour < 15) currentSlot = 1;
+  else if (todayHour >= 15 && todayHour < 18) currentSlot = 2;
+  else if (todayHour >= 18) currentSlot = 3;
+  
+  // SCAN BACKWARDS from current moment
+  // First scan current week from current day backwards
+  for (let d = todayDay; d >= 0; d--) {
+    const maxSlot = (d === todayDay) ? currentSlot : slots.length - 1;
+    for (let s = maxSlot; s >= 0; s--) {
+      if (hasDrawOccurred(currentWeek.startDate, d, s)) {
+        const num = getDrawNumber(currentWeek, dayNames[d], slots[s]);
+        if (num && !lastOccurrence[num]) {
+          lastOccurrence[num] = {
+            week: currentWeek,
+            weekIndex: displayWeeks.length - 1,
+            day: dayNames[d],
+            slot: slots[s],
+            dayIndex: d,
+            slotIndex: s,
+            date: getDrawDate(currentWeek.startDate, d, s)
+          };
+        }
+      }
+    }
+  }
+  
+  // Then scan previous weeks from last to first
+  for (let w = sortedWeeks.length - 2; w >= 0; w--) {
+    const week = sortedWeeks[w];
+    for (let d = dayNames.length - 1; d >= 0; d--) {
+      for (let s = slots.length - 1; s >= 0; s--) {
+        if (hasDrawOccurred(week.startDate, d, s)) {
+          const num = getDrawNumber(week, dayNames[d], slots[s]);
+          if (num && !lastOccurrence[num]) {
+            lastOccurrence[num] = {
+              week: week,
+              weekIndex: w,
+              day: dayNames[d],
+              slot: slots[s],
+              dayIndex: d,
+              slotIndex: s,
+              date: getDrawDate(week.startDate, d, s)
+            };
+          }
+        }
+      }
+    }
+  }
+
+  // Calculate days since last played for each number
+function getDaysSince(num) {
+  if (!lastOccurrence[num]) return 999;
+  const lastDate = lastOccurrence[num].date;
+  if (!lastDate) return 999;
+  
+  // Create a date at midnight for the last occurrence
+  const lastMidnight = new Date(lastDate);
+  lastMidnight.setHours(0, 0, 0, 0);
+  
+  // Create a date at midnight for today
+  const todayMidnight = new Date();
+  todayMidnight.setHours(0, 0, 0, 0);
+  
+  // Calculate the difference in days
+  const diffTime = todayMidnight.getTime() - lastMidnight.getTime();
+  const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+  
+  return Math.max(0, diffDays);
+}
+
+  // Get the date string for display
+  function getDateString(num) {
+    if (!lastOccurrence[num]) return "Never";
+    const last = lastOccurrence[num];
+    if (!last.date) return "Never";
+    const date = new Date(last.date);
+    const day = date.getDate();
+    const month = date.toLocaleString('default', { month: 'short' });
+    const year = date.getFullYear();
+    return `${day} ${month} ${year}`;
+  }
+
+  // Get current week draws (only occurred)
+  const currentWeekDraws = [];
+  for (let d = 0; d < dayNames.length; d++) {
+    for (let s = 0; s < slots.length; s++) {
+      if (hasDrawOccurred(currentWeek.startDate, d, s)) {
+        const draw = getDrawNumber(currentWeek, dayNames[d], slots[s]);
+        if (draw) currentWeekDraws.push(draw);
+      }
+    }
+  }
+
+  // Get previous week draws
+  const previousWeekDraws = [];
+  for (const day of dayNames) {
+    for (const slot of slots) {
+      const draw = getDrawNumber(previousWeek, day, slot);
+      if (draw) previousWeekDraws.push(draw);
+    }
+  }
+
+  // Count occurrences in previous and current week
+  const prevWeekCounts = {};
+  const currWeekCounts = {};
+  for (let i = 1; i <= 36; i++) {
+    prevWeekCounts[i] = 0;
+    currWeekCounts[i] = 0;
+  }
+  previousWeekDraws.forEach(num => { prevWeekCounts[num] = (prevWeekCounts[num] || 0) + 1; });
+  currentWeekDraws.forEach(num => { currWeekCounts[num] = (currWeekCounts[num] || 0) + 1; });
+
+  // Determine if a number is a shelf mark
+  function isShelfMark(num) {
+    const days = getDaysSince(num);
+    if (days === "Never") return false;
+    if (days === 0) return false;
+    
+    // If played in current week, NOT a shelf mark
+    if (currentWeekDraws.includes(num)) return false;
+    
+    // Check if scheduled for future in current week
+    for (let d = 0; d < dayNames.length; d++) {
+      for (let s = 0; s < slots.length; s++) {
+        if (d < todayDay || (d === todayDay && s <= currentSlot)) continue;
+        const draw = getDrawNumber(currentWeek, dayNames[d], slots[s]);
+        if (draw === num) {
+          return false; // Scheduled for future
+        }
+      }
+    }
+    
+    // Shelf mark if over 14 days
+    return days > 14;
+  }
+
+  // Get shelf marks with their data
+  const shelfMarksData = [];
+  for (let i = 1; i <= 36; i++) {
+    if (isShelfMark(i)) {
+      const days = getDaysSince(i);
+      const dateStr = getDateString(i);
+      shelfMarksData.push({
+        number: i,
+        days: days,
+        lastPlayed: dateStr,
+        displayNum: trimLeadingZeros(String(i))
+      });
+    }
+  }
+  
+  // Sort shelf marks by days (most overdue first)
+  shelfMarksData.sort((a, b) => b.days - a.days);
+
+  // --- Calculate Combined Categories (HIDE COMPLETED) ---
+  
+  // DOUBLES CATEGORY (Only 8, 11, 22, 33) - Hide completed
+  const doubles = [];
+  doubleNumbers.forEach(num => {
+    const prevCount = prevWeekCounts[num] || 0;
+    const currCount = currWeekCounts[num] || 0;
+    
+    // SKIP if already completed (currCount >= 2)
+    if (currCount >= 2) return;
+    
+    let status = 0;
+    let label = 'Missing';
+    let color = '#ffffff';
+    let textColor = '#000000';
+    
+    if (prevCount === 1 && currCount === 0) {
+      status = 1;
+      label = 'Pending (LW)';
+      color = '#7c02b5';
+      textColor = '#ffffff';
+    } else if (currCount === 1) {
+      status = 2;
+      label = '1 Hit (CW)';
+      color = '#32d74b';
+      textColor = '#000000';
+    }
+    
+    doubles.push({
+      num: num,
+      status: status,
+      label: label,
+      color: color,
+      textColor: textColor,
+      display: trimLeadingZeros(String(num))
+    });
+  });
+
+  // TRIPLES CATEGORY - Hide completed (currCount >= 3)
+  const triples = [];
+  for (let i = 1; i <= 36; i++) {
+    const prevCount = prevWeekCounts[i] || 0;
+    const currCount = currWeekCounts[i] || 0;
+    
+    // SKIP if already completed (currCount >= 3)
+    if (currCount >= 3) continue;
+    
+    let include = false;
+    let status = 0;
+    let label = 'Pending';
+    let color = '#7c02b5';
+    let textColor = '#ffffff';
+    
+    if (prevCount === 2 && currCount === 0) {
+      include = true;
+      status = 1;
+      label = 'Pending (LW)';
+      color = '#7c02b5';
+      textColor = '#ffffff';
+    } else if (currCount === 2) {
+      include = true;
+      status = 2;
+      label = '2 Hits (CW)';
+      color = '#32d74b';
+      textColor = '#000000';
+    }
+    
+    if (include) {
+      triples.push({
+        num: i,
+        status: status,
+        label: label,
+        color: color,
+        textColor: textColor,
+        display: trimLeadingZeros(String(i))
+      });
+    }
+  }
+  triples.sort((a, b) => a.num - b.num);
+
+  // QUADRUPLES CATEGORY - Hide completed (currCount >= 4)
+  const quadruples = [];
+  for (let i = 1; i <= 36; i++) {
+    const prevCount = prevWeekCounts[i] || 0;
+    const currCount = currWeekCounts[i] || 0;
+    
+    // SKIP if already completed (currCount >= 4)
+    if (currCount >= 4) continue;
+    
+    let include = false;
+    let status = 0;
+    let label = 'Pending';
+    let color = '#7c02b5';
+    let textColor = '#ffffff';
+    
+    if (prevCount === 3 && currCount === 0) {
+      include = true;
+      status = 1;
+      label = 'Pending (LW)';
+      color = '#7c02b5';
+      textColor = '#ffffff';
+    } else if (currCount === 3) {
+      include = true;
+      status = 2;
+      label = '3 Hits (CW)';
+      color = '#32d74b';
+      textColor = '#000000';
+    }
+    
+    if (include) {
+      quadruples.push({
+        num: i,
+        status: status,
+        label: label,
+        color: color,
+        textColor: textColor,
+        display: trimLeadingZeros(String(i))
+      });
+    }
+  }
+  quadruples.sort((a, b) => a.num - b.num);
+
+  // =====================================
+  // LEAVING & MEETING LOGIC
+  // =====================================
+  function findLeavingMeeting() {
+    let leavingNumber = null;
+    let meetingNumber = null;
+    let leavingSlot = null;
+    let meetingSlot = null;
+    let leavingDay = null;
+    let meetingDay = null;
+    let leavingDayIdx = -1;
+    let leavingSlotIdx = -1;
+    
+    // Find leaving number - scan backwards from current position
+    for (let d = todayDay; d >= 0; d--) {
+      const maxSlot = (d === todayDay) ? currentSlot : slots.length - 1;
+      for (let s = maxSlot; s >= 0; s--) {
+        if (hasDrawOccurred(currentWeek.startDate, d, s)) {
+          const draw = getDrawNumber(currentWeek, dayNames[d], slots[s]);
+          if (draw) {
+            leavingNumber = draw;
+            leavingSlot = slots[s];
+            leavingDay = dayNames[d];
+            leavingDayIdx = d;
+            leavingSlotIdx = s;
+            break;
+          }
+        }
+      }
+      if (leavingNumber) break;
+    }
+    
+    // If no leaving number in current week, search previous weeks
+    if (!leavingNumber) {
+      for (let w = sortedWeeks.length - 2; w >= 0; w--) {
+        const week = sortedWeeks[w];
+        for (let d = dayNames.length - 1; d >= 0; d--) {
+          for (let s = slots.length - 1; s >= 0; s--) {
+            if (hasDrawOccurred(week.startDate, d, s)) {
+              const draw = getDrawNumber(week, dayNames[d], slots[s]);
+              if (draw) {
+                leavingNumber = draw;
+                leavingSlot = slots[s];
+                leavingDay = dayNames[d];
+                leavingDayIdx = d;
+                leavingSlotIdx = s;
+                break;
+              }
+            }
+          }
+          if (leavingNumber) break;
+        }
+        if (leavingNumber) break;
+      }
+    }
+    
+    // Find meeting number - next slot after leaving
+    if (leavingDayIdx !== -1 && leavingSlotIdx !== -1) {
+      let nextDayIdx = leavingDayIdx;
+      let nextSlotIdx = leavingSlotIdx + 1;
+      
+      if (nextSlotIdx >= slots.length) {
+        nextSlotIdx = 0;
+        nextDayIdx = leavingDayIdx + 1;
+      }
+      
+      if (nextDayIdx >= dayNames.length) {
+        nextDayIdx = 0;
+      }
+      
+      // Try current week first
+      if (hasDrawOccurred(currentWeek.startDate, nextDayIdx, nextSlotIdx)) {
+        const draw = getDrawNumber(currentWeek, dayNames[nextDayIdx], slots[nextSlotIdx]);
+        if (draw) {
+          meetingNumber = draw;
+          meetingSlot = slots[nextSlotIdx];
+          meetingDay = dayNames[nextDayIdx];
+        }
+      }
+      
+      // If not found in current week, try previous weeks
+      if (!meetingNumber) {
+        for (let w = sortedWeeks.length - 2; w >= 0; w--) {
+          if (hasDrawOccurred(sortedWeeks[w].startDate, nextDayIdx, nextSlotIdx)) {
+            const draw = getDrawNumber(sortedWeeks[w], dayNames[nextDayIdx], slots[nextSlotIdx]);
+            if (draw) {
+              meetingNumber = draw;
+              meetingSlot = slots[nextSlotIdx];
+              meetingDay = dayNames[nextDayIdx];
+              break;
+            }
+          }
+        }
+      }
+    }
+    
+    return { leavingNumber, meetingNumber, leavingSlot, meetingSlot, leavingDay, meetingDay };
+  }
+
+  const { leavingNumber, meetingNumber, leavingSlot, meetingSlot, leavingDay, meetingDay } = findLeavingMeeting();
+
+  // Build category HTML with centered layout and count
+  function buildCategoryBalls(categoryData, title, icon, colorClass) {
+    if (!categoryData || categoryData.length === 0) {
+      return `
+        <div class="category-group ${colorClass}">
+          <div class="category-title">${icon} ${title}</div>
+          <div class="category-balls"><span style="color:#999; font-size:8px;">None</span></div>
+          <div class="category-count">(0)</div>
+        </div>
+      `;
+    }
+    
+    let ballsHtml = categoryData.map(item => {
+      let borderStyle = '1px solid #2d8a4e';
+      if (item.status === 0) {
+        borderStyle = '1px solid #999';
+      } else if (item.status === 1) {
+        borderStyle = '2px solid #7c02b5';
+      } else if (item.status === 2) {
+        borderStyle = '2px solid #32d74b';
+      }
+      
+      return `
+        <div class="category-ball" style="
+          display: inline-flex;
+          flex-direction: column;
+          align-items: center;
+          margin: 0 1px;
+        ">
+          <div style="
+            width: 14px;
+            height: 14px;
+            background: ${item.color};
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 11px;
+            font-weight: 900;
+            color: ${item.textColor};
+            border: ${borderStyle};
+            line-height: 14px;
+          ">${item.display}</div>
+        </div>
+      `;
+    }).join('');
+    
+    return `
+      <div class="category-group ${colorClass}">
+        <div class="category-title">${icon} ${title} <span class="category-count">(${categoryData.length})</span></div>
+        <div class="category-balls">${ballsHtml}</div>
+      </div>
+    `;
+  }
+
+  // Build the HTML
+  let html = `
+  <style>
+    .green-chart-wrapper {
+      background: #e8f5e9;
+      border-radius: 4px;
+      padding: 4px 2px;
+      border: 2px solid #2d8a4e;
+      font-family: 'Courier New', monospace;
+      max-width: 100%;
+      overflow: hidden;
+    }
+    
+    .green-chart-wrapper table {
+      width: 100%;
+      border-collapse: collapse;
+      background: #e8f5e9;
+      table-layout: fixed;
+    }
+    
+    .green-chart-wrapper th {
+      background: #2d8a4e;
+      color: #ffffff;
+      padding: 2px 1px;
+      text-align: center;
+      font-weight: bold;
+      font-size: 7px;
+      border: 1px solid #1a6b3a;
+    }
+    
+    .green-chart-wrapper td {
+      padding: 2px 1px;
+      text-align: center;
+      border: 1px solid #2d8a4e;
+      font-weight: bold;
+      font-size: 12px;
+      background: #e8f5e9;
+      color: #000000;
+    }
+    
+    .green-chart-wrapper .time-header {
+      background: #c8e6c9;
+      color: #1a6b3a;
+      font-size: 6px;
+      font-weight: bold;
+      padding: 1px 0;
+    }
+    
+    .green-chart-wrapper .day-header {
+      background: #a5d6a7;
+      color: #1a6b3a;
+      font-size: 7px;
+      font-weight: bold;
+      padding: 2px 0;
+    }
+    
+    .green-chart-wrapper .number-cell {
+      font-weight: 900;
+      font-size: 12px;
+      padding: 1px 0;
+      color: #000000;
+      background: #e8f5e9;
+    }
+    
+    .green-chart-wrapper .number-cell.leaving-highlight {
+      background: #00f2ff !important;
+      color: #000000 !important;
+      font-weight: 900;
+      font-size: 14px;
+      border-color: #00d4e6 !important;
+      box-shadow: inset 0 0 8px rgba(0, 242, 255, 0.3);
+    }
+    
+    .green-chart-wrapper .number-cell.meeting-highlight {
+      background: #ff9d00 !important;
+      color: #000000 !important;
+      font-weight: 900;
+      font-size: 14px;
+      border-color: #e68a00 !important;
+      box-shadow: inset 0 0 8px rgba(255, 157, 0, 0.3);
+    }
+    
+    .green-chart-wrapper .number-cell.shelf-mark {
+      color: #ff0000 !important;
+      font-weight: 900;
+      font-size: 14px;
+      background: #e8f5e9 !important;
+      border-color: #2d8a4e !important;
+    }
+    
+    .green-chart-wrapper .number-cell.holiday {
+      background: #e8f5e9 !important;
+      color: #999 !important;
+      font-size: 7px;
+      padding: 3px 0;
+      font-weight: normal;
+    }
+    
+    .green-chart-wrapper .number-cell.pending {
+      background: #e8f5e9 !important;
+      color: #aaa !important;
+      font-size: 8px;
+      font-weight: normal;
+    }
+    
+    .green-chart-wrapper .number-cell.missing {
+      background: #e8f5e9 !important;
+      color: #ccc !important;
+      font-size: 8px;
+      font-weight: normal;
+    }
+    
+    /* Categories Container - Centered */
+    .categories-container {
+      background: #e8f5e9;
+      padding: 6px 4px;
+      border: 1px solid #2d8a4e;
+      border-top: none;
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      align-items: stretch;
+      gap: 6px 10px;
+      font-family: 'Courier New', monospace;
+    }
+    
+    .categories-container .category-group {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 3px;
+      padding: 4px 8px;
+      background: rgba(255,255,255,0.4);
+      border-radius: 6px;
+      border: 1px solid rgba(45, 138, 78, 0.15);
+      min-width: 80px;
+      flex: 0 1 auto;
+      text-align: center;
+    }
+    
+    .categories-container .category-group.doubles {
+      border-top: 3px solid #32d74b;
+    }
+    
+    .categories-container .category-group.triples {
+      border-top: 3px solid #ff9d00;
+    }
+    
+    .categories-container .category-group.quadruples {
+      border-top: 3px solid #ff375f;
+    }
+    
+    .categories-container .category-title {
+      font-size: 9px;
+      font-weight: 800;
+      color: #000000;
+      letter-spacing: 0.5px;
+    }
+    
+    .categories-container .category-title .category-count {
+      font-size: 8px;
+      color: #666;
+      font-weight: normal;
+    }
+    
+    .categories-container .category-balls {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      align-items: center;
+      gap: 2px;
+    }
+    
+    /* Category Legend */
+    .category-legend {
+      background: #e8f5e9;
+      padding: 2px 6px;
+      border: 1px solid #2d8a4e;
+      border-top: none;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 4px 8px;
+      font-family: 'Courier New', monospace;
+      font-size: 7px;
+    }
+    
+    .category-legend .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 3px;
+      color: #000000;
+    }
+    
+    .category-legend .legend-ball {
+      display: inline-block;
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      border: 1px solid #2d8a4e;
+      flex-shrink: 0;
+    }
+    
+    .category-legend .legend-ball.white {
+      background: #ffffff;
+      border-color: #999;
+    }
+    
+    .category-legend .legend-ball.purple {
+      background: #7c02b5;
+      border-color: #7c02b5;
+    }
+    
+    .category-legend .legend-ball.green {
+      background: #32d74b;
+      border-color: #32d74b;
+    }
+    
+    /* Shelf Marks Table */
+    .shelf-marks-table-wrapper {
+      background: #e8f5e9;
+      border: 1px solid #2d8a4e;
+      border-top: none;
+      padding: 4px 6px;
+      font-family: 'Courier New', monospace;
+    }
+    
+    .shelf-marks-table-wrapper .shelf-title {
+      font-size: 8px;
+      font-weight: bold;
+      color: #000000;
+      margin-bottom: 4px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    
+    .shelf-marks-table-wrapper .shelf-title .count {
+      color: #ff0000;
+      font-size: 10px;
+    }
+    
+    .shelf-marks-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 8px;
+    }
+    
+    .shelf-marks-table th {
+      background: #2d8a4e;
+      color: #ffffff;
+      padding: 3px 4px;
+      text-align: left;
+      font-weight: bold;
+      font-size: 7px;
+      border: 1px solid #1a6b3a;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    
+    .shelf-marks-table td {
+      padding: 3px 4px;
+      border: 1px solid #2d8a4e;
+      font-size: 8px;
+      color: #000000;
+      background: #e8f5e9;
+    }
+    
+    .shelf-marks-table .mark-cell {
+      font-weight: 900;
+      font-size: 10px;
+      color: #ff0000;
+      text-align: center;
+      width: 15%;
+    }
+    
+    .shelf-marks-table .last-played-cell {
+      text-align: center;
+      width: 50%;
+      font-size: 7px;
+      color: #333;
+    }
+    
+    .shelf-marks-table .days-cell {
+      text-align: center;
+      width: 35%;
+      font-weight: bold;
+    }
+    
+    .shelf-marks-table .days-cell .days-badge {
+      display: inline-block;
+      padding: 1px 6px;
+      border-radius: 10px;
+      font-size: 8px;
+      font-weight: 900;
+    }
+    
+    .shelf-marks-table .days-cell .days-badge.critical {
+      background: #ff453a;
+      color: #ffffff;
+    }
+    
+    .shelf-marks-table .days-cell .days-badge.warning {
+      background: #ff9f0a;
+      color: #ffffff;
+    }
+    
+    .shelf-marks-table .days-cell .days-badge.monitor {
+      background: #ffd60a;
+      color: #000000;
+    }
+    
+    .shelf-marks-table .no-data {
+      text-align: center;
+      padding: 10px;
+      color: #32d74b;
+      font-weight: bold;
+      font-size: 9px;
+    }
+    
+    /* Leaving/Meeting Legend Items */
+    .green-chart-legend .legend-dot.leaving {
+      background: #00f2ff;
+      border-color: #00d4e6;
+    }
+    
+    .green-chart-legend .legend-dot.meeting {
+      background: #ff9d00;
+      border-color: #e68a00;
+    }
+    
+    /* Legend - Compact */
+    .green-chart-legend {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      padding: 2px 4px;
+      background: #e8f5e9;
+      border: 1px solid #2d8a4e;
+      border-top: none;
+      font-size: 7px;
+      font-family: 'Courier New', monospace;
+      flex-wrap: wrap;
+      color: #000000;
+    }
+    
+    .green-chart-legend .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 2px;
+      color: #000000;
+    }
+    
+    .green-chart-legend .legend-dot {
+      display: inline-block;
+      width: 6px;
+      height: 6px;
+      border-radius: 1px;
+      border: 1px solid #2d8a4e;
+      flex-shrink: 0;
+    }
+    
+    .green-chart-legend .legend-dot.shelf {
+      background: #e8f5e9;
+      border-color: #ff0000;
+    }
+    
+    .green-chart-legend .legend-dot.normal {
+      background: #e8f5e9;
+    }
+    
+    .green-chart-legend .legend-dot.holiday-dot {
+      background: #e8f5e9;
+      border-color: #ccc;
+    }
+    
+    .green-chart-legend .legend-dot.pending-dot {
+      background: #e8f5e9;
+      border-color: #ccc;
+    }
+    
+    .green-chart-legend .legend-spacer {
+      color: #999;
+    }
+    
+    /* Responsive */
+    @media (max-width: 768px) {
+      .green-chart-wrapper {
+        padding: 3px 1px;
+      }
+      
+      .green-chart-wrapper th {
+        font-size: 6px;
+        padding: 2px 0;
+      }
+      
+      .green-chart-wrapper td {
+        font-size: 12px;
+        padding: 2px 0;
+      }
+      
+      .green-chart-wrapper .number-cell {
+        font-size: 12px;
+      }
+      
+      .green-chart-wrapper .number-cell.leaving-highlight,
+      .green-chart-wrapper .number-cell.meeting-highlight,
+      .green-chart-wrapper .number-cell.shelf-mark {
+        font-size: 12px;
+      }
+      
+      .green-chart-wrapper .time-header {
+        font-size: 5px;
+        padding: 1px 0;
+      }
+      
+      .green-chart-wrapper .day-header {
+        font-size: 6px;
+        padding: 2px 0;
+      }
+      
+      .categories-container {
+        padding: 4px 3px;
+        gap: 4px 6px;
+      }
+      
+      .categories-container .category-group {
+        padding: 3px 6px;
+        min-width: 60px;
+      }
+      
+      .categories-container .category-title {
+        font-size: 8px;
+      }
+      
+      .category-legend {
+        font-size: 6px;
+        padding: 2px 4px;
+        gap: 3px 5px;
+      }
+      
+      .category-legend .legend-ball {
+        width: 8px;
+        height: 8px;
+      }
+      
+      .shelf-marks-table {
+        font-size: 7px;
+      }
+      
+      .shelf-marks-table th {
+        font-size: 6px;
+        padding: 2px 3px;
+      }
+      
+      .shelf-marks-table td {
+        font-size: 7px;
+        padding: 2px 3px;
+      }
+      
+      .shelf-marks-table .mark-cell {
+        font-size: 9px;
+      }
+      
+      .shelf-marks-table .last-played-cell {
+        font-size: 6px;
+      }
+      
+      .shelf-marks-table .days-cell .days-badge {
+        font-size: 7px;
+        padding: 1px 4px;
+      }
+    }
+    
+    @media (max-width: 480px) {
+      .green-chart-wrapper {
+        padding: 2px 1px;
+      }
+      
+      .green-chart-wrapper th {
+        font-size: 5px;
+        padding: 1px 0;
+      }
+      
+      .green-chart-wrapper td {
+        font-size: 12px;
+        padding: 1px 0;
+      }
+      
+      .green-chart-wrapper .number-cell {
+        font-size: 8px;
+      }
+      
+      .green-chart-wrapper .number-cell.leaving-highlight,
+      .green-chart-wrapper .number-cell.meeting-highlight,
+      .green-chart-wrapper .number-cell.shelf-mark {
+        font-size: 10px;
+      }
+      
+      .green-chart-wrapper .time-header {
+        font-size: 4px;
+        padding: 0;
+      }
+      
+      .green-chart-wrapper .day-header {
+        font-size: 5px;
+        padding: 1px 0;
+      }
+      
+      .categories-container {
+        padding: 3px 2px;
+        gap: 3px 4px;
+      }
+      
+      .categories-container .category-group {
+        padding: 2px 4px;
+        min-width: 50px;
+      }
+      
+      .categories-container .category-title {
+        font-size: 7px;
+      }
+      
+      .categories-container .category-balls .category-ball div {
+        width: 12px !important;
+        height: 12px !important;
+        font-size: 9px !important;
+      }
+      
+      .category-legend {
+        font-size: 5px;
+        padding: 2px 3px;
+        gap: 2px 4px;
+      }
+      
+      .category-legend .legend-ball {
+        width: 7px;
+        height: 7px;
+      }
+      
+      .shelf-marks-table-wrapper {
+        padding: 2px 3px;
+      }
+      
+      .shelf-marks-table-wrapper .shelf-title {
+        font-size: 7px;
+      }
+      
+      .shelf-marks-table {
+        font-size: 6px;
+      }
+      
+      .shelf-marks-table th {
+        font-size: 5px;
+        padding: 2px 2px;
+      }
+      
+      .shelf-marks-table td {
+        font-size: 6px;
+        padding: 2px 2px;
+      }
+      
+      .shelf-marks-table .mark-cell {
+        font-size: 8px;
+      }
+      
+      .shelf-marks-table .last-played-cell {
+        font-size: 5px;
+      }
+      
+      .shelf-marks-table .days-cell .days-badge {
+        font-size: 6px;
+        padding: 1px 3px;
+      }
+      
+      .green-chart-legend {
+        padding: 2px 3px;
+        gap: 3px;
+        font-size: 6px;
+      }
+      
+      .green-chart-legend .legend-dot {
+        width: 4px;
+        height: 4px;
+      }
+    }
+    
+    @media (max-width: 380px) {
+      .green-chart-wrapper td {
+        font-size: 12px;
+        padding: 0.5px 0;
+      }
+      
+      .green-chart-wrapper .number-cell {
+        font-size: 12px;
+      }
+      
+      .green-chart-wrapper .number-cell.leaving-highlight,
+      .green-chart-wrapper .number-cell.meeting-highlight,
+      .green-chart-wrapper .number-cell.shelf-mark {
+        font-size: 12px;
+      }
+      
+      .green-chart-wrapper th {
+        font-size: 4px;
+      }
+      
+      .green-chart-wrapper .time-header {
+        font-size: 3px;
+      }
+      
+      .green-chart-wrapper .day-header {
+        font-size: 4px;
+      }
+      
+      .categories-container .category-title {
+        font-size: 6px;
+      }
+      
+      .categories-container .category-balls .category-ball div {
+        width: 10px !important;
+        height: 10px !important;
+        font-size: 7px !important;
+      }
+    }
+    
+    /* Prevent horizontal scroll */
+    .green-chart-wrapper table {
+      min-width: 0;
+    }
+    
+    .green-chart-wrapper td[colspan="4"] {
+      text-align: center;
+    }
+  </style>
+
+  <div class="green-chart-wrapper">
+    <table>
+      <!-- Header: Day Headers -->
+      <thead>
+        <tr>
+          ${dayShort.map(day => `
+            <th colspan="4" class="day-header">${day}</th>
+          `).join('')}
+        </tr>
+        <tr>
+          ${dayShort.map(() => `
+            <th class="time-header">10:30</th>
+            <th class="time-header">1:00</th>
+            <th class="time-header">4:00</th>
+            <th class="time-header">7:00</th>
+          `).join('')}
+        </tr>
+      </thead>
+      <tbody>
+  `;
+
+  // Render all 30 weeks
+  displayWeeks.forEach((week) => {
+    const isCurrent = week.isCurrentWeek === true;
+    
+    html += `<tr>`;
+
+    for (let d = 0; d < dayNames.length; d++) {
+      const day = week.days.find(dy => dy.dayName === dayNames[d]);
+      
+      // Check if all slots are empty (HOLIDAY)
+      const allSlotsEmpty = slots.every(slot => {
+        const val = day ? day.draws[slot] : null;
+        return !val || val === "-" || val === "PENDING";
+      });
+
+      if (allSlotsEmpty && isDayPassed(week.startDate, d)) {
+        // Holiday - merge cells
+        html += `<td colspan="4" class="number-cell holiday">HOLIDAY</td>`;
+        continue;
+      }
+
+      for (let s = 0; s < slots.length; s++) {
+        const slot = slots[s];
+        const val = day ? day.draws[slot] : null;
+        const hasOccurred = hasDrawOccurred(week.startDate, d, s);
+        const num = val && val !== "-" && val !== "PENDING" ? parseInt(val, 10) : null;
+        
+        // Check if this is a pending draw (future)
+        const isPending = !hasOccurred && (!num || val === "PENDING" || val === "-");
+        
+        if (isPending) {
+          html += `<td class="number-cell pending">...</td>`;
+          continue;
+        }
+
+        if (num && hasOccurred) {
+          // Check if this is the LAST occurrence of this number
+          const isLast = lastOccurrence[num] && 
+                         lastOccurrence[num].week === week && 
+                         lastOccurrence[num].day === dayNames[d] &&
+                         lastOccurrence[num].slot === slot;
+          
+          const isShelf = isShelfMark(num);
+          
+          // Check if this is Leaving or Meeting number
+          const isLeaving = (num === leavingNumber);
+          const isMeeting = (num === meetingNumber);
+          
+          let cellClass = 'number-cell';
+          let style = '';
+          
+          const displayNum = trimLeadingZeros(String(num));
+          
+          if (isLeaving) {
+            cellClass += ' leaving-highlight';
+            style = 'background:#00f2ff !important; color:#000000 !important; font-weight:900;';
+          } else if (isMeeting) {
+            cellClass += ' meeting-highlight';
+            style = 'background:#ff9d00 !important; color:#000000 !important; font-weight:900;';
+          } else if (isShelf && isLast) {
+            cellClass += ' shelf-mark';
+            style = 'color:#ff0000 !important; font-weight:900; background:#e8f5e9 !important;';
+          }
+          
+          html += `
+            <td class="${cellClass}" style="${style}">
+              ${displayNum}
+            </td>
+          `;
+        } else if (!num && hasOccurred) {
+          html += `<td class="number-cell missing">--</td>`;
+        } else {
+          html += `<td class="number-cell pending">...</td>`;
+        }
+      }
+    }
+    html += `</tr>`;
+  });
+
+  html += `
+      </tbody>
+    </table>
+    
+    <!-- Categories: Doubles, Triples, Quadruples (Centered with Count) -->
+    <div class="categories-container">
+      ${buildCategoryBalls(doubles, 'DOUBLES', '🟢', 'doubles')}
+      ${buildCategoryBalls(triples, 'TRIPLES', '🟠', 'triples')}
+      ${buildCategoryBalls(quadruples, 'QUADRUPLES', '🔴', 'quadruples')}
+    </div>
+    
+    <!-- Category Legend -->
+    <div class="category-legend">
+      <span style="font-weight:bold; color:#000000;">STATUS:</span>
+      <div class="legend-item">
+        <span class="legend-ball white"></span>
+        <span>Missing</span>
+      </div>
+      <div class="legend-item">
+        <span class="legend-ball purple"></span>
+        <span>Pending (LW)</span>
+      </div>
+      <div class="legend-item">
+        <span class="legend-ball green"></span>
+        <span>Hit Current Week</span>
+      </div>
+      <span style="color:#999; font-size:5px; margin-left:auto;">${new Date().toLocaleDateString()}</span>
+    </div>
+    
+    <!-- Shelf Marks Table -->
+    <div class="shelf-marks-table-wrapper">
+      <div class="shelf-title">
+        <span>🔴 SHELF MARKS</span>
+        <span class="count">${shelfMarksData.length} marks • ${shelfMarksData.filter(m => m.days > 21).length} overdue</span>
+      </div>
+      <table class="shelf-marks-table">
+        <thead>
+          <tr>
+            <th>MARK</th>
+            <th>LAST PLAYED</th>
+            <th>DAYS AGO</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${shelfMarksData.length > 0 ? shelfMarksData.map(m => {
+            let badgeClass = 'monitor';
+            if (m.days > 21) badgeClass = 'critical';
+            else if (m.days > 14) badgeClass = 'warning';
+            
+            return `
+              <tr>
+                <td class="mark-cell">${m.displayNum}</td>
+                <td class="last-played-cell">${m.lastPlayed}</td>
+                <td class="days-cell"><span class="days-badge ${badgeClass}">${m.days}d</span></td>
+              </tr>
+            `;
+          }).join('') : `
+            <tr>
+              <td colspan="3" class="no-data">✅ No shelf marks</td>
+            </tr>
+          `}
+        </tbody>
+      </table>
+    </div>
+    
+    <!-- Compact Legend -->
+    <div class="green-chart-legend">
+      <span style="font-weight:bold; color:#000000;">LEGEND:</span>
+      <div class="legend-item">
+        <span class="legend-dot leaving"></span>
+        <span style="color:#000000;">Leaving</span>
+      </div>
+      <span class="legend-spacer">|</span>
+      <div class="legend-item">
+        <span class="legend-dot meeting"></span>
+        <span style="color:#000000;">Meeting</span>
+      </div>
+      <span class="legend-spacer">|</span>
+      <div class="legend-item">
+        <span class="legend-dot shelf"></span>
+        <span style="color:#000000;">Shelf</span>
+      </div>
+      <span class="legend-spacer">|</span>
+      <div class="legend-item">
+        <span class="legend-dot normal"></span>
+        <span style="color:#000000;">Played</span>
+      </div>
+      <span class="legend-spacer">|</span>
+      <div class="legend-item">
+        <span class="legend-dot holiday-dot"></span>
+        <span style="color:#000000;">Holiday</span>
+      </div>
+      <span class="legend-spacer">|</span>
+      <div class="legend-item">
+        <span class="legend-dot pending-dot"></span>
+        <span style="color:#000000;">Pending</span>
+      </div>
+      <div class="legend-item" style="margin-left:auto;">
+        <span style="font-size:5px; color:#666;">${new Date().toLocaleDateString()}</span>
+      </div>
+    </div>
+  </div>
+  `;
+
+  return html;
+}
+//////////////////////////////////////////
+//======= Top 9 Hot & Cold Marks ======
+// ======================================
+// PLAY WHE TOP 9 HOT & COLD MARKS
+// Analyzes 200 draws and displays Hot & Cold marks
+// One row, no wrap - compact design with last played date
+// Includes: Under Today, Leaving/Meeting (v2 style), Top 9 Hot & Cold, Weekly Streak Insight & Overdue Shelf Marks
+// ======================================
+function renderPlayWheHotColdMarks(weeksData) {
+  if (!weeksData || weeksData.length === 0) {
+    return `
+      <div style="background: linear-gradient(135deg, #0f172a, #1e293b); border-radius: 16px; padding: 16px; margin-bottom: 15px; border: 1px solid #58a6ff; text-align:center;">
+        📊 Loading Play Whe data...
+      </div>
+    `;
+  }
+
+  // ======================================
+  // HELPER FUNCTIONS
+  // ======================================
+
+  const dayNames = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+  const slots = ["MOR", "MID", "NON", "EVE"];
+  const now = new Date();
+  const todayName = dayNames[now.getDay()];
+  const doubleNumbers = [8, 11, 22, 33];
+
+  function getDraw(week, dayName, slot) {
+    if (!week) return null;
+    const day = week.days.find(d => d.dayName === dayName);
+    if (!day) return null;
+    const val = day.draws[slot];
+    return val && val !== "-" && val !== "PENDING" && val !== "HOLIDAY" ? parseInt(val, 10) : null;
+  }
+
+  // Spirit Emoji mapping
+  const spiritEmoji = {
+    1: "🔪", 2: "👵🏾", 3: "🚕", 4: "⚰️", 5: "👨🏾‍🦳", 6: "🤰🏽", 7: "🐗", 8: "🐯",
+    9: "🐮", 10: "🐒", 11: "🦅", 12: "🤴🏽", 13: "🐸", 14: "💰", 15: "🤧", 16: "💃🏽",
+    17: "🐦‍⬛", 18: "🚤", 19: "🐎", 20: "🐶", 21: "👄", 22: "🐀", 23: "🏡", 24: "🫅🏽",
+    25: "🐢", 26: "🐔", 27: "🐍", 28: "🐟", 29: "🍻", 30: "🐈‍⬛", 31: "👵🏾", 32: "🦐",
+    33: "🕷️", 34: "👨🏾‍🦯", 35: "🐍", 36: "🫏"
+  };
+
+  // Sort weeks chronologically
+  const sortedWeeks = [...weeksData].sort((a, b) => {
+    let pa = a.startDate.split(" ");
+    let pb = b.startDate.split(" ");
+    return new Date(pa[2] + "-" + pa[1] + "-" + pa[0]) - new Date(pb[2] + "-" + pb[1] + "-" + pb[0]);
+  });
+
+  // Get current and previous week
+  const currentWeek = sortedWeeks[sortedWeeks.length - 1];
+  const previousWeek = sortedWeeks.length >= 2 ? sortedWeeks[sortedWeeks.length - 2] : currentWeek;
+
+  // ======================================
+  // GET TODAY'S DRAWS (UNDER TODAY)
+  // ======================================
+  const todayDraws = [];
+  for (const slot of slots) {
+    const draw = getDraw(previousWeek, todayName, slot);
+    if (draw) todayDraws.push(draw);
+  }
+
+  // ======================================
+  // GET LEAVING & MEETING NUMBERS (v2 style)
+  // ======================================
+  function getLeavingMeetingNumbers() {
+    let leavingNumber = null;
+    let leavingSlot = null;
+    let leavingDate = null;
+    let meetingNumber = null;
+    let meetingSlot = null;
+    let meetingDate = null;
+    
+    const todayIdx = now.getDay();
+    const currentHour = now.getHours();
+    
+    function getDateForDraw(week, dayName) {
+      if (!week || !week.startDate) return null;
+      const parts = week.startDate.split(" ");
+      const monthMap = {"Jan":0,"Feb":1,"Mar":2,"Apr":3,"May":4,"Jun":5,"Jul":6,"Aug":7,"Sep":8,"Oct":9,"Nov":10,"Dec":11};
+      const startDate = new Date(parts[2], monthMap[parts[1]], parseInt(parts[0]));
+      const dayIndex = dayNames.indexOf(dayName);
+      if (dayIndex === -1) return null;
+      const drawDate = new Date(startDate);
+      drawDate.setDate(startDate.getDate() + dayIndex);
+      return drawDate;
+    }
+    
+    // Determine current slot
+    let currentSlotIdx = -1;
+    if (currentHour >= 9 && currentHour < 12) currentSlotIdx = 0;
+    else if (currentHour >= 12 && currentHour < 15) currentSlotIdx = 1;
+    else if (currentHour >= 15 && currentHour < 18) currentSlotIdx = 2;
+    else if (currentHour >= 18) currentSlotIdx = 3;
+    
+    // Find LEAVING - most recent draw that has occurred
+    let leavingDayIdx = -1;
+    let leavingSlotIdx = -1;
+    
+    for (let d = todayIdx; d >= 0; d--) {
+      const maxSlot = (d === todayIdx) ? currentSlotIdx : slots.length - 1;
+      for (let s = maxSlot; s >= 0; s--) {
+        const draw = getDraw(currentWeek, dayNames[d], slots[s]);
+        if (draw) {
+          leavingNumber = draw;
+          leavingDayIdx = d;
+          leavingSlotIdx = s;
+          leavingSlot = slots[s];
+          leavingDate = getDateForDraw(currentWeek, dayNames[d]);
+          break;
+        }
+      }
+      if (leavingNumber) break;
+    }
+    
+    // If no leaving in current week, search previous weeks
+    if (!leavingNumber) {
+      for (let w = sortedWeeks.length - 2; w >= 0; w--) {
+        const week = sortedWeeks[w];
+        for (let d = dayNames.length - 1; d >= 0; d--) {
+          for (let s = slots.length - 1; s >= 0; s--) {
+            const draw = getDraw(week, dayNames[d], slots[s]);
+            if (draw) {
+              leavingNumber = draw;
+              leavingDayIdx = d;
+              leavingSlotIdx = s;
+              leavingSlot = slots[s];
+              leavingDate = getDateForDraw(week, dayNames[d]);
+              break;
+            }
+          }
+          if (leavingNumber) break;
+        }
+        if (leavingNumber) break;
+      }
+    }
+    
+    // Find MEETING - next draw after leaving
+    if (leavingNumber && leavingDayIdx !== -1 && leavingSlotIdx !== -1) {
+      let nextDayIdx = leavingDayIdx;
+      let nextSlotIdx = leavingSlotIdx + 1;
+      
+      if (nextSlotIdx >= slots.length) {
+        nextSlotIdx = 0;
+        nextDayIdx = leavingDayIdx + 1;
+      }
+      
+      if (nextDayIdx >= dayNames.length) {
+        nextDayIdx = 0;
+      }
+      
+      if (nextDayIdx >= 0 && nextDayIdx < dayNames.length) {
+        const targetDay = dayNames[nextDayIdx];
+        const targetSlot = slots[nextSlotIdx];
+        
+        // Try previous week first
+        meetingNumber = getDraw(previousWeek, targetDay, targetSlot);
+        if (meetingNumber) {
+          meetingSlot = targetSlot;
+          meetingDate = getDateForDraw(previousWeek, targetDay);
+        }
+        
+        // If not found, search backwards
+        if (!meetingNumber) {
+          for (let w = sortedWeeks.length - 2; w >= 0; w--) {
+            const week = sortedWeeks[w];
+            const draw = getDraw(week, targetDay, targetSlot);
+            if (draw) {
+              meetingNumber = draw;
+              meetingSlot = targetSlot;
+              meetingDate = getDateForDraw(week, targetDay);
+              break;
+            }
+          }
+        }
+        
+        // If still not found, try current week
+        if (!meetingNumber) {
+          const draw = getDraw(currentWeek, targetDay, targetSlot);
+          if (draw) {
+            meetingNumber = draw;
+            meetingSlot = targetSlot;
+            meetingDate = getDateForDraw(currentWeek, targetDay);
+          }
+        }
+      }
+    }
+    
+    return { leavingNumber, leavingSlot, leavingDate, meetingNumber, meetingSlot, meetingDate };
+  }
+
+  const { leavingNumber, leavingSlot, leavingDate, meetingNumber, meetingSlot, meetingDate } = getLeavingMeetingNumbers();
+
+  // ======================================
+  // COLLECT LAST 200 DRAWS
+  // ======================================
+  const allDraws = [];
+  
+  for (let w = sortedWeeks.length - 1; w >= 0 && allDraws.length < 200; w--) {
+    const week = sortedWeeks[w];
+    const weekStart = new Date(week.startDate);
+    
+    for (let d = dayNames.length - 1; d >= 0 && allDraws.length < 200; d--) {
+      const drawDate = new Date(weekStart);
+      drawDate.setDate(weekStart.getDate() + d);
+      
+      for (let s = slots.length - 1; s >= 0 && allDraws.length < 200; s--) {
+        const draw = getDraw(week, dayNames[d], slots[s]);
+        if (draw) {
+          allDraws.push({
+            num: draw,
+            date: drawDate,
+            day: dayNames[d],
+            slot: slots[s]
+          });
+        }
+      }
+    }
+  }
+
+  const totalDraws = allDraws.length;
+  
+  if (totalDraws === 0) {
+    return `
+      <div style="background: linear-gradient(135deg, #0f172a, #1e293b); border-radius: 16px; padding: 16px; margin-bottom: 15px; border: 1px solid #ff6b6b; text-align:center;">
+        ❌ No draw data available for analysis
+      </div>
+    `;
+  }
+
+  // ======================================
+  // CALCULATE FREQUENCY & LAST PLAYED DATE
+  // ======================================
+  const frequency = {};
+  const lastPlayed = {};
+  for (let i = 1; i <= 36; i++) {
+    frequency[i] = 0;
+    lastPlayed[i] = null;
+  }
+  
+  allDraws.forEach(draw => {
+    frequency[draw.num] = (frequency[draw.num] || 0) + 1;
+    if (!lastPlayed[draw.num] || draw.date > lastPlayed[draw.num]) {
+      lastPlayed[draw.num] = draw.date;
+    }
+  });
+
+  const sortedNumbers = Object.entries(frequency)
+    .map(([num, count]) => ({ 
+      num: parseInt(num), 
+      count,
+      lastDate: lastPlayed[parseInt(num)]
+    }))
+    .sort((a, b) => b.count - a.count);
+
+  const hotMarks = sortedNumbers.slice(0, 9);
+  const coldMarks = sortedNumbers.slice(-9).reverse();
+
+  // ======================================
+  // WEEKLY STREAK INSIGHT (Doubles, Triples, Quadruples)
+  // ======================================
+
+  const currentWeekDraws = [];
+  for (let d = 0; d < dayNames.length; d++) {
+    for (let s = 0; s < slots.length; s++) {
+      const draw = getDraw(currentWeek, dayNames[d], slots[s]);
+      if (draw) currentWeekDraws.push(draw);
+    }
+  }
+
+  const previousWeekDraws = [];
+  for (const day of dayNames) {
+    for (const slot of slots) {
+      const draw = getDraw(previousWeek, day, slot);
+      if (draw) previousWeekDraws.push(draw);
+    }
+  }
+
+  const prevWeekCounts = {};
+  const currWeekCounts = {};
+  for (let i = 1; i <= 36; i++) {
+    prevWeekCounts[i] = 0;
+    currWeekCounts[i] = 0;
+  }
+  previousWeekDraws.forEach(num => { prevWeekCounts[num] = (prevWeekCounts[num] || 0) + 1; });
+  currentWeekDraws.forEach(num => { currWeekCounts[num] = (currWeekCounts[num] || 0) + 1; });
+
+  const doubles = [];
+  doubleNumbers.forEach(num => {
+    const prevCount = prevWeekCounts[num] || 0;
+    const currCount = currWeekCounts[num] || 0;
+    
+    if (currCount >= 2) return;
+    
+    let status = 0;
+    let color = '#ffffff';
+    let textColor = '#000000';
+    
+    if (prevCount === 1 && currCount === 0) {
+      status = 1;
+      color = '#7c02b5';
+      textColor = '#ffffff';
+    } else if (currCount === 1) {
+      status = 2;
+      color = '#32d74b';
+      textColor = '#000000';
+    }
+    
+    doubles.push({
+      num: num,
+      status: status,
+      color: color,
+      textColor: textColor
+    });
+  });
+
+  const triples = [];
+  for (let i = 1; i <= 36; i++) {
+    const prevCount = prevWeekCounts[i] || 0;
+    const currCount = currWeekCounts[i] || 0;
+    
+    if (currCount >= 3) continue;
+    
+    let include = false;
+    let status = 0;
+    let color = '#7c02b5';
+    let textColor = '#ffffff';
+    
+    if (prevCount === 2 && currCount === 0) {
+      include = true;
+      status = 1;
+      color = '#7c02b5';
+      textColor = '#ffffff';
+    } else if (currCount === 2) {
+      include = true;
+      status = 2;
+      color = '#32d74b';
+      textColor = '#000000';
+    }
+    
+    if (include) {
+      triples.push({
+        num: i,
+        status: status,
+        color: color,
+        textColor: textColor
+      });
+    }
+  }
+  triples.sort((a, b) => a.num - b.num);
+
+  const quadruples = [];
+  for (let i = 1; i <= 36; i++) {
+    const prevCount = prevWeekCounts[i] || 0;
+    const currCount = currWeekCounts[i] || 0;
+    
+    if (currCount >= 4) continue;
+    
+    let include = false;
+    let status = 0;
+    let color = '#7c02b5';
+    let textColor = '#ffffff';
+    
+    if (prevCount === 3 && currCount === 0) {
+      include = true;
+      status = 1;
+      color = '#7c02b5';
+      textColor = '#ffffff';
+    } else if (currCount === 3) {
+      include = true;
+      status = 2;
+      color = '#32d74b';
+      textColor = '#000000';
+    }
+    
+    if (include) {
+      quadruples.push({
+        num: i,
+        status: status,
+        color: color,
+        textColor: textColor
+      });
+    }
+  }
+  quadruples.sort((a, b) => a.num - b.num);
+
+  // ======================================
+  // SHELF MARKS
+  // ======================================
+  
+  function hasDrawOccurred(weekStartDate, dayIndex, slotIndex) {
+    if (!weekStartDate) return false;
+    const parts = weekStartDate.split(" ");
+    const monthMap = {"Jan":0,"Feb":1,"Mar":2,"Apr":3,"May":4,"Jun":5,"Jul":6,"Aug":7,"Sep":8,"Oct":9,"Nov":10,"Dec":11};
+    const startDate = new Date(parts[2], monthMap[parts[1]], parseInt(parts[0]));
+    const targetDate = new Date(startDate);
+    targetDate.setDate(startDate.getDate() + dayIndex);
+    const timeOffsets = [9, 12, 15, 18];
+    targetDate.setHours(timeOffsets[slotIndex] || 12);
+    return targetDate < new Date();
+  }
+
+  const today = new Date();
+  const todayDay = today.getDay();
+  const todayHour = today.getHours();
+  
+  let currentSlot = -1;
+  if (todayHour >= 9 && todayHour < 12) currentSlot = 0;
+  else if (todayHour >= 12 && todayHour < 15) currentSlot = 1;
+  else if (todayHour >= 15 && todayHour < 18) currentSlot = 2;
+  else if (todayHour >= 18) currentSlot = 3;
+
+  const lastOccurrence = {};
+  
+  for (let d = todayDay; d >= 0; d--) {
+    const maxSlot = (d === todayDay) ? currentSlot : slots.length - 1;
+    for (let s = maxSlot; s >= 0; s--) {
+      if (hasDrawOccurred(currentWeek.startDate, d, s)) {
+        const num = getDraw(currentWeek, dayNames[d], slots[s]);
+        if (num && !lastOccurrence[num]) {
+          lastOccurrence[num] = {
+            date: new Date(new Date(currentWeek.startDate).getTime() + d * 86400000)
+          };
+        }
+      }
+    }
+  }
+  
+  for (let w = sortedWeeks.length - 2; w >= 0; w--) {
+    const week = sortedWeeks[w];
+    for (let d = dayNames.length - 1; d >= 0; d--) {
+      for (let s = slots.length - 1; s >= 0; s--) {
+        if (hasDrawOccurred(week.startDate, d, s)) {
+          const num = getDraw(week, dayNames[d], slots[s]);
+          if (num && !lastOccurrence[num]) {
+            lastOccurrence[num] = {
+              date: new Date(new Date(week.startDate).getTime() + d * 86400000)
+            };
+          }
+        }
+      }
+    }
+  }
+
+// ======================================
+// SHELF MARKS - CORRECTED DAYS AGO
+// ======================================
+
+function getDaysSince(num) {
+  if (!lastOccurrence[num]) return 999;
+  const lastDate = lastOccurrence[num].date;
+  if (!lastDate) return 999;
+  
+  // Create a date at midnight for the last occurrence
+  const lastMidnight = new Date(lastDate);
+  lastMidnight.setHours(0, 0, 0, 0);
+  
+  // Create a date at midnight for today
+  const todayMidnight = new Date();
+  todayMidnight.setHours(0, 0, 0, 0);
+  
+  // Calculate the difference in days
+  const diffTime = todayMidnight.getTime() - lastMidnight.getTime();
+  const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+  
+  return Math.max(0, diffDays);
+}
+
+  function getDateString(num) {
+    if (!lastOccurrence[num]) return "Never";
+    const last = lastOccurrence[num];
+    if (!last.date) return "Never";
+    const date = new Date(last.date);
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    return `${date.getDate()} ${months[date.getMonth()]} ${date.getFullYear()}`;
+  }
+
+  function isShelfMark(num) {
+    const days = getDaysSince(num);
+    if (days === 999) return false;
+    if (days === 0) return false;
+    if (currentWeekDraws.includes(num)) return false;
+    return days > 14;
+  }
+
+  const shelfMarksData = [];
+  for (let i = 1; i <= 36; i++) {
+    if (isShelfMark(i)) {
+      const days = getDaysSince(i);
+      const dateStr = getDateString(i);
+      shelfMarksData.push({
+        number: i,
+        days: days,
+        lastPlayed: dateStr
+      });
+    }
+  }
+  
+  shelfMarksData.sort((a, b) => b.days - a.days);
+  const topOverdue = shelfMarksData.slice(0, 7);
+
+  // ======================================
+  // RENDER FUNCTIONS
+  // ======================================
+
+  function formatDate(date) {
+    if (!date) return '—';
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    return `${date.getDate()} ${months[date.getMonth()]}`;
+  }
+
+  function formatDateDisplay(date) {
+    if (!date) return "";
+    const days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    return `${days[date.getDay()]} ${date.getDate()} ${months[date.getMonth()]} '${date.getFullYear().toString().slice(-2)}`;
+  }
+
+  // Render Today Draws - Centered with auto-switch at 6:59 PM
+function renderTodayDraws() {
+  // Get current time
+  const now = new Date();
+  const currentHour = now.getHours();
+  const currentMinute = now.getMinutes();
+  
+  // Check if it's after 6:59 PM (18:59)
+  const isAfterEve = (currentHour > 18) || (currentHour === 18 && currentMinute >= 59);
+  
+  // Determine which day to show
+  let displayDate = new Date(now);
+  let displayDayName = todayName;
+  let displayLabel = "📅 UNDER TODAY";
+  
+  if (isAfterEve) {
+    // After 6:59 PM, show tomorrow's date
+    displayDate.setDate(now.getDate() + 1);
+    displayDayName = dayNames[(now.getDay() + 1) % 7];
+    displayLabel = "📅 UNDER TOMORROW";
+  }
+  
+  // Format date as "Wed 3 Aug" (no year)
+  const days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const formattedDate = `${days[displayDate.getDay()]} ${displayDate.getDate()} ${months[displayDate.getMonth()]}`;
+  
+  // Get the draws for the display day (from previous week if today, or adjust for tomorrow)
+  let displayDraws = [];
+  
+  if (isAfterEve) {
+    // For tomorrow, we want to show the previous week's draws for tomorrow's day
+    const tomorrowDayName = dayNames[(now.getDay() + 1) % 7];
+    for (const slot of slots) {
+      const draw = getDraw(previousWeek, tomorrowDayName, slot);
+      if (draw) displayDraws.push(draw);
+    }
+  } else {
+    // For today, use the existing logic
+    displayDraws = todayDraws;
+  }
+  
+  const todayDrawsHtml = displayDraws.map(num => `
+    <span style="display: inline-flex; align-items: center; gap: 2px; background: var(--card-bg, rgba(255,255,255,0.05)); padding: 1px 6px; border-radius: 4px; border: 1px solid var(--border-color, rgba(255,255,255,0.06));">
+      <span style="font-size: 16px; font-weight: 900; color: var(--text-main, #ffd700);">${num}</span>
+      <span style="font-size: 16px;">${spiritEmoji[num] || ''}</span>
+    </span>
+  `).join('');
+
+  return `
+    <div style="display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 4px 8px; background: var(--card-bg, rgba(255,255,255,0.02)); border-radius: 6px; border: 1px solid var(--border-color, rgba(255,255,255,0.06)); margin-bottom: 6px;">
+      <span style="font-size: 16px; font-weight: 700; color: var(--text-main, #ff9d00); letter-spacing: 0.3px;">${displayLabel} • ${formattedDate}</span>
+      <div style="display: flex; align-items: center; gap: 3px; flex-wrap: wrap; justify-content: center;">
+        ${displayDraws.length > 0 ? todayDrawsHtml : '<span style="font-size: 9px; color: var(--text-dim, #64748b);">No draws available</span>'}
+      </div>
+    </div>
+  `;
+}
+  // Render Leaving/Meeting - v2 Style (Two Boxes Side by Side)
+  function renderLeavingMeeting() {
+    const leavingDisplay = leavingNumber ? `#${leavingNumber}` : '—';
+    const meetingDisplay = meetingNumber ? `#${meetingNumber}` : '—';
+    const leavingDateDisplay = leavingDate ? formatDateDisplay(leavingDate) : 'No data available';
+    const meetingDateDisplay = meetingDate ? formatDateDisplay(meetingDate) : 'No data available';
+    
+    return `
+      <div style="display: flex; gap: 8px; margin-bottom: 6px;">
+        <div style="flex: 1; border-radius: 6px; padding: 4px 8px; text-align: center; border: 1px solid var(--text-main, #58a6ff); background: rgba(88,166,255,0.08);">
+          <div style="font-size: 12px; font-weight: 800; color: var(--text-main, #58a6ff); text-transform: uppercase; letter-spacing: 0.5px;">LEAVING • ${leavingSlot || ''}</div>
+          <div style="font-size: 18px; font-weight: 900; color: var(--text-main, #58a6ff); margin: 2px 0;">${leavingDisplay}</div>
+          <div style="font-size: 12px; color: var(--text-dim, #666);">${leavingDateDisplay}</div>
+        </div>
+        <div style="flex: 1; border-radius: 6px; padding: 4px 8px; text-align: center; border: 1px solid var(--text-main, #ff9d00); background: rgba(255,157,0,0.08);">
+          <div style="font-size: 12px; font-weight: 800; color: var(--text-main, #ff9d00); text-transform: uppercase; letter-spacing: 0.5px;">MEETING • ${meetingSlot || ''}</div>
+          <div style="font-size: 18px; font-weight: 900; color: var(--text-main, #ff9d00); margin: 2px 0;">${meetingDisplay}</div>
+          <div style="font-size: 12px; color: var(--text-dim, #666);">${meetingDateDisplay}</div>
+        </div>
+      </div>
+    `;
+  }
+
+  function renderMarkRow(marks, title, titleColor, isHot = true) {
+    if (!marks || marks.length === 0) {
+      return `
+        <div style="text-align: center; padding: 6px; color: var(--text-dim, #64748b); font-size: 10px;">
+          No marks available
+        </div>
+      `;
+    }
+
+    const marksHtml = marks.map(item => {
+      const emoji = spiritEmoji[item.num] || '';
+      const count = item.count;
+      const lastDate = formatDate(item.lastDate);
+      
+      return `
+        <div style="display: flex; flex-direction: column; align-items: center; min-width: 26px; padding: 2px 2px; background: var(--card-bg, rgba(255,255,255,0.03)); border-radius: 4px; border: 1px solid var(--border-color, rgba(255,255,255,0.04)); flex: 0 1 auto;">
+          <span style="font-size: 16px; font-weight: 900; color: ${isHot ? '#ff6b6b' : '#58a6ff'}; line-height: 1.2;">${item.num}</span>
+          <span style="font-size: 9px; color: var(--text-dim, #94a3b8); font-weight: 600; margin-top: 1px;">${count}x</span>
+          <span style="font-size: 9px; color: var(--text-dim, #64748b); margin-top: 1px; border-top: 1px solid var(--border-color, rgba(255,255,255,0.06)); padding-top: 1px; width: 100%; text-align: center;">${lastDate}</span>
+        </div>
+      `;
+    }).join('');
+
+    return `
+      <div style="margin-bottom: ${isHot ? '4px' : '0'};">
+        <div style="display: flex; align-items: center; gap: 4px; margin-bottom: 3px;">
+          <span style="font-size: 10px; font-weight: 800; color: ${titleColor}; letter-spacing: 0.3px;">${title}</span>
+          <span style="font-size: 6px; color: var(--text-dim, #64748b); background: var(--card-bg, rgba(255,255,255,0.05)); padding: 1px 5px; border-radius: 6px;">${marks.length}</span>
+        </div>
+        <div style="display: flex; justify-content: center; align-items: center; gap: 2px; flex-wrap: nowrap; overflow-x: auto; background: var(--card-bg, rgba(255,255,255,0.02)); border-radius: 6px; padding: 2px 4px; border: 1px solid var(--border-color, rgba(255,255,255,0.04)); min-height: 42px; -webkit-overflow-scrolling: touch;">
+          ${marksHtml}
+        </div>
+      </div>
+    `;
+  }
+
+  function renderWeeklyStreakInsight() {
+    function buildCategoryBalls(categoryData, title, icon, colorClass) {
+      if (!categoryData || categoryData.length === 0) {
+        return `
+          <div class="category-group ${colorClass}" style="display:flex; flex-direction:column; align-items:center; gap:3px; padding:4px 8px; border-radius:6px; border:1px solid var(--border-color, rgba(45,138,78,0.15)); min-width:60px; flex:0 1 auto; text-align:center;">
+            <div class="category-title" style="font-size:9px; font-weight:800; color:var(--text-main, #000000); letter-spacing:0.5px;">${icon} ${title} <span class="category-count" style="font-size:8px; color:var(--text-dim, #666); font-weight:normal;">(0)</span></div>
+            <div class="category-balls" style="display:flex; flex-wrap:wrap; justify-content:center; align-items:center; gap:2px;"><span style="color:var(--text-dim, #999); font-size:8px;">None</span></div>
+          </div>
+        `;
+      }
+      
+      let ballsHtml = categoryData.map(item => {
+        let borderStyle = '1px solid #2d8a4e';
+        if (item.status === 0) {
+          borderStyle = '1px solid #999';
+        } else if (item.status === 1) {
+          borderStyle = '2px solid #7c02b5';
+        } else if (item.status === 2) {
+          borderStyle = '2px solid #32d74b';
+        }
+        
+        return `
+          <div class="category-ball" style="display:inline-flex; flex-direction:column; align-items:center; margin:0 1px;">
+            <div style="width:14px; height:14px; background:${item.color}; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:11px; font-weight:900; color:${item.textColor}; border:${borderStyle}; line-height:14px;">${item.num}</div>
+          </div>
+        `;
+      }).join('');
+      
+      return `
+        <div class="category-group ${colorClass}" style="display:flex; flex-direction:column; align-items:center; gap:3px; padding:4px 8px; border-radius:6px; border:1px solid var(--border-color, rgba(45,138,78,0.15)); min-width:60px; flex:0 1 auto; text-align:center;">
+          <div class="category-title" style="font-size:9px; font-weight:800; color:var(--text-main, #000000); letter-spacing:0.5px;">${icon} ${title} <span class="category-count" style="font-size:8px; color:var(--text-dim, #666); font-weight:normal;">(${categoryData.length})</span></div>
+          <div class="category-balls" style="display:flex; flex-wrap:wrap; justify-content:center; align-items:center; gap:2px;">${ballsHtml}</div>
+        </div>
+      `;
+    }
+
+    return `
+      <div style="margin-top: 6px; padding-top: 6px; border-top: 1px dashed var(--border-color, rgba(255,255,255,0.06));">
+        <div style="font-size: 10px; font-weight: 800; color: var(--text-main, #ff9d00); margin-bottom: 4px; text-align: center; letter-spacing: 0.3px;">
+          ⚜️♨️ WEEKLY STREAK INSIGHT ♨️⚜️
+        </div>
+        <div style="display: flex; flex-wrap: wrap; justify-content: center; align-items: stretch; gap: 6px 10px; background: var(--card-bg, rgba(255,255,255,0.02)); border-radius: 8px; padding: 6px 8px; border: 1px solid var(--border-color, rgba(255,255,255,0.04));">
+          ${buildCategoryBalls(doubles, 'DOUBLES', '🟢', 'doubles')}
+          ${buildCategoryBalls(triples, 'TRIPLES', '🟠', 'triples')}
+          ${buildCategoryBalls(quadruples, 'QUADRUPLES', '🔴', 'quadruples')}
+        </div>
+        <div style="font-size: 9px; color: var(--text-dim, #64748b); text-align: center; margin-top: 3px;">
+          Based On Previous & Current Week • Completed Plays Hidden
+        </div>
+      </div>
+    `;
+  }
+
+  function renderOverdueShelfMarks() {
+    if (!topOverdue || topOverdue.length === 0) {
+      return `
+        <div style="margin-top: 6px; padding-top: 6px; border-top: 1px dashed var(--border-color, rgba(255,255,255,0.06));">
+          <div style="font-size: 10px; font-weight: 800; color: var(--text-main, #ff0000); margin-bottom: 4px; text-align: center; letter-spacing: 0.3px;">
+    📅 SHELF MARKS
+          </div>
+          <div style="text-align: center; padding: 8px; color: #32d74b; font-size: 10px; font-weight: bold;">✅ No shelf marks</div>
+        </div>
+      `;
+    }
+
+    const rowsHtml = topOverdue.map(item => {
+      let badgeClass = 'monitor';
+      let badgeColor = '#ffd60a';
+      let textColor = '#000000';
+      if (item.days > 21) {
+        badgeClass = 'critical';
+        badgeColor = '#ff453a';
+        textColor = '#ffffff';
+      } else if (item.days > 14) {
+        badgeClass = 'warning';
+        badgeColor = '#ff9f0a';
+        textColor = '#ffffff';
+      }
+      
+      return `
+        <tr style="border-bottom: 1px solid var(--border-color, rgba(255,255,255,0.04));">
+          <td style="padding: 3px 4px; text-align: center; font-weight: 700; font-size: 14px; color: #ff0000;">
+            ${item.number}
+          </td>
+          <td style="padding: 3px 4px; text-align: center; font-size: 14px; color: var(--text-dim, #94a3b8);">
+            ${item.lastPlayed}
+          </td>
+          <td style="padding: 3px 4px; text-align: center;">
+            <span style="display: inline-block; padding: 1px 6px; border-radius: 10px; font-size: 14px; font-weight: 900; background: ${badgeColor}; color: ${textColor};">${item.days}d</span>
+          </td>
+        </tr>
+      `;
+    }).join('');
+
+    return `
+      <div style="margin-top: 6px; padding-top: 6px; border-top: 1px dashed var(--border-color, rgba(255,255,255,0.06));">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+          <span style="font-size: 10px; font-weight: 800; color: #ff0000; letter-spacing: 0.3px;">🔴 TOP SHELF MARKS</span>
+          <span style="font-size: 9px; color: var(--text-dim, #64748b);">${topOverdue.length} marks • ${topOverdue.filter(m => m.days > 21).length} overdue</span>
+        </div>
+        <div style="background: var(--card-bg, rgba(255,255,255,0.02)); border-radius: 8px; overflow: hidden; border: 1px solid var(--border-color, rgba(255,255,255,0.04));">
+          <table style="width: 100%; border-collapse: collapse; font-size: 11px;">
+            <thead>
+              <tr style="background: var(--header-bg, rgba(255,255,255,0.04)); border-bottom: 1px solid var(--border-color, rgba(255,255,255,0.06));">
+                <th style="padding: 4px 4px; text-align: center; color: var(--text-main, #ff9d00); font-weight: 700; font-size: 8px; letter-spacing: 0.3px;">MARK</th>
+                <th style="padding: 4px 4px; text-align: center; color: var(--text-main, #ff9d00); font-weight: 700; font-size: 8px; letter-spacing: 0.3px;">LAST PLAYED</th>
+                <th style="padding: 4px 4px; text-align: center; color: var(--text-main, #ff9d00); font-weight: 700; font-size: 8px; letter-spacing: 0.3px;">DAYS AGO</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${rowsHtml}
+            </tbody>
+          </table>
+        </div>
+        <div style="font-size: 6px; color: var(--text-dim, #64748b); text-align: center; margin-top: 3px;">
+          Top 7 most overdue marks • Based on last occurrence in all data
+        </div>
+      </div>
+    `;
+  }
+
+  // ======================================
+  // BUILD THE MAIN HTML
+  // ======================================
+
+  const todayHtml = renderTodayDraws();
+  const leavingMeetingHtml = renderLeavingMeeting();
+  const hotHtml = renderMarkRow(hotMarks, '🔥 HOT MARKS', '#ff6b6b', true);
+  const coldHtml = renderMarkRow(coldMarks, '❄️ COLD MARKS', '#58a6ff', false);
+  const weeklyStreakHtml = renderWeeklyStreakInsight();
+  const overdueHtml = renderOverdueShelfMarks();
+
+  return `
+    <div style="
+      background: var(--bg-start, linear-gradient(135deg, #0f172a, #1e293b));
+      border-radius: 16px; 
+      padding: 10px; 
+      margin-bottom: 15px; 
+      border: 1px solid var(--border-color, #ff9d00);
+    ">
+      
+      <!-- Header -->
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 2px; flex-wrap: wrap; gap: 4px;">
+        <div>
+        </div>
+      </div>
+      
+      <!-- Section 1: Under Today -->
+      ${todayHtml}
+      
+      <!-- Section 2: Leaving/Meeting (v2 Style - Two Boxes Side by Side) -->
+      ${leavingMeetingHtml}
+      
+      <!-- Separator -->
+      <div style="margin: 4px 0; border-top: 1px solid var(--border-color, #000000);"></div>
+      <div style="font-size: 13px; font-weight: 800; color: var(--text-main, #ff9d00); letter-spacing: 0.3px;">
+     ♠️ TOP 9 HOT MARKS & COLD MARKS ♠️
+    </div>
+      <div style="font-size: 7px; color: var(--text-dim, #64748b); margin-top: 1px;">
+    Based on last ${totalDraws} draws • Top 9 most & least frequent
+      </div>
+      <!-- Section 3: Hot Marks -->
+      ${hotHtml}
+      
+      <!-- Section 4: Cold Marks -->
+      ${coldHtml}
+      
+      <!-- Separator -->
+      <div style="margin: 4px 0; border-top: 1px solid var(--border-color, #000000);"></div>
+      
+      <!-- Section 5: Weekly Streak Insight -->
+      ${weeklyStreakHtml}
+      
+      <!-- Separator -->
+      <div style="margin: 4px 0; border-top: 1px solid var(--border-color, #000000);"></div>
+      
+      <!-- Section 6: Shelf Marks -->
+      ${overdueHtml}
+      
+      <!-- Footer -->
+      <div style="margin-top: 4px; padding-top: 4px; border-top: 1px solid var(--border-color, rgba(255,255,255,0.02)); display: flex; justify-content: center; align-items: center; gap: 6px; flex-wrap: wrap;">
+        <span style="font-size: 10px; color: #00000;">CodeWithGlasgow • CWG Chart Analysis ©️</span>
+        <span style="color: #00000; font-size: 10px;">Last: ${globalLastDraw}</span>
+      </div>
+      
+    </div>
+  `;
+}
+//////////////////////////////////////////
+// ======================================
+// PLAY WHE WHITE BOARD V1 (AUTHENTIC CAROUSEL)
+// Traditional Play Whe White Board with Outstanding Marks & Best Bets
+// New board created every week (Sunday to Saturday)
+// Strike-through: DIAGONAL - Green (1x), Blue (2x), Red (3x+)
+// Outstanding: Shows marks with 3+ weeks (stays visible, diagonal strike-through when played)
+// Best Bets: 30 items in 3 rows of 10 (Excludes Outstanding marks)
+// ======================================
+function renderPlayWheWhiteBoard(weeksData) {
+  if (!weeksData || weeksData.length === 0) {
+    return `
+      <div style="background: #ffffff; border-radius: 12px; padding: 16px; margin-bottom: 15px; border: 2px solid #333; text-align:center;">
+        <span style="font-size: 14px; color: #333; font-weight: 600;">📊 Loading White Board...</span>
+      </div>
+    `;
+  }
+
+  // ======================================
+  // CONSTANTS & HELPERS
+  // ======================================
+  const dayNames = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+  const slots = ["MOR", "MID", "NON", "EVE"];
+
+  // Sort weeks chronologically (oldest to newest) - We need this for the math
+  const sortedWeeks = [...weeksData].sort((a, b) => {
+    let pa = a.startDate.split(" ");
+    let pb = b.startDate.split(" ");
+    return new Date(pa[2] + "-" + pa[1] + "-" + pa[0]) - new Date(pb[2] + "-" + pb[1] + "-" + pb[0]);
+  });
+
+  const getDraw = (week, dayName, slot) => {
+    if (!week) return null;
+    const day = week.days.find(d => d.dayName === dayName);
+    if (!day) return null;
+    const val = day.draws[slot];
+    return val && val !== "-" && val !== "PENDING" && val !== "HOLIDAY" ? parseInt(val, 10) : null;
+  };
+
+  // ======================================
+  // CORE BOARD GENERATOR FOR A SPECIFIC WEEK
+  // ======================================
+  function generateBoardForWeek(weekIndex) {
+    const targetWeek = sortedWeeks[weekIndex];
+    if (!targetWeek) return '';
+
+    // Calculate the start and end dates for the target week
+    let pa = targetWeek.startDate.split(" ");
+    const monthMap = {"Jan":0,"Feb":1,"Mar":2,"Apr":3,"May":4,"Jun":5,"Jul":6,"Aug":7,"Sep":8,"Oct":9,"Nov":10,"Dec":11};
+    const weekStart = new Date(pa[2], monthMap[pa[1]], parseInt(pa[0]));
+    weekStart.setHours(0, 0, 0, 0);
+    
+    const weekEnd = new Date(weekStart);
+    weekEnd.setDate(weekStart.getDate() + 6);
+    weekEnd.setHours(23, 59, 59, 999);
+
+    const now = new Date();
+    const isCurrentWeek = weekIndex === sortedWeeks.length - 1;
+    const currentDay = now.getDay();
+    
+    // Get draws for this specific week up to today (if current week) or all 7 days (if past week)
+    const weekDraws = [];
+    const maxDay = isCurrentWeek ? currentDay : 6;
+    
+    for (let d = 0; d <= maxDay; d++) {
+      for (const slot of slots) {
+        const draw = getDraw(targetWeek, dayNames[d], slot);
+        if (draw) weekDraws.push(draw);
+      }
+    }
+
+    const currWeekCounts = {};
+    for (let i = 1; i <= 36; i++) currWeekCounts[i] = 0;
+    weekDraws.forEach(num => currWeekCounts[num] = (currWeekCounts[num] || 0) + 1);
+
+    // Calculate Shelf Marks based on data BEFORE this week
+    const lastOccurrence = {};
+    
+    // Loop backwards from the week before this one
+    for (let w = weekIndex - 1; w >= 0; w--) {
+      const week = sortedWeeks[w];
+      const weekStartDate = new Date(week.startDate);
+      
+      for (let d = dayNames.length - 1; d >= 0; d--) {
+        for (let s = slots.length - 1; s >= 0; s--) {
+          const num = getDraw(week, dayNames[d], slots[s]);
+          if (num) {
+            if (!lastOccurrence[num]) {
+              lastOccurrence[num] = {
+                date: new Date(weekStartDate.getTime() + d * 86400000)
+              };
+            }
+          }
+        }
+      }
+    }
+
+    const getDaysSince = (num) => {
+      if (!lastOccurrence[num]) return 999;
+      const lastDate = lastOccurrence[num].date;
+      if (!lastDate) return 999;
+      lastDate.setHours(0, 0, 0, 0);
+      const weekStartMidnight = new Date(weekStart);
+      weekStartMidnight.setHours(0, 0, 0, 0);
+      const diff = Math.floor((weekStartMidnight - lastDate) / (1000 * 60 * 60 * 24));
+      return Math.max(0, diff);
+    };
+
+    const shelfMarks = [];
+    for (let i = 1; i <= 36; i++) {
+      const days = getDaysSince(i);
+      if (days > 0) {
+        shelfMarks.push({
+          num: i,
+          days: days,
+          weeks: Math.floor(days / 7)
+        });
+      }
+    }
+    shelfMarks.sort((a, b) => b.days - a.days);
+
+    // ***** TWEAK 1: TRIM OUTSTANDING MARKS *****
+    // Max 9 total. Highest weeks first. 2 WKS max 4.
+    let outstandingMarks = [];
+    const highWeeks = shelfMarks.filter(item => item.weeks >= 3);
+    const twoWeeks = shelfMarks.filter(item => item.weeks === 2);
+    
+    outstandingMarks = [...highWeeks];
+    const slotsLeft = Math.max(0, 9 - outstandingMarks.length);
+    const twoWeeksToAdd = twoWeeks.slice(0, Math.min(slotsLeft, 4));
+    outstandingMarks = [...outstandingMarks, ...twoWeeksToAdd];
+
+    const outstandingSet = new Set(outstandingMarks.map(item => item.num));
+
+    // Best Bets Logic (Hot/Cold combined - EXCLUDING OUTSTANDING)
+    const allDraws = [];
+    for (let w = weekIndex - 1; w >= 0 && allDraws.length < 200; w--) {
+      const week = sortedWeeks[w];
+      const weekStartDate = new Date(week.startDate);
+      for (let d = dayNames.length - 1; d >= 0 && allDraws.length < 200; d--) {
+        for (let s = slots.length - 1; s >= 0 && allDraws.length < 200; s--) {
+          const draw = getDraw(week, dayNames[d], slots[s]);
+          if (draw) {
+            allDraws.push({ num: draw, date: new Date(weekStartDate.getTime() + d * 86400000) });
+          }
+        }
+      }
+    }
+
+    const frequency = {};
+    for (let i = 1; i <= 36; i++) frequency[i] = 0;
+    allDraws.forEach(draw => frequency[draw.num]++);
+
+    // Hot marks (top 30) - EXCLUDING OUTSTANDING
+    const hotMarks = Object.entries(frequency)
+      .filter(([num]) => !outstandingSet.has(parseInt(num)))
+      .map(([num, count]) => ({ num: parseInt(num), count }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 30)
+      .map(item => item.num);
+
+    // Cold marks (bottom 30, >0) - EXCLUDING OUTSTANDING
+    const coldMarks = Object.entries(frequency)
+      .filter(([num, count]) => count > 0 && !outstandingSet.has(parseInt(num)))
+      .map(([num, count]) => ({ num: parseInt(num), count }))
+      .sort((a, b) => a.count - b.count)
+      .slice(0, 30)
+      .map(item => item.num);
+
+    const bestBetsSet = new Set();
+    hotMarks.forEach(num => bestBetsSet.add(num));
+    coldMarks.forEach(num => bestBetsSet.add(num));
+
+    let bestBetsArray = Array.from(bestBetsSet);
+
+    // LIMIT TO 30 ITEMS (3 rows of 10)
+    if (bestBetsArray.length > 30) {
+      bestBetsArray = bestBetsArray.slice(0, 30);
+    }
+
+    // Split into rows of 10 (3 rows)
+    const bestBetsRows = [];
+    for (let i = 0; i < bestBetsArray.length; i += 10) {
+      bestBetsRows.push(bestBetsArray.slice(i, i + 10));
+    }
+
+    // ======================================
+    // RENDER FUNCTIONS FOR THIS BOARD
+    // ======================================
+
+    function getDiagonalStrike(num) {
+      const count = currWeekCounts[num] || 0;
+      if (count === 0) return '';
+      const color = count === 1 ? '#28a745' : count === 2 ? '#007bff' : '#dc3545';
+      return `
+        <span style="
+          position: absolute;
+          top: 50%;
+          left: -10%;
+          width: 120%;
+          height: 2px;
+          background: ${color};
+          transform: rotate(-45deg);
+          transform-origin: center;
+          pointer-events: none;
+          box-shadow: 0 0 4px rgba(0,0,0,0.1);
+        "></span>
+      `;
+    }
+
+    function renderOutstandingMarks() {
+      if (!outstandingMarks || outstandingMarks.length === 0) {
+        return '<div style="text-align: center; color: #999; font-size: 11px; padding: 8px 0;">No outstanding marks</div>';
+      }
+
+      let html = `<div style="display: flex; justify-content: center; align-items: flex-start; gap: 4px; flex-wrap: nowrap; overflow-x: auto; padding: 4px 0;">`;
+      
+      const groupedByWeeks = {};
+      outstandingMarks.forEach(item => {
+        if (!groupedByWeeks[item.weeks]) groupedByWeeks[item.weeks] = [];
+        groupedByWeeks[item.weeks].push(item);
+      });
+
+      Object.keys(groupedByWeeks).sort((a, b) => b - a).forEach((weeks, groupIndex) => {
+        if (groupIndex > 0) {
+          html += `<span style="color: #28a745; font-weight: 700; font-size: 14px; margin: 0 4px; align-self: center;">+</span>`;
+        }
+        
+        html += `<div style="display: flex; flex-direction: column; align-items: center; border-bottom: 2px solid #28a745; padding-bottom: 2px; margin-bottom: 4px;">`;
+        html += `<div style="display: flex; align-items: center; gap: 2px; margin-bottom: 2px;">`;
+        
+        groupedByWeeks[weeks].forEach((item, index) => {
+          const isPlayed = currWeekCounts[item.num] > 0;
+          let numColor = '#000';
+          if (isPlayed) {
+            const count = currWeekCounts[item.num];
+            numColor = count === 1 ? '#28a745' : count === 2 ? '#007bff' : '#dc3545';
+          }
+          
+          if (index > 0) html += `<span style="color: #000; font-weight: 900; font-size: 16px; margin: 0 2px;">+</span>`;
+          
+          html += `
+            <span style="font-size: 16px; font-weight: 900; color: ${numColor}; position: relative; display: inline-block;">
+              ${item.num} ${isPlayed ? getDiagonalStrike(item.num) : ''}
+            </span>
+          `;
+        });
+        html += `</div>`;
+        html += `<span style="font-size: 10px; color: #dc3545; font-weight: 800; letter-spacing: 1px;">${weeks} WKS</span>`;
+        html += `</div>`;
+      });
+      
+      html += `</div>`;
+      return html;
+    }
+
+    function renderBestBets() {
+      if (!bestBetsRows || bestBetsRows.length === 0) {
+        return '<div style="text-align: center; color: #999; font-size: 11px; padding: 8px 0;">No best bets available</div>';
+      }
+
+      let html = '';
+      bestBetsRows.forEach((row) => {
+        // Using flex with slightly tighter gap since we have 10 items per row
+        html += `<div style="display: flex; justify-content: center; align-items: center; gap: 4px; margin-bottom: 2px; flex-wrap: nowrap;">`;
+        
+        row.forEach((num, index) => {
+          const isPlayed = currWeekCounts[num] > 0;
+          let numColor = '#000';
+          if (isPlayed) {
+            const count = currWeekCounts[num];
+            numColor = count === 1 ? '#28a745' : count === 2 ? '#007bff' : '#dc3545';
+          }
+          
+          if (index > 0) {
+            html += `<span style="color: #28a745; font-weight: 700; font-size: 10px;">+</span>`;
+          }
+          html += `
+            <span style="font-size: 14px; font-weight: 700; color: ${numColor}; position: relative; display: inline-block;">
+              ${num}
+              ${isPlayed ? getDiagonalStrike(num) : ''}
+            </span>
+          `;
+        });
+        
+        html += `</div>`;
+      });
+
+      return html;
+    }
+
+    const weekStartStr = weekStart.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    const weekEndStr = weekEnd.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    const weekRange = `${weekStartStr} - ${weekEndStr}`;
+
+    // Calculate the actual Week Number for display
+    const earliestDate = new Date(sortedWeeks[0].startDate);
+    const weekNum = Math.ceil((weekStart - earliestDate) / (7 * 24 * 60 * 60 * 1000)) + 1;
+    const displayWeekNumber = (weekNum > 0 && weekNum < 999) ? weekNum : 1;
+
+    // Date to show in header
+    const displayDate = isCurrentWeek ? now : weekEnd;
+    const dateString = displayDate.toLocaleDateString('en-US', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+
+    return `
+      <div style="
+        background: #ffffff;
+        border-radius: 8px;
+        padding: 12px 14px;
+        border: 2px solid #333;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+        max-width: 480px;
+        width: 100%;
+        font-family: 'Courier New', monospace;
+        box-sizing: border-box;
+      ">
+        <!-- Header -->
+        <div style="text-align: center; border-bottom: 2px solid #333; padding-bottom: 4px; margin-bottom: 8px;">
+          <div style="font-size: 14px; font-weight: 900; color: #000; letter-spacing: 2px;">D WHE WHE WHITE BOARD</div>
+          <div style="font-size: 9px; color: #666; font-weight: 600; margin-top: 1px;">${weekRange} • Week ${displayWeekNumber}</div>
+          <div style="font-size: 8px; color: #999; margin-top: 1px;">${dateString}</div>
+        </div>
+
+        <!-- OUTSTANDING -->
+        <div style="margin-bottom: 8px;">
+          <div style="font-size: 10px; font-weight: 800; color: #dc3545; letter-spacing: 2px; margin-bottom: 4px; text-align: center;">OUTSTANDING</div>
+          ${renderOutstandingMarks()}
+        </div>
+
+        <!-- BEST BETS - Exactly 3 Rows of 10 (30 items) -->
+        <div style="margin-top: 6px; border-top: 2px solid #333; padding-top: 8px;">
+          <div style="font-size: 10px; font-weight: 800; color: #dc3545; letter-spacing: 2px; margin-bottom: 4px; text-align: center;">BEST BETS</div>
+          ${renderBestBets()}
+        </div>
+
+        <!-- Legend -->
+        <div style="margin-top: 8px; padding-top: 4px; border-top: 1px solid #ddd; display: flex; justify-content: center; gap: 12px; font-size: 7px; color: #666;">
+          <span style="color: #28a745;">● 1x Played</span>
+          <span style="color: #007bff;">● 2x Played</span>
+          <span style="color: #dc3545;">● 3x+ Played</span>
+        </div>
+
+        <!-- Footer -->
+        <div style="margin-top: 4px; padding-top: 4px; border-top: 1px solid #eee; text-align: center; font-size: 6px; color: #999; letter-spacing: 0.5px;">
+          CWG ©️ White Board v1 • ${typeof globalTrackingCode !== 'undefined' ? globalTrackingCode : 'CWG-150926-MOR-NEK2'}
+        </div>
+      </div>
+    `;
+  }
+
+  // ======================================
+  // BUILD THE CAROUSEL CONTAINER
+  // ======================================
+  
+  return `
+    <div style="position: relative; width: 100%; max-width: 480px; margin: 0 auto;">
+      <div id="whiteBoardCarouselV1" style="
+        display: flex;
+        overflow-x: auto;
+        scroll-snap-type: x mandatory;
+        -webkit-overflow-scrolling: touch;
+        gap: 16px;
+        padding-bottom: 8px;
+        scrollbar-width: none; /* Firefox */
+        -ms-overflow-style: none; /* IE */
+      ">
+        <style>
+          #whiteBoardCarouselV1::-webkit-scrollbar { display: none; }
+          .whiteboard-slide-v1 { scroll-snap-align: center; flex: 0 0 100%; }
+        </style>
+        ${sortedWeeks.slice().reverse().map((_, index) => {
+          // Map the reversed index back to the original weekIndex
+          const originalIndex = sortedWeeks.length - 1 - index;
+          return `
+            <div class="whiteboard-slide-v1">
+              ${generateBoardForWeek(originalIndex)}
+            </div>
+          `;
+        }).join('')}
+      </div>
+    </div>
+  `;
+}
+
+// === Version 2
+
+// ======================================
+// PLAY WHE WHITE BOARD V2 (AUTHENTIC CAROUSEL)
+// Traditional Play Whe White Board with Outstanding Marks & Best Bets
+// Supports swiping to previous weeks
+// ======================================
+function renderPlayWheWhiteBoardv2(weeksData) {
+  if (!weeksData || weeksData.length === 0) {
+    return `
+      <div style="background: #ffffff; border-radius: 12px; padding: 16px; margin-bottom: 15px; border: 2px solid #333; text-align:center;">
+        <span style="font-size: 14px; color: #333; font-weight: 600;">📊 Loading White Board...</span>
+      </div>
+    `;
+  }
+
+  // ======================================
+  // CONSTANTS & HELPERS
+  // ======================================
+  const dayNames = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+  const slots = ["MOR", "MID", "NON", "EVE"];
+
+  // Sort weeks chronologically (oldest to newest) - We need this order for the math/calculations
+  const sortedWeeks = [...weeksData].sort((a, b) => {
+    let pa = a.startDate.split(" ");
+    let pb = b.startDate.split(" ");
+    return new Date(pa[2] + "-" + pa[1] + "-" + pa[0]) - new Date(pb[2] + "-" + pb[1] + "-" + pb[0]);
+  });
+
+  const getDraw = (week, dayName, slot) => {
+    if (!week) return null;
+    const day = week.days.find(d => d.dayName === dayName);
+    if (!day) return null;
+    const val = day.draws[slot];
+    return val && val !== "-" && val !== "PENDING" && val !== "HOLIDAY" ? parseInt(val, 10) : null;
+  };
+
+  // ======================================
+  // CORE BOARD GENERATOR FOR A SPECIFIC WEEK
+  // ======================================
+  function generateBoardForWeek(weekIndex) {
+    const targetWeek = sortedWeeks[weekIndex];
+    if (!targetWeek) return '';
+
+    // Calculate the start and end dates for the target week
+    let pa = targetWeek.startDate.split(" ");
+    const monthMap = {"Jan":0,"Feb":1,"Mar":2,"Apr":3,"May":4,"Jun":5,"Jul":6,"Aug":7,"Sep":8,"Oct":9,"Nov":10,"Dec":11};
+    const weekStart = new Date(pa[2], monthMap[pa[1]], parseInt(pa[0]));
+    weekStart.setHours(0, 0, 0, 0);
+    
+    const weekEnd = new Date(weekStart);
+    weekEnd.setDate(weekStart.getDate() + 6);
+    weekEnd.setHours(23, 59, 59, 999);
+
+    // Determine the "cutoff" date for draws in this week
+    const now = new Date();
+    const isCurrentWeek = weekIndex === sortedWeeks.length - 1;
+    const currentDay = now.getDay();
+    
+    // Get draws for this specific week up to today (if current week) or all 7 days (if past week)
+    const weekDraws = [];
+    const maxDay = isCurrentWeek ? currentDay : 6;
+    
+    for (let d = 0; d <= maxDay; d++) {
+      for (const slot of slots) {
+        const draw = getDraw(targetWeek, dayNames[d], slot);
+        if (draw) weekDraws.push(draw);
+      }
+    }
+
+    const currWeekCounts = {};
+    for (let i = 1; i <= 36; i++) currWeekCounts[i] = 0;
+    weekDraws.forEach(num => currWeekCounts[num] = (currWeekCounts[num] || 0) + 1);
+
+    // Calculate Shelf Marks based on data BEFORE this week
+    const lastOccurrence = {};
+    
+    // Loop backwards from the week before this one
+    for (let w = weekIndex - 1; w >= 0; w--) {
+      const week = sortedWeeks[w];
+      const weekStartDate = new Date(week.startDate);
+      
+      for (let d = dayNames.length - 1; d >= 0; d--) {
+        for (let s = slots.length - 1; s >= 0; s--) {
+          const num = getDraw(week, dayNames[d], slots[s]);
+          if (num) {
+            if (!lastOccurrence[num]) {
+              lastOccurrence[num] = {
+                date: new Date(weekStartDate.getTime() + d * 86400000)
+              };
+            }
+          }
+        }
+      }
+    }
+
+    const getDaysSince = (num) => {
+      if (!lastOccurrence[num]) return 999;
+      const lastDate = lastOccurrence[num].date;
+      if (!lastDate) return 999;
+      lastDate.setHours(0, 0, 0, 0);
+      const weekStartMidnight = new Date(weekStart);
+      weekStartMidnight.setHours(0, 0, 0, 0);
+      const diff = Math.floor((weekStartMidnight - lastDate) / (1000 * 60 * 60 * 24));
+      return Math.max(0, diff);
+    };
+
+    const shelfMarks = [];
+    for (let i = 1; i <= 36; i++) {
+      const days = getDaysSince(i);
+      if (days > 0) {
+        shelfMarks.push({
+          num: i,
+          days: days,
+          weeks: Math.floor(days / 7)
+        });
+      }
+    }
+    shelfMarks.sort((a, b) => b.days - a.days);
+
+    // ***** TRIM LOGIC *****
+    // Max 9 total. Highest weeks first. 2 WKS max 4.
+    let outstandingMarks = [];
+    const highWeeks = shelfMarks.filter(item => item.weeks >= 3);
+    const twoWeeks = shelfMarks.filter(item => item.weeks === 2);
+    
+    outstandingMarks = [...highWeeks];
+    const slotsLeft = Math.max(0, 9 - outstandingMarks.length);
+    const twoWeeksToAdd = twoWeeks.slice(0, Math.min(slotsLeft, 4));
+    outstandingMarks = [...outstandingMarks, ...twoWeeksToAdd];
+
+    const outstandingSet = new Set(outstandingMarks.map(item => item.num));
+
+    // Best Bets Logic (Hot/Cold combined - EXCLUDING OUTSTANDING)
+    const allDraws = [];
+    for (let w = weekIndex - 1; w >= 0 && allDraws.length < 200; w--) {
+      const week = sortedWeeks[w];
+      const weekStartDate = new Date(week.startDate);
+      for (let d = dayNames.length - 1; d >= 0 && allDraws.length < 200; d--) {
+        for (let s = slots.length - 1; s >= 0 && allDraws.length < 200; s--) {
+          const draw = getDraw(week, dayNames[d], slots[s]);
+          if (draw) {
+            allDraws.push({ num: draw, date: new Date(weekStartDate.getTime() + d * 86400000) });
+          }
+        }
+      }
+    }
+
+    const frequency = {};
+    for (let i = 1; i <= 36; i++) frequency[i] = 0;
+    allDraws.forEach(draw => frequency[draw.num]++);
+
+    // Hot marks (top 30) - EXCLUDING OUTSTANDING
+    const hotMarks = Object.entries(frequency)
+      .filter(([num]) => !outstandingSet.has(parseInt(num)))
+      .map(([num, count]) => ({ num: parseInt(num), count }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 30)
+      .map(item => item.num);
+
+    // Cold marks (bottom 30, >0) - EXCLUDING OUTSTANDING
+    const coldMarks = Object.entries(frequency)
+      .filter(([num, count]) => count > 0 && !outstandingSet.has(parseInt(num)))
+      .map(([num, count]) => ({ num: parseInt(num), count }))
+      .sort((a, b) => a.count - b.count)
+      .slice(0, 30)
+      .map(item => item.num);
+
+    const bestBetsSet = new Set();
+    hotMarks.forEach(num => bestBetsSet.add(num));
+    coldMarks.forEach(num => bestBetsSet.add(num));
+
+    let bestBetsArray = Array.from(bestBetsSet);
+
+    // LIMIT TO 20 ITEMS (2 rows of 10)
+    if (bestBetsArray.length > 20) {
+      bestBetsArray = bestBetsArray.slice(0, 20);
+    }
+
+    // Split into rows of 10
+    const bestBetsRows = [];
+    for (let i = 0; i < bestBetsArray.length; i += 10) {
+      bestBetsRows.push(bestBetsArray.slice(i, i + 10));
+    }
+
+    // ======================================
+    // RENDER FUNCTIONS FOR THIS BOARD
+    // ======================================
+
+    function getDiagonalStrike(num) {
+      const count = currWeekCounts[num] || 0;
+      if (count === 0) return '';
+      const color = count === 1 ? '#28a745' : count === 2 ? '#007bff' : '#dc3545';
+      return `
+        <span style="
+          position: absolute;
+          top: 50%;
+          left: -10%;
+          width: 120%;
+          height: 2px;
+          background: ${color};
+          transform: rotate(-45deg);
+          transform-origin: center;
+          pointer-events: none;
+          box-shadow: 0 0 4px rgba(0,0,0,0.1);
+        "></span>
+      `;
+    }
+
+    function renderOutstandingMarks() {
+      if (!outstandingMarks || outstandingMarks.length === 0) {
+        return '<div style="text-align: center; color: #999; font-size: 11px; padding: 8px 0;">No outstanding marks</div>';
+      }
+
+      let html = `<div style="display: flex; justify-content: center; align-items: flex-start; gap: 4px; flex-wrap: nowrap; overflow-x: auto; padding: 4px 0;">`;
+      
+      const groupedByWeeks = {};
+      outstandingMarks.forEach(item => {
+        if (!groupedByWeeks[item.weeks]) groupedByWeeks[item.weeks] = [];
+        groupedByWeeks[item.weeks].push(item);
+      });
+
+      Object.keys(groupedByWeeks).sort((a, b) => b - a).forEach((weeks, groupIndex) => {
+        if (groupIndex > 0) {
+          html += `<span style="color: #28a745; font-weight: 700; font-size: 14px; margin: 0 4px; align-self: center;">+</span>`;
+        }
+        
+        html += `<div style="display: flex; flex-direction: column; align-items: center; border-bottom: 2px solid #28a745; padding-bottom: 2px; margin-bottom: 4px;">`;
+        html += `<div style="display: flex; align-items: center; gap: 2px; margin-bottom: 2px;">`;
+        
+        groupedByWeeks[weeks].forEach((item, index) => {
+          const isPlayed = currWeekCounts[item.num] > 0;
+          let numColor = '#000';
+          if (isPlayed) {
+            const count = currWeekCounts[item.num];
+            numColor = count === 1 ? '#28a745' : count === 2 ? '#007bff' : '#dc3545';
+          }
+          
+          if (index > 0) html += `<span style="color: #000; font-weight: 900; font-size: 16px; margin: 0 2px;">+</span>`;
+          
+          html += `
+            <span style="font-size: 16px; font-weight: 900; color: ${numColor}; position: relative; display: inline-block;">
+              ${item.num} ${isPlayed ? getDiagonalStrike(item.num) : ''}
+            </span>
+          `;
+        });
+        html += `</div>`;
+        html += `<span style="font-size: 10px; color: #dc3545; font-weight: 800; letter-spacing: 1px;">${weeks} WKS</span>`;
+        html += `</div>`;
+      });
+      
+      html += `</div>`;
+      return html;
+    }
+
+    function renderBestBets() {
+      if (!bestBetsRows || bestBetsRows.length === 0) {
+        return '<div style="text-align: center; color: #999; font-size: 16px; padding: 8px 0;">No best bets available</div>';
+      }
+
+      let html = '';
+      bestBetsRows.forEach((row) => {
+        html += `<div style="display: flex; justify-content: center; align-items: center; gap: 5px; margin-bottom: 2px; flex-wrap: nowrap;">`;
+        
+        row.forEach((num, index) => {
+          const isPlayed = currWeekCounts[num] > 0;
+          let numColor = '#000';
+          if (isPlayed) {
+            const count = currWeekCounts[num];
+            numColor = count === 1 ? '#28a745' : count === 2 ? '#007bff' : '#dc3545';
+          }
+          
+          if (index > 0) {
+            html += `<span style="color: #28a745; font-weight: 700; font-size: 14px;">+</span>`;
+          }
+          html += `
+            <span style="font-size: 14px; font-weight: 700; color: ${numColor}; position: relative; display: inline-block;">
+              ${num}
+              ${isPlayed ? getDiagonalStrike(num) : ''}
+            </span>
+          `;
+        });
+        
+        html += `</div>`;
+      });
+
+      return html;
+    }
+
+    const weekStartStr = weekStart.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    const weekEndStr = weekEnd.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    const weekRange = `${weekStartStr} - ${weekEndStr}`;
+
+    // Calculate the actual Week Number for display
+    const earliestDate = new Date(sortedWeeks[0].startDate);
+    const weekNum = Math.ceil((weekStart - earliestDate) / (7 * 24 * 60 * 60 * 1000)) + 1;
+    const displayWeekNumber = (weekNum > 0 && weekNum < 999) ? weekNum : 1;
+
+    // Date to show in header
+    const displayDate = isCurrentWeek ? now : weekEnd;
+    const dateString = displayDate.toLocaleDateString('en-US', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+
+    return `
+      <div style="
+        background: #ffffff;
+        border-radius: 8px;
+        padding: 12px 14px;
+        border: 2px solid #333;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+        max-width: 480px;
+        width: 100%;
+        font-family: 'Courier New', monospace;
+        box-sizing: border-box;
+      ">
+        <!-- Header -->
+        <div style="text-align: center; border-bottom: 2px solid #333; padding-bottom: 4px; margin-bottom: 4px;">
+          <div style="font-size: 18px; font-weight: 900; color: #000; letter-spacing: 2px;">D WHE WHE WHITE BOARD</div>
+          <div style="font-size: 12px; color: #000; font-weight: 600; margin-top: 1px;">${weekRange} • Week ${displayWeekNumber}</div>
+          <div style="font-size: 12px; color: #000; margin-top: 1px;">${dateString}</div>
+        </div>
+
+        <!-- OUTSTANDING -->
+        <div style="margin-bottom: 8px;">
+          <div style="font-size: 18px; font-weight: 800; color: #dc3545; letter-spacing: 2px; margin-bottom: 4px; text-align: center;">OUTSTANDING</div>
+          ${renderOutstandingMarks()}
+        </div>
+
+        <!-- BEST BETS - 20 items in 2 rows of 10 -->
+        <div style="margin-top: 6px; border-top: 2px solid #333; padding-top: 8px;">
+          <div style="font-size: 16px; font-weight: 800; color: #dc3545; letter-spacing: 2px; margin-bottom: 4px; text-align: center;">BEST BETS</div>
+          ${renderBestBets()}
+        </div>
+
+        <!-- Legend -->
+        <div style="margin-top: 8px; padding-top: 4px; border-top: 1px solid #ddd; display: flex; justify-content: center; gap: 9px; font-size: 7px; color: #666;">
+          <span style="color: #28a745;">● 1x Played</span>
+          <span style="color: #007bff;">● 2x Played</span>
+          <span style="color: #dc3545;">● 3x+ Played</span>
+        </div>
+
+        <!-- Footer -->
+        <div style="margin-top: 4px; padding-top: 4px; border-top: 1px solid #eee; text-align: center; font-size: 6px; color: #999; letter-spacing: 0.5px;">
+          CWG ©️ White Board v2 • ${typeof globalTrackingCode !== 'undefined' ? globalTrackingCode : 'CWG-150926-MOR-NEK2'}
+        </div>
+      </div>
+    `;
+  }
+
+  // ======================================
+  // BUILD THE CAROUSEL CONTAINER
+  // ======================================
+  
+  return `
+    <div style="position: relative; width: 100%; max-width: 480px; margin: 0 auto;">
+      <div id="whiteBoardCarouselV2" style="
+        display: flex;
+        overflow-x: auto;
+        scroll-snap-type: x mandatory;
+        -webkit-overflow-scrolling: touch;
+        gap: 16px;
+        padding-bottom: 8px;
+        scrollbar-width: none; /* Firefox */
+        -ms-overflow-style: none; /* IE */
+      ">
+        <style>
+          #whiteBoardCarouselV2::-webkit-scrollbar { display: none; }
+          .whiteboard-slide-v2 { scroll-snap-align: center; flex: 0 0 100%; }
+        </style>
+        ${sortedWeeks.slice().reverse().map((_, index) => {
+          // Map the reversed index back to the original weekIndex
+          const originalIndex = sortedWeeks.length - 1 - index;
+          return `
+            <div class="whiteboard-slide-v2">
+              ${generateBoardForWeek(originalIndex)}
+            </div>
+          `;
+        }).join('')}
+      </div>
+    </div>
+  `;
+}
+// == Version 3
+// ======================================
+// PLAY WHE WHITE BOARD V3 (AUTHENTIC CAROUSEL)
+// Driven by Average Gap in Days for Best Bets
+// Supports swiping to previous weeks
+// ======================================
+function renderPlayWheWhiteBoardv3(weeksData) {
+  if (!weeksData || weeksData.length === 0) {
+    return `
+      <div style="background: #ffffff; border-radius: 12px; padding: 16px; margin-bottom: 15px; border: 2px solid #333; text-align:center;">
+        <span style="font-size: 14px; color: #333; font-weight: 600;">📊 Loading White Board...</span>
+      </div>
+    `;
+  }
+
+  // ======================================
+  // CONSTANTS & HELPERS
+  // ======================================
+  const dayNames = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+  const slots = ["MOR", "MID", "NON", "EVE"];
+  
+  const numToLineMap = {
+    1:1, 10:1, 19:1, 28:1, 2:2, 11:2, 20:2, 29:2, 3:3, 12:3, 21:3, 30:3,
+    4:4, 13:4, 22:4, 31:4, 5:5, 14:5, 23:5, 32:5, 6:6, 15:6, 24:6, 33:6,
+    7:7, 16:7, 25:7, 34:7, 8:8, 17:8, 26:8, 35:8, 9:9, 18:9, 27:9, 36:9
+  };
+
+  // Sort weeks chronologically (oldest to newest) - We need this order for the math/calculations
+  const sortedWeeks = [...weeksData].sort((a, b) => {
+    let pa = a.startDate.split(" ");
+    let pb = b.startDate.split(" ");
+    return new Date(pa[2] + "-" + pa[1] + "-" + pa[0]) - new Date(pb[2] + "-" + pb[1] + "-" + pb[0]);
+  });
+
+  const getDraw = (week, dayName, slot) => {
+    if (!week) return null;
+    const day = week.days.find(d => d.dayName === dayName);
+    if (!day) return null;
+    const val = day.draws[slot];
+    return val && val !== "-" && val !== "PENDING" && val !== "HOLIDAY" ? parseInt(val, 10) : null;
+  };
+
+  // ======================================
+  // CORE BOARD GENERATOR FOR A SPECIFIC WEEK
+  // ======================================
+  function generateBoardForWeek(weekIndex) {
+    const targetWeek = sortedWeeks[weekIndex];
+    if (!targetWeek) return '';
+
+    // Calculate the start and end dates for the target week
+    let pa = targetWeek.startDate.split(" ");
+    const monthMap = {"Jan":0,"Feb":1,"Mar":2,"Apr":3,"May":4,"Jun":5,"Jul":6,"Aug":7,"Sep":8,"Oct":9,"Nov":10,"Dec":11};
+    const weekStart = new Date(pa[2], monthMap[pa[1]], parseInt(pa[0]));
+    weekStart.setHours(0, 0, 0, 0);
+    
+    const weekEnd = new Date(weekStart);
+    weekEnd.setDate(weekStart.getDate() + 6);
+    weekEnd.setHours(23, 59, 59, 999);
+
+    // Determine the "cutoff" date for draws in this week (if it's the current week, we only go up to today)
+    const now = new Date();
+    const isCurrentWeek = weekIndex === sortedWeeks.length - 1;
+    const currentDay = now.getDay();
+    
+    // Get draws for this specific week up to today (if current week) or all 7 days (if past week)
+    const weekDraws = [];
+    const maxDay = isCurrentWeek ? currentDay : 6;
+    
+    for (let d = 0; d <= maxDay; d++) {
+      for (const slot of slots) {
+        const draw = getDraw(targetWeek, dayNames[d], slot);
+        if (draw) weekDraws.push(draw);
+      }
+    }
+
+    const currWeekCounts = {};
+    for (let i = 1; i <= 36; i++) currWeekCounts[i] = 0;
+    weekDraws.forEach(num => currWeekCounts[num] = (currWeekCounts[num] || 0) + 1);
+
+    // Calculate Shelf Marks & Average Gap based on data BEFORE this week
+    const lastOccurrence = {};
+    const allDrawsForStats = [];
+    
+    // Loop backwards from the week before this one
+    for (let w = weekIndex - 1; w >= 0 && allDrawsForStats.length < 200; w--) {
+      const week = sortedWeeks[w];
+      const weekStartDate = new Date(week.startDate);
+      
+      // Process past weeks for lastOccurrence
+      for (let d = dayNames.length - 1; d >= 0; d--) {
+        for (let s = slots.length - 1; s >= 0; s--) {
+          const num = getDraw(week, dayNames[d], slots[s]);
+          if (num) {
+            if (!lastOccurrence[num]) {
+              lastOccurrence[num] = {
+                date: new Date(weekStartDate.getTime() + d * 86400000)
+              };
+            }
+            if (allDrawsForStats.length < 200) {
+              allDrawsForStats.push({
+                num: num,
+                date: new Date(weekStartDate.getTime() + d * 86400000)
+              });
+            }
+          }
+        }
+      }
+    }
+
+    const getDaysSince = (num) => {
+      if (!lastOccurrence[num]) return 999;
+      const lastDate = lastOccurrence[num].date;
+      if (!lastDate) return 999;
+      lastDate.setHours(0, 0, 0, 0);
+      const weekStartMidnight = new Date(weekStart);
+      weekStartMidnight.setHours(0, 0, 0, 0);
+      const diff = Math.floor((weekStartMidnight - lastDate) / (1000 * 60 * 60 * 24));
+      return Math.max(0, diff);
+    };
+
+    const shelfMarks = [];
+    for (let i = 1; i <= 36; i++) {
+      const days = getDaysSince(i);
+      if (days > 0) {
+        shelfMarks.push({ num: i, days: days, weeks: Math.floor(days / 7) });
+      }
+    }
+    shelfMarks.sort((a, b) => b.days - a.days);
+
+    // ***** TWEAK 1: TRIM OUTSTANDING MARKS *****
+    // Max 9 total. Highest weeks first. 2 WKS max 4.
+    let outstandingMarks = [];
+    const highWeeks = shelfMarks.filter(item => item.weeks >= 3);
+    const twoWeeks = shelfMarks.filter(item => item.weeks === 2);
+    
+    outstandingMarks = [...highWeeks];
+    const slotsLeft = Math.max(0, 9 - outstandingMarks.length);
+    const twoWeeksToAdd = twoWeeks.slice(0, Math.min(slotsLeft, 4));
+    outstandingMarks = [...outstandingMarks, ...twoWeeksToAdd];
+
+    const outstandingSet = new Set(outstandingMarks.map(item => item.num));
+
+    // Best Bets Logic (Average Gap)
+    const frequency = {};
+    for (let i = 1; i <= 36; i++) frequency[i] = 0;
+    allDrawsForStats.forEach(draw => frequency[draw.num]++);
+
+    const overdueScoreMap = {};
+    for (let i = 1; i <= 36; i++) {
+      const avgGap = frequency[i] > 2 ? (allDrawsForStats.length * 7) / frequency[i] : 14; 
+      overdueScoreMap[i] = getDaysSince(i) - avgGap;
+    }
+
+    const availableForBestBets = [];
+    for (let i = 1; i <= 36; i++) {
+      if (!outstandingSet.has(i)) {
+        availableForBestBets.push({
+          num: i,
+          score: overdueScoreMap[i] || 0,
+          line: numToLineMap[i] || 99
+        });
+      }
+    }
+
+    availableForBestBets.sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      return a.line - b.line; 
+    });
+
+    const finalBestBets = availableForBestBets.slice(0, 14).map(item => item.num); // Grab up to 14 for 2 rows of 7
+    finalBestBets.sort((a, b) => (numToLineMap[a] || 99) - (numToLineMap[b] || 99));
+
+    // Split into rows of 7
+    const bestBetsRows = [];
+    for (let i = 0; i < finalBestBets.length; i += 7) {
+      bestBetsRows.push(finalBestBets.slice(i, i + 7));
+    }
+
+    // ======================================
+    // RENDER FUNCTIONS FOR THIS BOARD
+    // ======================================
+    const getDiagonalStrike = (num) => {
+      const count = currWeekCounts[num] || 0;
+      if (count === 0) return '';
+      const color = count === 1 ? '#28a745' : count === 2 ? '#007bff' : '#dc3545';
+      return `
+        <span style="
+          position: absolute; top: 50%; left: 50%; width: 140%; height: 3px;
+          background: ${color}; transform: translate(-50%, -50%) rotate(-45deg);
+          transform-origin: center; pointer-events: none;
+          box-shadow: 0 0 4px rgba(0,0,0,0.1); z-index: 2;
+        "></span>
+      `;
+    };
+
+    const renderOutstandingMarks = () => {
+      if (!outstandingMarks || outstandingMarks.length === 0) {
+        return '<div style="text-align: center; color: #999; font-size: 11px; padding: 8px 0;">No outstanding marks</div>';
+      }
+      let html = `<div style="display: flex; justify-content: center; align-items: flex-start; gap: 4px; flex-wrap: nowrap; overflow-x: auto; padding: 4px 0;">`;
+      
+      const groupedByWeeks = {};
+      outstandingMarks.forEach(item => {
+        if (!groupedByWeeks[item.weeks]) groupedByWeeks[item.weeks] = [];
+        groupedByWeeks[item.weeks].push(item);
+      });
+
+      Object.keys(groupedByWeeks).sort((a, b) => b - a).forEach((weeks, groupIndex) => {
+        if (groupIndex > 0) {
+          html += `<span style="color: #28a745; font-weight: 700; font-size: 14px; margin: 0 4px; align-self: center;">+</span>`;
+        }
+        html += `<div style="display: flex; flex-direction: column; align-items: center; border-bottom: 2px solid #28a745; padding-bottom: 2px; margin-bottom: 4px;">`;
+        html += `<div style="display: flex; align-items: center; gap: 2px; margin-bottom: 2px;">`;
+        
+        groupedByWeeks[weeks].forEach((item, index) => {
+          const isPlayed = currWeekCounts[item.num] > 0;
+          let numColor = '#000';
+          if (isPlayed) {
+            const count = currWeekCounts[item.num];
+            numColor = count === 1 ? '#28a745' : count === 2 ? '#007bff' : '#dc3545';
+          }
+          if (index > 0) html += `<span style="color: #000; font-weight: 900; font-size: 16px; margin: 0 2px;">+</span>`;
+          html += `
+            <span style="font-size: 16px; font-weight: 900; color: ${numColor}; position: relative; display: inline-block;">
+              ${item.num} ${isPlayed ? getDiagonalStrike(item.num) : ''}
+            </span>
+          `;
+        });
+        html += `</div>`;
+        html += `<span style="font-size: 10px; color: #dc3545; font-weight: 800; letter-spacing: 1px;">${weeks} WKS</span>`;
+        html += `</div>`;
+      });
+      html += `</div>`;
+      return html;
+    };
+
+    const renderBestBets = () => {
+      if (!bestBetsRows || bestBetsRows.length === 0) {
+        return '<div style="text-align: center; color: #999; font-size: 16px; padding: 8px 0;">No best bets available</div>';
+      }
+      let html = '';
+      bestBetsRows.forEach((row) => {
+        // Grid: 7 numbers + 7 plus signs = 14 columns
+        html += `<div style="display: grid; grid-template-columns: repeat(14, 1fr); align-items: center; justify-items: center; margin-bottom: 4px; gap: 0;">`;
+        row.forEach((num) => {
+          const isPlayed = currWeekCounts[num] > 0;
+          let numColor = '#000';
+          if (isPlayed) {
+            const count = currWeekCounts[num];
+            numColor = count === 1 ? '#28a745' : count === 2 ? '#007bff' : '#dc3545';
+          }
+          // Reduced font size to 20px to fit 7 items comfortably in 480px width
+          html += `
+            <div style="position: relative; display: inline-flex; justify-content: center; align-items: center; width: 100%;">
+              <span style="font-size: 20px; font-weight: 900; color: ${numColor}; font-family: 'Courier New', monospace; position: relative; display: inline-block;">
+                ${num} ${isPlayed ? getDiagonalStrike(num) : ''}
+              </span>
+            </div>
+            <div style="display: inline-flex; justify-content: center; align-items: center; width: 100%;">
+              <span style="color: #28a745; font-weight: 900; font-size: 14px; font-family: 'Courier New', monospace;">+</span>
+            </div>
+          `;
+        });
+        html += `</div>`;
+      });
+      return html;
+    };
+
+    const weekStartStr = weekStart.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    const weekEndStr = weekEnd.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    const weekRange = `${weekStartStr} - ${weekEndStr}`;
+
+    // Calculate the actual Week Number for display
+    const earliestDate = new Date(sortedWeeks[0].startDate);
+    const weekNum = Math.ceil((weekStart - earliestDate) / (7 * 24 * 60 * 60 * 1000)) + 1;
+    const displayWeekNumber = (weekNum > 0 && weekNum < 999) ? weekNum : 1;
+
+    // Date to show in header (if current week, show today, else show end of that week)
+    const displayDate = isCurrentWeek ? now : weekEnd;
+    const dateString = displayDate.toLocaleDateString('en-US', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+
+    return `
+      <div style="
+        background: #ffffff; border-radius: 8px; padding: 12px 14px;
+        border: 2px solid #333; box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+        max-width: 480px; width: 100%; font-family: 'Courier New', monospace;
+        box-sizing: border-box;
+      ">
+        <!-- Header -->
+        <div style="text-align: center; border-bottom: 2px solid #333; padding-bottom: 4px; margin-bottom: 4px;">
+          <div style="font-size: 18px; font-weight: 900; color: #000; letter-spacing: 2px;">D WHE WHE WHITE BOARD</div>
+          <div style="font-size: 12px; color: #000; font-weight: 600; margin-top: 1px;">${weekRange} • Week ${displayWeekNumber}</div>
+          <div style="font-size: 12px; color: #000; margin-top: 1px;">${dateString}</div>
+        </div>
+
+        <!-- OUTSTANDING -->
+        <div style="margin-bottom: 8px;">
+          <div style="font-size: 18px; font-weight: 800; color: #dc3545; letter-spacing: 2px; margin-bottom: 4px; text-align: center;">OUTSTANDING</div>
+          ${renderOutstandingMarks()}
+        </div>
+
+        <!-- BEST BETS -->
+        <div style="margin-top: 6px; border-top: 2px solid #333; padding-top: 8px;">
+          <div style="font-size: 16px; font-weight: 800; color: #dc3545; letter-spacing: 2px; margin-bottom: 4px; text-align: center;">BEST BETS</div>
+          ${renderBestBets()}
+        </div>
+
+        <!-- Legend -->
+        <div style="margin-top: 8px; padding-top: 4px; border-top: 1px solid #ddd; display: flex; justify-content: center; gap: 9px; font-size: 7px; color: #666;">
+          <span style="color: #28a745;">● 1x Played</span>
+          <span style="color: #007bff;">● 2x Played</span>
+          <span style="color: #dc3545;">● 3x+ Played</span>
+        </div>
+
+        <!-- Footer -->
+        <div style="margin-top: 4px; padding-top: 4px; border-top: 1px solid #eee; text-align: center; font-size: 6px; color: #999; letter-spacing: 0.5px;">
+          CWG ©️ White Board v3 • ${typeof globalTrackingCode !== 'undefined' ? globalTrackingCode : 'CWG-150926-MOR-NEK2'}
+        </div>
+      </div>
+    `;
+  }
+
+  // ======================================
+  // BUILD THE CAROUSEL CONTAINER
+  // ======================================
+  
+  return `
+    <div style="position: relative; width: 100%; max-width: 480px; margin: 0 auto;">
+      <div id="whiteBoardCarouselV3" style="
+        display: flex;
+        overflow-x: auto;
+        scroll-snap-type: x mandatory;
+        -webkit-overflow-scrolling: touch;
+        gap: 16px;
+        padding-bottom: 8px;
+        scrollbar-width: none; /* Firefox */
+        -ms-overflow-style: none; /* IE */
+      ">
+        <style>
+          #whiteBoardCarouselV3::-webkit-scrollbar { display: none; }
+          .whiteboard-slide-v3 { scroll-snap-align: center; flex: 0 0 100%; }
+        </style>
+        ${sortedWeeks.slice().reverse().map((_, index) => {
+          // Map the reversed index back to the original weekIndex
+          const originalIndex = sortedWeeks.length - 1 - index;
+          return `
+            <div class="whiteboard-slide-v3">
+              ${generateBoardForWeek(originalIndex)}
+            </div>
+          `;
+        }).join('')}
+      </div>
+    </div>
+  `;
+}
+//////////////////////////////////////////
+// ==== Hot & Cold Adv Chart Version ====
+// ======================================
+// PLAY WHE HOT & COLD MARKS ENHANCED
+// Shows: Under Today, Leaving/Meeting, Top 9 Hot/Cold (200 draws),
+// Hot Marks (20 draws), Cold Marks (20 draws), Weekly Streak Details
+// ======================================
+function renderPlayWheHotColdMarksEnhanced(weeksData) {
+  if (!weeksData || weeksData.length === 0) {
+    return `
+      <div style="background: linear-gradient(135deg, #0f172a, #1e293b); border-radius: 16px; padding: 16px; margin-bottom: 15px; border: 1px solid #58a6ff; text-align:center;">
+        📊 Loading Play Whe data...
+      </div>
+    `;
+  }
+
+  // ======================================
+  // HELPER FUNCTIONS
+  // ======================================
+
+  const dayNames = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+  const slots = ["MOR", "MID", "NON", "EVE"];
+  const now = new Date();
+  const todayName = dayNames[now.getDay()];
+  const doubleNumbers = [8, 11, 22, 33];
+
+  function getDraw(week, dayName, slot) {
+    if (!week) return null;
+    const day = week.days.find(d => d.dayName === dayName);
+    if (!day) return null;
+    const val = day.draws[slot];
+    return val && val !== "-" && val !== "PENDING" && val !== "HOLIDAY" ? parseInt(val, 10) : null;
+  }
+
+  // Spirit Emoji mapping
+  const spiritEmoji = {
+    1: "🔪", 2: "👵🏾", 3: "🚕", 4: "⚰️", 5: "👨🏾‍🦳", 6: "🤰🏽", 7: "🐗", 8: "🐯",
+    9: "🐮", 10: "🐒", 11: "🦅", 12: "🤴🏽", 13: "🐸", 14: "💰", 15: "🤧", 16: "💃🏽",
+    17: "🐦‍⬛", 18: "🚤", 19: "🐎", 20: "🐶", 21: "👄", 22: "🐀", 23: "🏡", 24: "🫅🏽",
+    25: "🐢", 26: "🐔", 27: "🐍", 28: "🐟", 29: "🍻", 30: "🐈‍⬛", 31: "👵🏾", 32: "🦐",
+    33: "🕷️", 34: "👨🏾‍🦯", 35: "🐍", 36: "🫏"
+  };
+
+  // Sort weeks chronologically
+  const sortedWeeks = [...weeksData].sort((a, b) => {
+    let pa = a.startDate.split(" ");
+    let pb = b.startDate.split(" ");
+    return new Date(pa[2] + "-" + pa[1] + "-" + pa[0]) - new Date(pb[2] + "-" + pb[1] + "-" + pb[0]);
+  });
+
+  const currentWeek = sortedWeeks[sortedWeeks.length - 1];
+  const previousWeek = sortedWeeks.length >= 2 ? sortedWeeks[sortedWeeks.length - 2] : currentWeek;
+
+  // ======================================
+  // GET TODAY'S DRAWS (UNDER TODAY)
+  // ======================================
+  const todayDraws = [];
+  for (const slot of slots) {
+    const draw = getDraw(previousWeek, todayName, slot);
+    if (draw) todayDraws.push(draw);
+  }
+
+  // ======================================
+  // GET LEAVING & MEETING NUMBERS
+  // ======================================
+  function getLeavingMeetingNumbers() {
+    let leavingNumber = null;
+    let leavingSlot = null;
+    let leavingDate = null;
+    let meetingNumber = null;
+    let meetingSlot = null;
+    let meetingDate = null;
+    
+    const todayIdx = now.getDay();
+    const currentHour = now.getHours();
+    
+    function getDateForDraw(week, dayName) {
+      if (!week || !week.startDate) return null;
+      const parts = week.startDate.split(" ");
+      const monthMap = {"Jan":0,"Feb":1,"Mar":2,"Apr":3,"May":4,"Jun":5,"Jul":6,"Aug":7,"Sep":8,"Oct":9,"Nov":10,"Dec":11};
+      const startDate = new Date(parts[2], monthMap[parts[1]], parseInt(parts[0]));
+      const dayIndex = dayNames.indexOf(dayName);
+      if (dayIndex === -1) return null;
+      const drawDate = new Date(startDate);
+      drawDate.setDate(startDate.getDate() + dayIndex);
+      return drawDate;
+    }
+    
+    let currentSlotIdx = -1;
+    if (currentHour >= 9 && currentHour < 12) currentSlotIdx = 0;
+    else if (currentHour >= 12 && currentHour < 15) currentSlotIdx = 1;
+    else if (currentHour >= 15 && currentHour < 18) currentSlotIdx = 2;
+    else if (currentHour >= 18) currentSlotIdx = 3;
+    
+    let leavingDayIdx = -1;
+    let leavingSlotIdx = -1;
+    
+    for (let d = todayIdx; d >= 0; d--) {
+      const maxSlot = (d === todayIdx) ? currentSlotIdx : slots.length - 1;
+      for (let s = maxSlot; s >= 0; s--) {
+        const draw = getDraw(currentWeek, dayNames[d], slots[s]);
+        if (draw) {
+          leavingNumber = draw;
+          leavingDayIdx = d;
+          leavingSlotIdx = s;
+          leavingSlot = slots[s];
+          leavingDate = getDateForDraw(currentWeek, dayNames[d]);
+          break;
+        }
+      }
+      if (leavingNumber) break;
+    }
+    
+    if (!leavingNumber) {
+      for (let w = sortedWeeks.length - 2; w >= 0; w--) {
+        const week = sortedWeeks[w];
+        for (let d = dayNames.length - 1; d >= 0; d--) {
+          for (let s = slots.length - 1; s >= 0; s--) {
+            const draw = getDraw(week, dayNames[d], slots[s]);
+            if (draw) {
+              leavingNumber = draw;
+              leavingDayIdx = d;
+              leavingSlotIdx = s;
+              leavingSlot = slots[s];
+              leavingDate = getDateForDraw(week, dayNames[d]);
+              break;
+            }
+          }
+          if (leavingNumber) break;
+        }
+        if (leavingNumber) break;
+      }
+    }
+    
+    if (leavingNumber && leavingDayIdx !== -1 && leavingSlotIdx !== -1) {
+      let nextDayIdx = leavingDayIdx;
+      let nextSlotIdx = leavingSlotIdx + 1;
+      
+      if (nextSlotIdx >= slots.length) {
+        nextSlotIdx = 0;
+        nextDayIdx = leavingDayIdx + 1;
+      }
+      
+      if (nextDayIdx >= dayNames.length) {
+        nextDayIdx = 0;
+      }
+      
+      if (nextDayIdx >= 0 && nextDayIdx < dayNames.length) {
+        const targetDay = dayNames[nextDayIdx];
+        const targetSlot = slots[nextSlotIdx];
+        
+        meetingNumber = getDraw(previousWeek, targetDay, targetSlot);
+        if (meetingNumber) {
+          meetingSlot = targetSlot;
+          meetingDate = getDateForDraw(previousWeek, targetDay);
+        }
+        
+        if (!meetingNumber) {
+          for (let w = sortedWeeks.length - 2; w >= 0; w--) {
+            const week = sortedWeeks[w];
+            const draw = getDraw(week, targetDay, targetSlot);
+            if (draw) {
+              meetingNumber = draw;
+              meetingSlot = targetSlot;
+              meetingDate = getDateForDraw(week, targetDay);
+              break;
+            }
+          }
+        }
+        
+        if (!meetingNumber) {
+          const draw = getDraw(currentWeek, targetDay, targetSlot);
+          if (draw) {
+            meetingNumber = draw;
+            meetingSlot = targetSlot;
+            meetingDate = getDateForDraw(currentWeek, targetDay);
+          }
+        }
+      }
+    }
+    
+    return { leavingNumber, leavingSlot, leavingDate, meetingNumber, meetingSlot, meetingDate };
+  }
+
+  const { leavingNumber, leavingSlot, leavingDate, meetingNumber, meetingSlot, meetingDate } = getLeavingMeetingNumbers();
+
+  // ======================================
+  // COLLECT LAST 200 DRAWS
+  // ======================================
+  const allDraws200 = [];
+  
+  for (let w = sortedWeeks.length - 1; w >= 0 && allDraws200.length < 200; w--) {
+    const week = sortedWeeks[w];
+    const weekStart = new Date(week.startDate);
+    
+    for (let d = dayNames.length - 1; d >= 0 && allDraws200.length < 200; d--) {
+      const drawDate = new Date(weekStart);
+      drawDate.setDate(weekStart.getDate() + d);
+      
+      for (let s = slots.length - 1; s >= 0 && allDraws200.length < 200; s--) {
+        const draw = getDraw(week, dayNames[d], slots[s]);
+        if (draw) {
+          allDraws200.push({
+            num: draw,
+            date: drawDate,
+            day: dayNames[d],
+            slot: slots[s]
+          });
+        }
+      }
+    }
+  }
+
+  const totalDraws200 = allDraws200.length;
+
+  // ======================================
+  // COLLECT LAST 20 DRAWS
+  // ======================================
+  const allDraws20 = [];
+  
+  for (let w = sortedWeeks.length - 1; w >= 0 && allDraws20.length < 20; w--) {
+    const week = sortedWeeks[w];
+    const weekStart = new Date(week.startDate);
+    
+    for (let d = dayNames.length - 1; d >= 0 && allDraws20.length < 20; d--) {
+      const drawDate = new Date(weekStart);
+      drawDate.setDate(weekStart.getDate() + d);
+      
+      for (let s = slots.length - 1; s >= 0 && allDraws20.length < 20; s--) {
+        const draw = getDraw(week, dayNames[d], slots[s]);
+        if (draw) {
+          allDraws20.push({
+            num: draw,
+            date: drawDate,
+            day: dayNames[d],
+            slot: slots[s]
+          });
+        }
+      }
+    }
+  }
+
+  const totalDraws20 = allDraws20.length;
+
+  // ======================================
+  // CALCULATE FREQUENCY - 200 DRAWS
+  // ======================================
+  const frequency200 = {};
+  const lastPlayed200 = {};
+  for (let i = 1; i <= 36; i++) {
+    frequency200[i] = 0;
+    lastPlayed200[i] = null;
+  }
+  
+  allDraws200.forEach(draw => {
+    frequency200[draw.num] = (frequency200[draw.num] || 0) + 1;
+    if (!lastPlayed200[draw.num] || draw.date > lastPlayed200[draw.num]) {
+      lastPlayed200[draw.num] = draw.date;
+    }
+  });
+
+  const sortedNumbers200 = Object.entries(frequency200)
+    .map(([num, count]) => ({ 
+      num: parseInt(num), 
+      count,
+      lastDate: lastPlayed200[parseInt(num)]
+    }))
+    .sort((a, b) => b.count - a.count);
+
+  const hotMarks200 = sortedNumbers200.slice(0, 10);
+  const coldMarks200 = sortedNumbers200.slice(-10).reverse();
+
+// ======================================
+// CALCULATE FREQUENCY - 20 DRAWS (with last played date)
+// ======================================
+const frequency20 = {};
+const lastPlayed20 = {};
+for (let i = 1; i <= 36; i++) {
+  frequency20[i] = 0;
+  lastPlayed20[i] = null;
+}
+
+allDraws20.forEach(draw => {
+  frequency20[draw.num] = (frequency20[draw.num] || 0) + 1;
+  if (!lastPlayed20[draw.num] || draw.date > lastPlayed20[draw.num]) {
+    lastPlayed20[draw.num] = draw.date;
+  }
+});
+
+// Sort by frequency (highest to lowest)
+const sortedNumbers20 = Object.entries(frequency20)
+  .map(([num, count]) => ({ 
+    num: parseInt(num), 
+    count,
+    lastDate: lastPlayed20[parseInt(num)]
+  }))
+  .sort((a, b) => b.count - a.count);
+
+// HOT MARKS - Top 9 most frequent (highest count, excluding zeros)
+const hotMarks20 = sortedNumbers20.filter(item => item.count > 0).slice(0, 9);
+
+// COLD MARKS - Bottom 9 least frequent (lowest count, excluding zeros)
+const coldMarks20 = sortedNumbers20
+  .filter(item => item.count > 0)
+  .slice(-9)
+  .reverse();
+
+  // ======================================
+  // CURRENT WEEK DRAWS
+  // ======================================
+  const currentWeekDraws = [];
+  for (let d = 0; d < dayNames.length; d++) {
+    for (let s = 0; s < slots.length; s++) {
+      const draw = getDraw(currentWeek, dayNames[d], slots[s]);
+      if (draw) currentWeekDraws.push(draw);
+    }
+  }
+
+  const previousWeekDraws = [];
+  for (const day of dayNames) {
+    for (const slot of slots) {
+      const draw = getDraw(previousWeek, day, slot);
+      if (draw) previousWeekDraws.push(draw);
+    }
+  }
+
+  const prevWeekCounts = {};
+  const currWeekCounts = {};
+  for (let i = 1; i <= 36; i++) {
+    prevWeekCounts[i] = 0;
+    currWeekCounts[i] = 0;
+  }
+  previousWeekDraws.forEach(num => { prevWeekCounts[num] = (prevWeekCounts[num] || 0) + 1; });
+  currentWeekDraws.forEach(num => { currWeekCounts[num] = (currWeekCounts[num] || 0) + 1; });
+
+  // ======================================
+  // WEEKLY STREAK INSIGHT (Original Logic)
+  // ======================================
+
+  // DOUBLES - Only 8, 11, 22, 33
+  const doubles = [];
+  doubleNumbers.forEach(num => {
+    const prevCount = prevWeekCounts[num] || 0;
+    const currCount = currWeekCounts[num] || 0;
+    
+    if (currCount >= 2) return; // Hide completed
+    
+    let status = 0;
+    let label = 'Missing';
+    let color = '#ffffff';
+    let textColor = '#000000';
+    
+    if (prevCount === 1 && currCount === 0) {
+      status = 1;
+      label = 'Pending (LW) - Needs 1 More';
+      color = '#7c02b5';
+      textColor = '#ffffff';
+    } else if (currCount === 1) {
+      status = 2;
+      label = '1 Hit (CW) - Needs 1 More';
+      color = '#32d74b';
+      textColor = '#000000';
+    }
+    
+    doubles.push({
+      num: num,
+      status: status,
+      label: label,
+      color: color,
+      textColor: textColor,
+      prevCount: prevCount,
+      currCount: currCount,
+      emoji: spiritEmoji[num] || ''
+    });
+  });
+
+  // TRIPLES - All numbers
+  const triples = [];
+  for (let i = 1; i <= 36; i++) {
+    const prevCount = prevWeekCounts[i] || 0;
+    const currCount = currWeekCounts[i] || 0;
+    
+    if (currCount >= 3) continue; // Hide completed
+    
+    let include = false;
+    let status = 0;
+    let label = 'Pending';
+    let color = '#7c02b5';
+    let textColor = '#ffffff';
+    
+    if (prevCount === 2 && currCount === 0) {
+      include = true;
+      status = 1;
+      label = 'Pending (LW) - Needs 1 More';
+      color = '#7c02b5';
+      textColor = '#ffffff';
+    } else if (currCount === 2) {
+      include = true;
+      status = 2;
+      label = '2 Hits (CW) - Needs 1 More';
+      color = '#32d74b';
+      textColor = '#000000';
+    }
+    
+    if (include) {
+      triples.push({
+        num: i,
+        status: status,
+        label: label,
+        color: color,
+        textColor: textColor,
+        prevCount: prevCount,
+        currCount: currCount,
+        emoji: spiritEmoji[i] || ''
+      });
+    }
+  }
+  triples.sort((a, b) => a.num - b.num);
+
+  // QUADRUPLES - All numbers
+  const quadruples = [];
+  for (let i = 1; i <= 36; i++) {
+    const prevCount = prevWeekCounts[i] || 0;
+    const currCount = currWeekCounts[i] || 0;
+    
+    if (currCount >= 4) continue; // Hide completed
+    
+    let include = false;
+    let status = 0;
+    let label = 'Pending';
+    let color = '#7c02b5';
+    let textColor = '#ffffff';
+    
+    if (prevCount === 3 && currCount === 0) {
+      include = true;
+      status = 1;
+      label = 'Pending (LW) - Needs 1 More';
+      color = '#7c02b5';
+      textColor = '#ffffff';
+    } else if (currCount === 3) {
+      include = true;
+      status = 2;
+      label = '3 Hits (CW) - Needs 1 More';
+      color = '#32d74b';
+      textColor = '#000000';
+    }
+    
+    if (include) {
+      quadruples.push({
+        num: i,
+        status: status,
+        label: label,
+        color: color,
+        textColor: textColor,
+        prevCount: prevCount,
+        currCount: currCount,
+        emoji: spiritEmoji[i] || ''
+      });
+    }
+  }
+  quadruples.sort((a, b) => a.num - b.num);
+
+  // ======================================
+  // RENDER FUNCTIONS
+  // ======================================
+
+  function formatDate(date) {
+    if (!date) return '—';
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    return `${date.getDate()} ${months[date.getMonth()]}`;
+  }
+
+  function formatDateDisplay(date) {
+    if (!date) return "";
+    const days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    return `${days[date.getDay()]} ${date.getDate()} ${months[date.getMonth()]} '${date.getFullYear().toString().slice(-2)}`;
+  }
+
+// Render Today Draws - Centered with auto-switch at 6:16 PM
+function renderTodayDraws() {
+  // Get current time
+  const now = new Date();
+  const currentHour = now.getHours();
+  const currentMinute = now.getMinutes();
+  
+  // Check if it's after 6:16 PM (18:16)
+  const isAfterEve = (currentHour > 18) || (currentHour === 18 && currentMinute >= 16);
+  
+  // Determine which day to show
+  let displayDate = new Date(now);
+  let displayDayName = todayName;
+  let displayLabel = "📅 UNDER TODAY";
+  
+  if (isAfterEve) {
+    // After 6:59 PM, show tomorrow's date
+    displayDate.setDate(now.getDate() + 1);
+    displayDayName = dayNames[(now.getDay() + 1) % 7];
+    displayLabel = "📅 UNDER TOMORROW";
+  }
+  
+  // Format date as "Wed 3 Aug" (no year)
+  const days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const formattedDate = `${days[displayDate.getDay()]} ${displayDate.getDate()} ${months[displayDate.getMonth()]}`;
+  
+  // Get the draws for the display day (from previous week if today, or adjust for tomorrow)
+  let displayDraws = [];
+  
+  if (isAfterEve) {
+    // For tomorrow, we want to show the previous week's draws for tomorrow's day
+    const tomorrowDayName = dayNames[(now.getDay() + 1) % 7];
+    for (const slot of slots) {
+      const draw = getDraw(previousWeek, tomorrowDayName, slot);
+      if (draw) displayDraws.push(draw);
+    }
+  } else {
+    // For today, use the existing logic
+    displayDraws = todayDraws;
+  }
+  
+  const todayDrawsHtml = displayDraws.map(num => `
+    <span style="display: inline-flex; align-items: center; gap: 2px; background: var(--card-bg, rgba(255,255,255,0.05)); padding: 1px 6px; border-radius: 4px; border: 1px solid var(--border-color, rgba(255,255,255,0.06));">
+      <span style="font-size: 16px; font-weight: 900; color: var(--text-main, #ffd700);">${num}</span>
+      <span style="font-size: 16px;">${spiritEmoji[num] || ''}</span>
+    </span>
+  `).join('');
+
+  return `
+    <div style="display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 4px 8px; background: var(--card-bg, rgba(255,255,255,0.02)); border-radius: 6px; border: 1px solid var(--border-color, rgba(255,255,255,0.06)); margin-bottom: 3px;">
+      <span style="font-size: 16px; font-weight: 700; color: var(--text-main, #ff9d00); letter-spacing: 0.3px;">${displayLabel} • ${formattedDate}</span>
+      <div style="display: flex; align-items: center; gap: 3px; flex-wrap: wrap; justify-content: center;">
+        ${displayDraws.length > 0 ? todayDrawsHtml : '<span style="font-size: 9px; color: var(--text-dim, #64748b);">No draws available</span>'}
+      </div>
+    </div>
+  `;
+}
+
+  // Render Leaving/Meeting
+  function renderLeavingMeeting() {
+    const leavingDisplay = leavingNumber ? `#${leavingNumber}` : '—';
+    const meetingDisplay = meetingNumber ? `#${meetingNumber}` : '—';
+    const leavingDateDisplay = leavingDate ? formatDateDisplay(leavingDate) : 'No data available';
+    const meetingDateDisplay = meetingDate ? formatDateDisplay(meetingDate) : 'No data available';
+    
+    return `
+      <div style="display: flex; gap: 8px; margin-bottom: 3px;">
+        <div style="flex: 1; border-radius: 6px; padding: 4px 8px; text-align: center; border: 1px solid var(--text-main, #58a6ff); background: rgba(88,166,255,0.08);">
+          <div style="font-size: 12px; font-weight: 800; color: var(--text-main, #58a6ff); text-transform: uppercase; letter-spacing: 0.5px;">LEAVING • ${leavingSlot || ''}</div>
+          <div style="font-size: 18px; font-weight: 900; color: var(--text-main, #58a6ff); margin: 2px 0;">${leavingDisplay}</div>
+          <div style="font-size: 12px; color: var(--text-dim, #666);">${leavingDateDisplay}</div>
+        </div>
+        <div style="flex: 1; border-radius: 6px; padding: 4px 8px; text-align: center; border: 1px solid var(--text-main, #ff9d00); background: rgba(255,157,0,0.08);">
+          <div style="font-size: 12px; font-weight: 800; color: var(--text-main, #ff9d00); text-transform: uppercase; letter-spacing: 0.5px;">MEETING • ${meetingSlot || ''}</div>
+          <div style="font-size: 18px; font-weight: 900; color: var(--text-main, #ff9d00); margin: 2px 0;">${meetingDisplay}</div>
+          <div style="font-size: 12px; color: var(--text-dim, #666);">${meetingDateDisplay}</div>
+        </div>
+      </div>
+    `;
+  }
+
+  // Render Mark Row (for Top 9 Hot/Cold)
+  function renderMarkRow(marks, title, titleColor, isHot = true) {
+    if (!marks || marks.length === 0) {
+      return `
+        <div style="text-align: center; padding: 6px; color: var(--text-dim, #64748b); font-size: 10px;">
+          No marks available
+        </div>
+      `;
+    }
+
+    const marksHtml = marks.map(item => {
+      const emoji = spiritEmoji[item.num] || '';
+      const count = item.count;
+      const lastDate = formatDate(item.lastDate);
+      
+      return `
+        <div style="display: flex; flex-direction: column; align-items: center; min-width: 26px; padding: 2px 2px; background: var(--card-bg, rgba(255,255,255,0.03)); border-radius: 4px; border: 1px solid var(--border-color, rgba(255,255,255,0.04)); flex: 0 1 auto;">
+          <span style="font-size: 16px; font-weight: 900; color: ${isHot ? '#ff6b6b' : '#58a6ff'}; line-height: 1.2;">${item.num}</span>
+          <span style="font-size: 9px; color: var(--text-dim, #94a3b8); font-weight: 600; margin-top: 1px;">${count}x</span>
+          <span style="font-size: 9px; color: var(--text-dim, #64748b); margin-top: 1px; border-top: 1px solid var(--border-color, rgba(255,255,255,0.06)); padding-top: 1px; width: 100%; text-align: center;">${lastDate}</span>
+        </div>
+      `;
+    }).join('');
+
+    return `
+      <div style="margin-bottom: ${isHot ? '4px' : '0'};">
+        <div style="display: flex; align-items: center; gap: 4px; margin-bottom: 2px;">
+          <span style="font-size: 10px; font-weight: 800; color: ${titleColor}; letter-spacing: 0.3px;">${title}</span>
+          <span style="font-size: 6px; color: var(--text-dim, #64748b); background: var(--card-bg, rgba(255,255,255,0.05)); padding: 1px 5px; border-radius: 6px;">${marks.length}</span>
+        </div>
+        <div style="display: flex; justify-content: center; align-items: center; gap: 2px; flex-wrap: nowrap; overflow-x: auto; background: var(--card-bg, rgba(255,255,255,0.02)); border-radius: 6px; padding: 2px 4px; border: 1px solid var(--border-color, rgba(255,255,255,0.04)); min-height: 42px; -webkit-overflow-scrolling: touch;">
+          ${marksHtml}
+        </div>
+      </div>
+    `;
+  }
+
+// Render 20 Draw Marks with last played date
+function render20DrawMarks(marks, title, titleColor) {
+  if (!marks || marks.length === 0) {
+    return `
+      <div style="text-align: center; padding: 6px; color: var(--text-dim, #64748b); font-size: 10px;">
+        No marks available
+      </div>
+    `;
+  }
+
+  const marksHtml = marks.map(item => {
+    const emoji = spiritEmoji[item.num] || '';
+    const count = item.count;
+    const lastDate = formatDate(item.lastDate);
+    
+    return `
+      <div style="display: flex; flex-direction: column; align-items: center; min-width: 26px; padding: 2px 2px; background: var(--card-bg, rgba(255,255,255,0.03)); border-radius: 4px; border: 1px solid var(--border-color, rgba(255,255,255,0.04)); flex: 0 1 auto;">
+        <span style="font-size: 16px; font-weight: 900; color: ${titleColor}; line-height: 1.2;">${item.num}</span>
+        <span style="font-size: 9px; color: var(--text-dim, #94a3b8); font-weight: 600; margin-top: 1px;">${count}x</span>
+        <span style="font-size: 9px; color: var(--text-dim, #64748b); margin-top: 1px; border-top: 1px solid var(--border-color, rgba(255,255,255,0.06)); padding-top: 1px; width: 100%; text-align: center;">${lastDate}</span>
+      </div>
+    `;
+  }).join('');
+
+  return `
+    <div style="margin-bottom: 2px;">
+      <div style="display: flex; align-items: center; gap: 4px; margin-bottom: 2px;">
+        <span style="font-size: 10px; font-weight: 800; color: ${titleColor}; letter-spacing: 0.3px;">${title}</span>
+        <span style="font-size: 6px; color: var(--text-dim, #64748b); background: var(--card-bg, rgba(255,255,255,0.05)); padding: 1px 5px; border-radius: 6px;">${marks.length}</span>
+      </div>
+      <div style="display: flex; justify-content: center; align-items: center; gap: 2px; flex-wrap: nowrap; overflow-x: auto; background: var(--card-bg, rgba(255,255,255,0.02)); border-radius: 6px; padding: 2px 4px; border: 1px solid var(--border-color, rgba(255,255,255,0.04)); min-height: 42px; -webkit-overflow-scrolling: touch;">
+        ${marksHtml}
+      </div>
+    </div>
+  `;
+}
+
+  // Render Weekly Streak Insight (Original Logic with Details)
+  function renderWeeklyStreakInsight() {
+    function buildCategoryBalls(categoryData, title, icon, colorClass, maxPerRow = 3) {
+      if (!categoryData || categoryData.length === 0) {
+        return `
+          <div class="category-group ${colorClass}" style="display:flex; flex-direction:column; align-items:center; gap:3px; padding:4px 4px; border-radius:6px; border:1px solid var(--border-color, rgba(45,138,78,0.15)); min-width:60px; flex:0 1 auto; text-align:center;">
+            <div class="category-title" style="font-size:12px; font-weight:800; color:var(--text-main, #000000); letter-spacing:0.5px;">${icon} ${title} <span class="category-count" style="font-size:8px; color:var(--text-dim, #666); font-weight:normal;">(0)</span></div>
+            <div class="category-balls" style="display:flex; flex-wrap:wrap; justify-content:center; align-items:center; gap:2px;"><span style="color:var(--text-dim, #999); font-size:8px;">None</span></div>
+          </div>
+        `;
+      }
+      
+      let ballsHtml = '';
+      for (const item of categoryData) {
+        let borderStyle = '1px solid #2d8a4e';
+        if (item.status === 0) {
+          borderStyle = '1px solid #999';
+        } else if (item.status === 1) {
+          borderStyle = '2px solid #7c02b5';
+        } else if (item.status === 2) {
+          borderStyle = '2px solid #32d74b';
+        }
+        
+        ballsHtml += `
+          <div class="category-ball" style="display:inline-flex; flex-direction:column; align-items:center; margin:0 1px;">
+            <div style="width:18px; height:18px; background:${item.color}; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:11px; font-weight:900; color:${item.textColor}; border:${borderStyle}; line-height:18px;">${item.num}</div>
+            ${item.status === 1 ? `<span style="font-size:5px; color:#7c02b5;">LW</span>` : ''}
+            ${item.status === 2 ? `<span style="font-size:5px; color:#32d74b;">CW</span>` : ''}
+          </div>
+        `;
+      }
+      
+      return `
+        <div class="category-group ${colorClass}" style="display:flex; flex-direction:column; align-items:center; gap:3px; padding:4px 4px; border-radius:6px; border:1px solid var(--border-color, rgba(45,138,78,0.15)); min-width:60px; flex:0 1 auto; text-align:center;">
+          <div class="category-title" style="font-size:9px; font-weight:800; color:var(--text-main, #000000); letter-spacing:0.5px;">${icon} ${title} <span class="category-count" style="font-size:8px; color:var(--text-dim, #666); font-weight:normal;">(${categoryData.length})</span></div>
+          <div class="category-balls" style="display:grid; grid-template-columns: repeat(${maxPerRow}, 1fr); gap:2px; justify-items:center;">${ballsHtml}</div>
+        </div>
+      `;
+    }
+
+    // Generate detailed bullet points
+    function generateDetails(data, type) {
+      const details = [];
+      const pendingLW = data.filter(d => d.status === 1);
+      const pendingCW = data.filter(d => d.status === 2);
+      
+      if (pendingLW.length > 0) {
+        details.push(`▫️ ${pendingLW.map(d => `${d.num}${d.emoji}`).join(', ')} Needs 1 More To Complete ${type} (From Last Week)`);
+      }
+      if (pendingCW.length > 0) {
+        details.push(`▫️ ${pendingCW.map(d => `${d.num}${d.emoji}`).join(', ')} Needs 1 More To Complete ${type} (Current Week)`);
+      }
+      if (pendingLW.length === 0 && pendingCW.length === 0) {
+        details.push(`▫️ No pending ${type} streaks`);
+      }
+      
+      return details.length > 0 ? details.join('<br>') : '▫️ No data available';
+    }
+
+    const doublesDetails = generateDetails(doubles, 'DOUBLE');
+    const triplesDetails = generateDetails(triples, 'TRIPLE');
+    const quadruplesDetails = generateDetails(quadruples, 'QUADRUPLE');
+
+    return `
+      <div style="margin-top: 3px; padding-top: 6px; border-top: 1px dashed var(--border-color, rgba(255,255,255,0.06));">
+        <div style="font-size: 10px; font-weight: 800; color: var(--text-main, #ff9d00); margin-bottom: 2px; text-align: center; letter-spacing: 0.3px;">
+   ⚜️♨️ WEEKLY STREAK INSIGHT ♨️⚜️
+        </div>
+        
+        <!-- Category Balls -->
+        <div style="display: flex; flex-wrap: wrap; justify-content: center; align-items: stretch; gap: 6px 10px; background: var(--card-bg, rgba(255,255,255,0.02)); border-radius: 8px; padding: 6px 8px; border: 1px solid var(--border-color, rgba(255,255,255,0.04)); margin-bottom: 3px;">
+          ${buildCategoryBalls(doubles, 'DOUBLES', '🟢', 'doubles', 3)}
+          ${buildCategoryBalls(triples, 'TRIPLES', '🟠', 'triples', 3)}
+          ${buildCategoryBalls(quadruples, 'QUADRUPLES', '🔴', 'quadruples', 3)}
+        </div>
+        
+        <!-- Details Bullet Points -->
+        <div style="display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 4px; font-size: 8px; color: var(--text-main, #e2e8f0);">
+          <div style="background: var(--card-bg, rgba(50,215,75,0.05)); border-radius: 4px; padding: 4px 6px; border: 1px solid rgba(50,215,75,0.1);">
+            <span style="font-weight: 700; color: #32d74b;">DOUBLES</span><br>
+            ${doublesDetails}
+          </div>
+          <div style="background: var(--card-bg, rgba(255,157,0,0.05)); border-radius: 4px; padding: 4px 6px; border: 1px solid rgba(255,157,0,0.1);">
+            <span style="font-weight: 700; color: #ff9d00;">TRIPLES</span><br>
+            ${triplesDetails}
+          </div>
+          <div style="background: var(--card-bg, rgba(255,55,95,0.05)); border-radius: 4px; padding: 4px 6px; border: 1px solid rgba(255,55,95,0.1);">
+            <span style="font-weight: 700; color: #ff375f;">QUADRUPLES</span><br>
+            ${quadruplesDetails}
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  // ======================================
+  // BUILD THE MAIN HTML
+  // ======================================
+
+  const todayHtml = renderTodayDraws();
+  const leavingMeetingHtml = renderLeavingMeeting();
+  const hotHtml200 = renderMarkRow(hotMarks200, '🔥 HOT MARKS - LAST 200 DRAWS', '#ff6b6b', true);
+  const coldHtml200 = renderMarkRow(coldMarks200, '❄️ COLD MARKS - LAST 200 DRAWS', '#58a6ff', false);
+  
+  // 20 Draw sections - CORRECTED
+  const hotMarks20Html = render20DrawMarks(hotMarks20, '🔥 HOT MARKS - LAST 20 DRAWS', '#ff6b6b');
+  const coldMarks20Html = render20DrawMarks(coldMarks20, '❄️ COLD MARKS - LAST 20 DRAWS', '#58a6ff');
+
+  const weeklyStreakHtml = renderWeeklyStreakInsight();
+
+  return `
+    <div style="
+      background: var(--bg-start, linear-gradient(135deg, #0f172a, #1e293b));
+      border-radius: 16px; 
+      padding: 10px; 
+      margin-bottom: 15px; 
+      border: 1px solid var(--border-color, #ff9d00);
+    ">
+      
+      <!-- Header -->
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 2px; flex-wrap: wrap; gap: 4px;">
+      </div>
+      
+      <!-- Section 1: Under Today -->
+      ${todayHtml}
+      
+      <!-- Section 2: Leaving/Meeting -->
+      ${leavingMeetingHtml}
+      
+      <!-- Separator -->
+      <div style="margin: 4px 0; border-top: 1px solid var(--border-color, #000000);"></div>
+      
+<!-- Sec 3: Top 9 Hot&Cold (200 draws) -->
+      <div style="font-size: 13px; font-weight: 800; color: var(--text-main, #ff9d00); letter-spacing: 0.3px;">
+    ♠️ TOP HOT & COLD MARKS ♠️
+      </div>
+      
+      ${hotHtml200}
+      ${coldHtml200}
+      
+      <!-- Separator -->
+      <div style="margin: 4px 0; border-top: 1px solid var(--border-color, #000000);"></div>
+      
+ <!-- Sec 4: Hot&Cold Marks (20 draws) -->
+      ${hotMarks20Html}
+      ${coldMarks20Html}
+      
+      <!-- Separator -->
+      <div style="margin: 4px 0; border-top: 1px solid var(--border-color, #000000);"></div>
+      
+ <!-- Sec 5: Weekly Streak Insight -->
+      ${weeklyStreakHtml}
+      
+      <!-- Footer -->
+      <div style="margin-top: 2px; padding-top: 4px; border-top: 1px solid var(--border-color, rgba(255,255,255,0.02)); display: flex; justify-content: center; align-items: center; gap: 6px; flex-wrap: wrap;">
+        <span style="font-size: 10px; color: var(--text-main, #00000);">CodeWithGlasgow • CWG Chart Analysis ©️</span>
+        <span style="color: var(--text-main, #00000); font-size: 10px;">Last: ${globalLastDraw}</span>
+      </div>
+      
+    </div>
+  `;
+}
+///////////////////////////////////////////
+// ======================================
+// PLAY WHE 5-CHART VIEW VERSION 1 — CAROUSEL
+// Displays: 1/16, 1/8, 1/9, 1/7, 1/5 Charts as a swipeable carousel
+// Layout: Main number on top, chart numbers side by side below
+// With Leaving/Meeting highlighting + info container per chart
+// ======================================
+function renderPlayWheFiveCharts(weeksData) {
+  if (!weeksData || weeksData.length === 0) {
+    return `
+      <div style="background: linear-gradient(135deg, #0f172a, #1e293b); border-radius: 16px; padding: 16px; margin-bottom: 15px; border: 1px solid #58a6ff; text-align:center;">
+        📊 Loading Chart data...
+      </div>
+    `;
+  }
+
+  // ======================================
+  // CONSTANTS & MAPPINGS
+  // ======================================
+
+  const dayNames = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+  const slots = ["MOR", "MID", "NON", "EVE"];
+  const now = new Date();
+
+  const chartDefinitions = [
+    { id: '1/16', label: '1/16' },
+    { id: '1/8', label: '1/8' },
+    { id: '1/9', label: '1/9' },
+    { id: '1/7', label: '1/7' },
+    { id: '1/5', label: '1/5' }
+  ];
+
+  function generateChartData(chartType) {
+    const data = [];
+
+    // Row 1 base values for each chart (from the reference screenshot)
+    const baseRows = {
+      '1/16': { main: 1, num2: 29, num3: 16 },
+      '1/8':  { main: 1, num2: 8,  num3: 25 },
+      '1/9':  { main: 1, num2: 9,  num3: 25 },
+      '1/7':  { main: 1, num2: 7,  num3: 12 },
+      '1/5':  { main: 1, num2: 5,  num3: 27 }
+    };
+
+    const base = baseRows[chartType];
+    if (!base) return data;
+
+    // Helper to wrap numbers into 1-36 range
+    function wrap(n) {
+      while (n > 36) n -= 36;
+      while (n < 1) n += 36;
+      return n;
+    }
+
+    // Generate 36 rows by incrementing all three values by 1 each row
+    for (let i = 0; i < 36; i++) {
+      data.push({
+        main: wrap(base.main + i),
+        num2: wrap(base.num2 + i),
+        num3: wrap(base.num3 + i)
+      });
+    }
+
+    return data;
+  }
+
+  // ======================================
+  // GET LEAVING & MEETING NUMBERS WITH DETAILS
+  // ======================================
+
+  function getDraw(week, dayName, slot) {
+    if (!week) return null;
+    const day = week.days.find(d => d.dayName === dayName);
+    if (!day) return null;
+    const val = day.draws[slot];
+    return val && val !== "-" && val !== "PENDING" && val !== "HOLIDAY" ? parseInt(val, 10) : null;
+  }
+
+  function getLeavingMeetingNumbers() {
+    let leavingNumber = null, leavingSlot = null, leavingDate = null;
+    let meetingNumber = null, meetingSlot = null, meetingDate = null;
+
+    const sortedWeeks = [...weeksData].sort((a, b) => {
+      let pa = a.startDate.split(" ");
+      let pb = b.startDate.split(" ");
+      return new Date(pa[2] + "-" + pa[1] + "-" + pa[0]) - new Date(pb[2] + "-" + pb[1] + "-" + pb[0]);
+    });
+
+    const currentWeek = sortedWeeks[sortedWeeks.length - 1];
+    const previousWeek = sortedWeeks.length >= 2 ? sortedWeeks[sortedWeeks.length - 2] : currentWeek;
+    const todayIdx = now.getDay();
+    const currentHour = now.getHours();
+
+    function getDateForDraw(week, dayName) {
+      if (!week || !week.startDate) return null;
+      const parts = week.startDate.split(" ");
+      const monthMap = {"Jan":0,"Feb":1,"Mar":2,"Apr":3,"May":4,"Jun":5,"Jul":6,"Aug":7,"Sep":8,"Oct":9,"Nov":10,"Dec":11};
+      const startDate = new Date(parts[2], monthMap[parts[1]], parseInt(parts[0]));
+      const dayIndex = dayNames.indexOf(dayName);
+      if (dayIndex === -1) return null;
+      const drawDate = new Date(startDate);
+      drawDate.setDate(startDate.getDate() + dayIndex);
+      return drawDate;
+    }
+
+    let currentSlotIdx = -1;
+    if (currentHour >= 9 && currentHour < 12) currentSlotIdx = 0;
+    else if (currentHour >= 12 && currentHour < 15) currentSlotIdx = 1;
+    else if (currentHour >= 15 && currentHour < 18) currentSlotIdx = 2;
+    else if (currentHour >= 18) currentSlotIdx = 3;
+
+    let leavingDayIdx = -1, leavingSlotIdx = -1;
+
+    for (let d = todayIdx; d >= 0; d--) {
+      const maxSlot = (d === todayIdx) ? currentSlotIdx : slots.length - 1;
+      for (let s = maxSlot; s >= 0; s--) {
+        const draw = getDraw(currentWeek, dayNames[d], slots[s]);
+        if (draw) {
+          leavingNumber = draw; leavingDayIdx = d; leavingSlotIdx = s;
+          leavingSlot = slots[s];
+          leavingDate = getDateForDraw(currentWeek, dayNames[d]);
+          break;
+        }
+      }
+      if (leavingNumber) break;
+    }
+
+    if (!leavingNumber) {
+      for (let w = sortedWeeks.length - 2; w >= 0; w--) {
+        const week = sortedWeeks[w];
+        for (let d = dayNames.length - 1; d >= 0; d--) {
+          for (let s = slots.length - 1; s >= 0; s--) {
+            const draw = getDraw(week, dayNames[d], slots[s]);
+            if (draw) {
+              leavingNumber = draw; leavingDayIdx = d; leavingSlotIdx = s;
+              leavingSlot = slots[s];
+              leavingDate = getDateForDraw(week, dayNames[d]);
+              break;
+            }
+          }
+          if (leavingNumber) break;
+        }
+        if (leavingNumber) break;
+      }
+    }
+
+    if (leavingNumber && leavingDayIdx !== -1 && leavingSlotIdx !== -1) {
+      let nextDayIdx = leavingDayIdx;
+      let nextSlotIdx = leavingSlotIdx + 1;
+      if (nextSlotIdx >= slots.length) { nextSlotIdx = 0; nextDayIdx = leavingDayIdx + 1; }
+      if (nextDayIdx >= dayNames.length) nextDayIdx = 0;
+
+      if (nextDayIdx >= 0 && nextDayIdx < dayNames.length) {
+        const targetDay = dayNames[nextDayIdx];
+        const targetSlot = slots[nextSlotIdx];
+
+        meetingNumber = getDraw(previousWeek, targetDay, targetSlot);
+        if (meetingNumber) {
+          meetingSlot = targetSlot;
+          meetingDate = getDateForDraw(previousWeek, targetDay);
+        }
+        if (!meetingNumber) {
+          for (let w = sortedWeeks.length - 2; w >= 0; w--) {
+            const week = sortedWeeks[w];
+            const draw = getDraw(week, targetDay, targetSlot);
+            if (draw) { meetingNumber = draw; meetingSlot = targetSlot; meetingDate = getDateForDraw(week, targetDay); break; }
+          }
+        }
+        if (!meetingNumber) {
+          const draw = getDraw(currentWeek, targetDay, targetSlot);
+          if (draw) { meetingNumber = draw; meetingSlot = targetSlot; meetingDate = getDateForDraw(currentWeek, targetDay); }
+        }
+      }
+    }
+
+    return { leavingNumber, leavingSlot, leavingDate, meetingNumber, meetingSlot, meetingDate };
+  }
+
+  const {
+    leavingNumber, leavingSlot, leavingDate,
+    meetingNumber, meetingSlot, meetingDate
+  } = getLeavingMeetingNumbers();
+
+  function formatDateDisplay(date) {
+    if (!date) return "No data";
+    const days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    return `${days[date.getDay()]} ${date.getDate()} ${months[date.getMonth()]} '${date.getFullYear().toString().slice(-2)}`;
+  }
+
+  // ======================================
+  // RENDER FUNCTIONS
+  // ======================================
+
+  // Leaving/Meeting Info Container (reused for each chart)
+  function renderLeavingMeetingInfo(compact = false) {
+    const leavingDisplay = leavingNumber ? `#${leavingNumber}` : '—';
+    const meetingDisplay = meetingNumber ? `#${meetingNumber}` : '—';
+    const leavingDateDisplay = leavingDate ? formatDateDisplay(leavingDate) : 'No data';
+    const meetingDateDisplay = meetingDate ? formatDateDisplay(meetingDate) : 'No data';
+
+    const pad = compact ? '5px 8px' : '8px 10px';
+    const numSize = compact ? '16px' : '22px';
+    const lblSize = compact ? '9px' : '10px';
+    const dateSize = compact ? '8px' : '9px';
+
+    return `
+      <div style="display: flex; gap: 6px; margin-bottom: 6px;">
+        <!-- LEAVING Container -->
+        <div style="
+          flex: 1;
+          border-radius: 6px;
+          padding: ${pad};
+          text-align: center;
+          border: 1px solid #58a6ff;
+          background: rgba(88,166,255,0.08);
+        ">
+          <div style="font-size: ${lblSize}; font-weight: 800; color: #58a6ff; text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 2px;">
+            🔵 LEAVING
+          </div>
+          <div style="font-size: ${numSize}; font-weight: 900; color: #58a6ff; margin: 2px 0; line-height: 1.1;">
+            ${leavingDisplay}
+          </div>
+          <div style="font-size: ${dateSize}; color: var(--text-dim, #94a3b8); margin-top: 1px; display: flex; justify-content: center; align-items: center; gap: 4px; flex-wrap: wrap;">
+            <span>📆 ${leavingDateDisplay}</span>
+            <span>•</span>
+            <span>⏰ ${leavingSlot || '—'}</span>
+          </div>
+        </div>
+
+        <!-- MEETING Container -->
+        <div style="
+          flex: 1;
+          border-radius: 6px;
+          padding: ${pad};
+          text-align: center;
+          border: 1px solid #ff9d00;
+          background: rgba(255,157,0,0.08);
+        ">
+          <div style="font-size: ${lblSize}; font-weight: 800; color: #ff9d00; text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 2px;">
+            🟡 MEETING
+          </div>
+          <div style="font-size: ${numSize}; font-weight: 900; color: #ff9d00; margin: 2px 0; line-height: 1.1;">
+            ${meetingDisplay}
+          </div>
+          <div style="font-size: ${dateSize}; color: var(--text-dim, #94a3b8); margin-top: 1px; display: flex; justify-content: center; align-items: center; gap: 4px; flex-wrap: wrap;">
+            <span>📆 ${meetingDateDisplay}</span>
+            <span>•</span>
+            <span>⏰ ${meetingSlot || '—'}</span>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  function renderCell(num, isMain = false) {
+    const isLeaving = num === leavingNumber;
+    const isMeeting = num === meetingNumber;
+
+    let bgColor = 'var(--card-bg, rgba(255,255,255,0.03))';
+    let borderColor = 'var(--border-color, rgba(255,255,255,0.08))';
+    let textColor = 'var(--text-main, #e2e8f0)';
+    let fontWeight = isMain ? '700' : '400';
+    let extraStyle = '';
+
+    if (isLeaving) {
+      bgColor = 'rgba(88,166,255,0.25)';
+      borderColor = '#58a6ff';
+      textColor = '#58a6ff';
+      fontWeight = '900';
+      extraStyle = 'box-shadow: 0 0 8px rgba(88,166,255,0.3);';
+    } else if (isMeeting) {
+      bgColor = 'rgba(255,157,0,0.25)';
+      borderColor = '#ff9d00';
+      textColor = '#ff9d00';
+      fontWeight = '900';
+      extraStyle = 'box-shadow: 0 0 8px rgba(255,157,0,0.3);';
+    }
+
+    return `
+      <div style="
+        flex: 1;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 2px 3px;
+        background: ${bgColor};
+        border: 1px solid ${borderColor};
+        border-radius: 3px;
+        ${extraStyle}
+        transition: all 0.2s ease;
+        min-width: 0;
+      ">
+        <span style="font-size: 11px; font-weight: ${fontWeight}; color: ${textColor}; line-height: 1.1;">${num}</span>
+      </div>
+    `;
+  }
+
+  function renderChart(chartType, label) {
+    const data = generateChartData(chartType);
+    if (!data || data.length === 0) return '';
+
+    let gridHtml = '';
+    const rows = 12;
+    const cols = 3;
+
+    for (let r = 0; r < rows; r++) {
+      gridHtml += '<div style="display:flex; justify-content:center; gap:4px; margin-bottom:4px;">';
+      for (let c = 0; c < cols; c++) {
+        const index = r * cols + c;
+        if (index < data.length) {
+          const item = data[index];
+          gridHtml += `
+            <div style="
+              flex: 1;
+              display: flex;
+              flex-direction: column;
+              gap: 2px;
+              padding: 2px;
+              background: var(--card-bg, rgba(255,255,255,0.01));
+              border-radius: 5px;
+              border: 1px solid var(--border-color, rgba(255,255,255,0.03));
+              min-width: 0;
+            ">
+              <div style="display: flex;">
+                ${renderCell(item.main, true)}
+              </div>
+              <div style="display: flex; gap: 2px;">
+                ${renderCell(item.num2, false)}
+                ${renderCell(item.num3, false)}
+              </div>
+            </div>
+          `;
+        }
+      }
+      gridHtml += '</div>';
+    }
+
+    return `
+      <div style="
+        background: var(--card-bg, rgba(255,255,255,0.02));
+        border-radius: 8px;
+        padding: 8px;
+        border: 1px solid var(--border-color, rgba(255,255,255,0.06));
+      ">
+        <div style="
+          text-align: center;
+          font-size: 12px;
+          font-weight: 800;
+          color: var(--text-main, #ff9d00);
+          letter-spacing: 0.5px;
+          margin-bottom: 6px;
+          padding-bottom: 4px;
+          border-bottom: 1px solid var(--border-color, rgba(255,255,255,0.06));
+        ">
+          ${label} CHART PLAY
+        </div>
+        ${renderLeavingMeetingInfo(true)}
+        <div style="padding: 0 2px;">
+          ${gridHtml}
+        </div>
+      </div>
+    `;
+  }
+
+  // ======================================
+  // BUILD THE MAIN HTML
+  // ======================================
+
+  const carouselId = 'pwc1-carousel-' + Date.now();
+
+  // Each chart becomes a slide
+  const slidesHtml = chartDefinitions.map((chart, idx) => `
+    <div class="pwc1-slide" data-index="${idx}" style="
+      min-width: 100%;
+      scroll-snap-align: start;
+      padding: 2px;
+      box-sizing: border-box;
+    ">
+      ${renderChart(chart.id, chart.label)}
+    </div>
+  `).join('');
+
+  // Pagination dots
+  let dotsHtml = '';
+  for (let i = 0; i < chartDefinitions.length; i++) {
+    dotsHtml += `
+      <span class="pwc1-dot" data-index="${i}" style="
+        width: 6px; height: 6px;
+        background: ${i === 0 ? '#ff9d00' : '#555'};
+        border-radius: 50%;
+        display: inline-block;
+        margin: 0 4px;
+        cursor: pointer;
+        transition: all 0.3s ease;
+        ${i === 0 ? 'width: 16px; border-radius: 4px;' : ''}
+      "></span>
+    `;
+  }
+
+  const legendHtml = `
+    <div style="
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      gap: 16px;
+      margin-top: 6px;
+      padding: 6px 12px;
+      background: var(--card-bg, rgba(255,255,255,0.02));
+      border-radius: 6px;
+      border: 1px solid var(--border-color, rgba(255,255,255,0.06));
+      flex-wrap: wrap;
+    ">
+      <div style="display: flex; align-items: center; gap: 4px;">
+        <span style="display: inline-block; width: 12px; height: 12px; background: rgba(88,166,255,0.25); border: 1px solid #58a6ff; border-radius: 3px;"></span>
+        <span style="font-size: 8px; color: var(--text-dim, #64748b);">LEAVING</span>
+      </div>
+      <div style="display: flex; align-items: center; gap: 4px;">
+        <span style="display: inline-block; width: 12px; height: 12px; background: rgba(255,157,0,0.25); border: 1px solid #ff9d00; border-radius: 3px;"></span>
+        <span style="font-size: 8px; color: var(--text-dim, #64748b);">MEETING</span>
+      </div>
+      <div style="display: flex; align-items: center; gap: 4px;">
+        <span style="display: inline-block; width: 12px; height: 12px; background: var(--card-bg, rgba(255,255,255,0.03)); border: 1px solid var(--border-color, rgba(255,255,255,0.06)); border-radius: 3px;"></span>
+        <span style="font-size: 8px; color: var(--text-dim, #64748b);">MAIN NUMBER</span>
+      </div>
+    </div>
+  `;
+
+  return `
+    <style>
+      .pwc1-track::-webkit-scrollbar { display: none; }
+      .pwc1-track { -ms-overflow-style: none; scrollbar-width: none; }
+    </style>
+
+    <div style="
+      background: var(--bg-start, linear-gradient(135deg, #0f172a, #1e293b));
+      border-radius: 16px;
+      padding: 12px;
+      margin-bottom: 15px;
+      border: 1px solid var(--border-color, #ff9d00);
+    ">
+      <!-- Header -->
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; flex-wrap: wrap; gap: 4px;">
+        <div>
+          <div style="font-size: 14px; font-weight: 800; color: var(--text-main, #ff9d00); letter-spacing: 0.3px;">
+            ♠️ PLAY WHE CHART PLAY VIEW • v1
+          </div>
+          <div style="font-size: 7px; color: var(--text-dim, #64748b); margin-top: 1px;">
+            ${chartDefinitions.map(c => c.label).join(' • ')} • Leaving/Meeting Highlighted
+          </div>
+        </div>
+        <div style="display: flex; align-items: center; gap: 4px; font-size: 6px; color: var(--text-dim, #94a3b8);">
+          <span style="color: #ff9d00; font-weight: bold; font-size: 6px;">${globalTrackingCode}</span>
+        </div>
+      </div>
+
+      <!-- Carousel Navigation -->
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+        <button class="pwc1-prev" style="
+          background: rgba(255,157,0,0.15);
+          border: 1px solid rgba(255,157,0,0.3);
+          color: #ff9d00;
+          font-weight: 800;
+          font-size: 12px;
+          padding: 4px 14px;
+          border-radius: 20px;
+          cursor: pointer;
+          transition: all 0.2s ease;
+        ">◀ Prev</button>
+
+        <span id="${carouselId}-label" style="
+          font-size: 10px;
+          font-weight: 700;
+          color: var(--text-dim, #94a3b8);
+          letter-spacing: 0.3px;
+        ">${chartDefinitions[0].label} Chart</span>
+
+        <button class="pwc1-next" style="
+          background: rgba(255,157,0,0.15);
+          border: 1px solid rgba(255,157,0,0.3);
+          color: #ff9d00;
+          font-weight: 800;
+          font-size: 12px;
+          padding: 4px 14px;
+          border-radius: 20px;
+          cursor: pointer;
+          transition: all 0.2s ease;
+        ">Next ▶</button>
+      </div>
+
+      <!-- Carousel Track -->
+      <div id="${carouselId}" class="pwc1-track" style="
+        display: flex;
+        overflow-x: auto;
+        scroll-snap-type: x mandatory;
+        scroll-behavior: smooth;
+        -webkit-overflow-scrolling: touch;
+        gap: 0;
+        padding: 0;
+      ">
+        ${slidesHtml}
+      </div>
+
+      <!-- Dots -->
+      <div id="${carouselId}-dots" style="display: flex; justify-content: center; align-items: center; margin-top: 8px;">
+        ${dotsHtml}
+      </div>
+
+      <!-- Legend -->
+      ${legendHtml}
+
+      <!-- Footer -->
+      <div style="margin-top: 6px; padding-top: 4px; border-top: 1px solid var(--border-color, rgba(255,255,255,0.02)); display: flex; justify-content: center; align-items: center; gap: 6px; flex-wrap: wrap;">
+        <span style="font-size: 7px; color: var(--text-dim, #64748b);">CodeWithGlasgow • CWG Chart Analysis ©️</span>
+        <span style="font-size: 7px; color: var(--text-dim, #64748b);">Updated: ${new Date().toLocaleDateString()}</span>
+      </div>
+    </div>
+
+    <script>
+      (function() {
+        var trackId = '${carouselId}';
+        var track = document.getElementById(trackId);
+        if (!track) return;
+
+        var dots = document.querySelectorAll('#' + trackId + '-dots .pwc1-dot');
+        var label = document.getElementById(trackId + '-label');
+        var prevBtn = track.parentElement.querySelector('.pwc1-prev');
+        var nextBtn = track.parentElement.querySelector('.pwc1-next');
+
+        var labels = ${JSON.stringify(chartDefinitions.map(c => c.label + ' Chart'))};
+        var totalSlides = ${chartDefinitions.length};
+        var currentIndex = 0;
+        var scrollTimeout;
+
+        function updateDots() {
+          dots.forEach(function(dot, idx) {
+            if (idx === currentIndex) {
+              dot.style.background = '#ff9d00';
+              dot.style.width = '16px';
+              dot.style.borderRadius = '4px';
+            } else {
+              dot.style.background = '#555';
+              dot.style.width = '6px';
+              dot.style.borderRadius = '50%';
+            }
+          });
+          if (label && labels[currentIndex]) {
+            label.textContent = labels[currentIndex];
+          }
+        }
+
+        function scrollToSlide(index) {
+          if (index < 0) index = 0;
+          if (index >= totalSlides) index = totalSlides - 1;
+          currentIndex = index;
+          var slideWidth = track.children[0] ? track.children[0].offsetWidth : 0;
+          if (slideWidth > 0) {
+            track.scrollTo({ left: index * slideWidth, behavior: 'smooth' });
+          }
+          updateDots();
+        }
+
+        function handleScroll() {
+          if (scrollTimeout) clearTimeout(scrollTimeout);
+          scrollTimeout = setTimeout(function() {
+            var slideWidth = track.children[0] ? track.children[0].offsetWidth : 0;
+            if (slideWidth <= 0) return;
+            var newIndex = Math.round(track.scrollLeft / slideWidth);
+            if (newIndex !== currentIndex && newIndex >= 0 && newIndex < totalSlides) {
+              currentIndex = newIndex;
+              updateDots();
+            }
+          }, 80);
+        }
+
+        track.addEventListener('scroll', handleScroll);
+        dots.forEach(function(dot) {
+          dot.addEventListener('click', function() {
+            scrollToSlide(parseInt(dot.getAttribute('data-index'), 10));
+          });
+        });
+        if (prevBtn) prevBtn.addEventListener('click', function() { scrollToSlide(currentIndex - 1); });
+        if (nextBtn) nextBtn.addEventListener('click', function() { scrollToSlide(currentIndex + 1); });
+
+        updateDots();
+      })();
+    </script>
+  `;
+}
+
+// === Version 2
+// ======================================
+// PLAY WHE 5-CHART VIEW VERSION 2 — CAROUSEL
+// Displays: 1/16, 1/8, 1/9, 1/7, 1/5 Charts as a swipeable carousel
+// With Leaving/Meeting highlighting
+// Each number is in its own individual cell
+// + Leaving/Meeting info container per chart
+// ======================================
+function renderPlayWheFiveChartsv2(weeksData) {
+  if (!weeksData || weeksData.length === 0) {
+    return `
+      <div style="background: linear-gradient(135deg, #0f172a, #1e293b); border-radius: 16px; padding: 16px; margin-bottom: 15px; border: 1px solid #58a6ff; text-align:center;">
+        📊 Loading Chart data...
+      </div>
+    `;
+  }
+
+  // ======================================
+  // CONSTANTS & MAPPINGS
+  // ======================================
+
+  const dayNames = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+  const slots = ["MOR", "MID", "NON", "EVE"];
+  const now = new Date();
+
+  // Chart definitions
+  const chartDefinitions = [
+    { id: '1/16', label: '1/16' },
+    { id: '1/8', label: '1/8' },
+    { id: '1/9', label: '1/9' },
+    { id: '1/7', label: '1/7' },
+    { id: '1/5', label: '1/5' }
+  ];
+
+  // Generate chart data based on the pattern
+  function generateChartData(chartType) {
+    const data = [];
+
+    // Row 1 base values for each chart (from the reference screenshot)
+    const baseRows = {
+      '1/16': { main: 1, num2: 29, num3: 16 },
+      '1/8':  { main: 1, num2: 8,  num3: 25 },
+      '1/9':  { main: 1, num2: 9,  num3: 25 },
+      '1/7':  { main: 1, num2: 7,  num3: 12 },
+      '1/5':  { main: 1, num2: 5,  num3: 27 }
+    };
+
+    const base = baseRows[chartType];
+    if (!base) return data;
+
+    // Helper to wrap numbers into 1-36 range
+    function wrap(n) {
+      while (n > 36) n -= 36;
+      while (n < 1) n += 36;
+      return n;
+    }
+
+    // Generate 36 rows by incrementing all three values by 1 each row
+    for (let i = 0; i < 36; i++) {
+      data.push({
+        main: wrap(base.main + i),
+        num2: wrap(base.num2 + i),
+        num3: wrap(base.num3 + i)
+      });
+    }
+
+    return data;
+  }
+
+  // ======================================
+  // GET LEAVING & MEETING NUMBERS WITH DETAILS
+  // ======================================
+
+  function getDraw(week, dayName, slot) {
+    if (!week) return null;
+    const day = week.days.find(d => d.dayName === dayName);
+    if (!day) return null;
+    const val = day.draws[slot];
+    return val && val !== "-" && val !== "PENDING" && val !== "HOLIDAY" ? parseInt(val, 10) : null;
+  }
+
+  function getLeavingMeetingNumbers() {
+    let leavingNumber = null;
+    let leavingSlot = null;
+    let leavingDate = null;
+    let meetingNumber = null;
+    let meetingSlot = null;
+    let meetingDate = null;
+
+    const sortedWeeks = [...weeksData].sort((a, b) => {
+      let pa = a.startDate.split(" ");
+      let pb = b.startDate.split(" ");
+      return new Date(pa[2] + "-" + pa[1] + "-" + pa[0]) - new Date(pb[2] + "-" + pb[1] + "-" + pb[0]);
+    });
+
+    const currentWeek = sortedWeeks[sortedWeeks.length - 1];
+    const previousWeek = sortedWeeks.length >= 2 ? sortedWeeks[sortedWeeks.length - 2] : currentWeek;
+    const todayIdx = now.getDay();
+    const currentHour = now.getHours();
+
+    function getDateForDraw(week, dayName) {
+      if (!week || !week.startDate) return null;
+      const parts = week.startDate.split(" ");
+      const monthMap = {"Jan":0,"Feb":1,"Mar":2,"Apr":3,"May":4,"Jun":5,"Jul":6,"Aug":7,"Sep":8,"Oct":9,"Nov":10,"Dec":11};
+      const startDate = new Date(parts[2], monthMap[parts[1]], parseInt(parts[0]));
+      const dayIndex = dayNames.indexOf(dayName);
+      if (dayIndex === -1) return null;
+      const drawDate = new Date(startDate);
+      drawDate.setDate(startDate.getDate() + dayIndex);
+      return drawDate;
+    }
+
+    let currentSlotIdx = -1;
+    if (currentHour >= 9 && currentHour < 12) currentSlotIdx = 0;
+    else if (currentHour >= 12 && currentHour < 15) currentSlotIdx = 1;
+    else if (currentHour >= 15 && currentHour < 18) currentSlotIdx = 2;
+    else if (currentHour >= 18) currentSlotIdx = 3;
+
+    // Find LEAVING
+    let leavingDayIdx = -1;
+    let leavingSlotIdx = -1;
+
+    for (let d = todayIdx; d >= 0; d--) {
+      const maxSlot = (d === todayIdx) ? currentSlotIdx : slots.length - 1;
+      for (let s = maxSlot; s >= 0; s--) {
+        const draw = getDraw(currentWeek, dayNames[d], slots[s]);
+        if (draw) {
+          leavingNumber = draw;
+          leavingDayIdx = d;
+          leavingSlotIdx = s;
+          leavingSlot = slots[s];
+          leavingDate = getDateForDraw(currentWeek, dayNames[d]);
+          break;
+        }
+      }
+      if (leavingNumber) break;
+    }
+
+    if (!leavingNumber) {
+      for (let w = sortedWeeks.length - 2; w >= 0; w--) {
+        const week = sortedWeeks[w];
+        for (let d = dayNames.length - 1; d >= 0; d--) {
+          for (let s = slots.length - 1; s >= 0; s--) {
+            const draw = getDraw(week, dayNames[d], slots[s]);
+            if (draw) {
+              leavingNumber = draw;
+              leavingDayIdx = d;
+              leavingSlotIdx = s;
+              leavingSlot = slots[s];
+              leavingDate = getDateForDraw(week, dayNames[d]);
+              break;
+            }
+          }
+          if (leavingNumber) break;
+        }
+        if (leavingNumber) break;
+      }
+    }
+
+    // Find MEETING
+    if (leavingNumber && leavingDayIdx !== -1 && leavingSlotIdx !== -1) {
+      let nextDayIdx = leavingDayIdx;
+      let nextSlotIdx = leavingSlotIdx + 1;
+
+      if (nextSlotIdx >= slots.length) {
+        nextSlotIdx = 0;
+        nextDayIdx = leavingDayIdx + 1;
+      }
+
+      if (nextDayIdx >= dayNames.length) {
+        nextDayIdx = 0;
+      }
+
+      if (nextDayIdx >= 0 && nextDayIdx < dayNames.length) {
+        const targetDay = dayNames[nextDayIdx];
+        const targetSlot = slots[nextSlotIdx];
+
+        meetingNumber = getDraw(previousWeek, targetDay, targetSlot);
+        if (meetingNumber) {
+          meetingSlot = targetSlot;
+          meetingDate = getDateForDraw(previousWeek, targetDay);
+        }
+
+        if (!meetingNumber) {
+          for (let w = sortedWeeks.length - 2; w >= 0; w--) {
+            const week = sortedWeeks[w];
+            const draw = getDraw(week, targetDay, targetSlot);
+            if (draw) {
+              meetingNumber = draw;
+              meetingSlot = targetSlot;
+              meetingDate = getDateForDraw(week, targetDay);
+              break;
+            }
+          }
+        }
+
+        if (!meetingNumber) {
+          const draw = getDraw(currentWeek, targetDay, targetSlot);
+          if (draw) {
+            meetingNumber = draw;
+            meetingSlot = targetSlot;
+            meetingDate = getDateForDraw(currentWeek, targetDay);
+          }
+        }
+      }
+    }
+
+    return {
+      leavingNumber, leavingSlot, leavingDate,
+      meetingNumber, meetingSlot, meetingDate
+    };
+  }
+
+  const {
+    leavingNumber, leavingSlot, leavingDate,
+    meetingNumber, meetingSlot, meetingDate
+  } = getLeavingMeetingNumbers();
+
+  // ======================================
+  // FORMAT DATE DISPLAY
+  // ======================================
+  function formatDateDisplay(date) {
+    if (!date) return "No data";
+    const days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    return `${days[date.getDay()]} ${date.getDate()} ${months[date.getMonth()]} '${date.getFullYear().toString().slice(-2)}`;
+  }
+
+  // ======================================
+  // RENDER FUNCTIONS
+  // ======================================
+
+  // Leaving/Meeting Info Container (reusable per chart)
+  function renderLeavingMeetingInfo(compact = false) {
+    const leavingDisplay = leavingNumber ? `#${leavingNumber}` : '—';
+    const meetingDisplay = meetingNumber ? `#${meetingNumber}` : '—';
+    const leavingDateDisplay = leavingDate ? formatDateDisplay(leavingDate) : 'No data';
+    const meetingDateDisplay = meetingDate ? formatDateDisplay(meetingDate) : 'No data';
+
+    const pad = compact ? '5px 8px' : '8px 10px';
+    const numSize = compact ? '16px' : '22px';
+    const lblSize = compact ? '9px' : '10px';
+    const dateSize = compact ? '8px' : '9px';
+
+    return `
+      <div style="display: flex; gap: 6px; margin-bottom: 6px;">
+        <!-- LEAVING Container -->
+        <div style="
+          flex: 1;
+          border-radius: 6px;
+          padding: ${pad};
+          text-align: center;
+          border: 1px solid #58a6ff;
+          background: rgba(88,166,255,0.08);
+        ">
+          <div style="font-size: ${lblSize}; font-weight: 800; color: #58a6ff; text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 2px;">
+            🔵 LEAVING
+          </div>
+          <div style="font-size: ${numSize}; font-weight: 900; color: #58a6ff; margin: 2px 0; line-height: 1.1;">
+            ${leavingDisplay}
+          </div>
+          <div style="font-size: ${dateSize}; color: var(--text-dim, #94a3b8); margin-top: 1px; display: flex; justify-content: center; align-items: center; gap: 4px; flex-wrap: wrap;">
+            <span>📆 ${leavingDateDisplay}</span>
+            <span>•</span>
+            <span>⏰ ${leavingSlot || '—'}</span>
+          </div>
+        </div>
+
+        <!-- MEETING Container -->
+        <div style="
+          flex: 1;
+          border-radius: 6px;
+          padding: ${pad};
+          text-align: center;
+          border: 1px solid #ff9d00;
+          background: rgba(255,157,0,0.08);
+        ">
+          <div style="font-size: ${lblSize}; font-weight: 800; color: #ff9d00; text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 2px;">
+            🟡 MEETING
+          </div>
+          <div style="font-size: ${numSize}; font-weight: 900; color: #ff9d00; margin: 2px 0; line-height: 1.1;">
+            ${meetingDisplay}
+          </div>
+          <div style="font-size: ${dateSize}; color: var(--text-dim, #94a3b8); margin-top: 1px; display: flex; justify-content: center; align-items: center; gap: 4px; flex-wrap: wrap;">
+            <span>📆 ${meetingDateDisplay}</span>
+            <span>•</span>
+            <span>⏰ ${meetingSlot || '—'}</span>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  // Helper: Render an individual number cell
+  function renderNumberCell(num, isMain = false) {
+    const isLeaving = num === leavingNumber;
+    const isMeeting = num === meetingNumber;
+
+    let bgColor = 'var(--card-bg, rgba(255,255,255,0.03))';
+    let borderColor = 'var(--border-color, rgba(255,255,255,0.08))';
+    let textColor = 'var(--text-main, #e2e8f0)';
+    let fontWeight = isMain ? '700' : '400';
+    let extraStyle = '';
+
+    if (isLeaving) {
+      bgColor = 'rgba(88,166,255,0.25)';
+      borderColor = '#58a6ff';
+      textColor = '#58a6ff';
+      fontWeight = '900';
+      extraStyle = 'box-shadow: 0 0 8px rgba(88,166,255,0.3);';
+    } else if (isMeeting) {
+      bgColor = 'rgba(255,157,0,0.25)';
+      borderColor = '#ff9d00';
+      textColor = '#ff9d00';
+      fontWeight = '900';
+      extraStyle = 'box-shadow: 0 0 8px rgba(255,157,0,0.3);';
+    }
+
+    return `
+      <div style="
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 24px;
+        padding: 3px 4px;
+        background: ${bgColor};
+        border: 1px solid ${borderColor};
+        border-radius: 3px;
+        ${extraStyle}
+        transition: all 0.2s ease;
+      ">
+        <span style="
+          font-size: ${isMain ? '12px' : '11px'};
+          font-weight: ${fontWeight};
+          color: ${textColor};
+          line-height: 1.1;
+        ">${num}</span>
+      </div>
+    `;
+  }
+
+  function renderChart(chartType, label) {
+    const data = generateChartData(chartType);
+    if (!data || data.length === 0) return '';
+
+    // 3x3 grid layout (3 columns x 12 rows = 36 numbers)
+    let gridHtml = '';
+    const rows = 12;
+    const cols = 3;
+
+    for (let r = 0; r < rows; r++) {
+      gridHtml += '<div style="display:flex; justify-content:center; gap:3px; margin-bottom:3px;">';
+      for (let c = 0; c < cols; c++) {
+        const index = r * cols + c;
+        if (index < data.length) {
+          const item = data[index];
+
+          // Each row has: [Main] [Num2] [Num3] — each in its own cell
+          gridHtml += `
+            <div style="
+              display: flex;
+              align-items: center;
+              gap: 3px;
+              flex: 1;
+              padding: 2px;
+              background: var(--card-bg, rgba(255,255,255,0.01));
+              border-radius: 5px;
+              border: 1px solid var(--border-color, rgba(255,255,255,0.03));
+            ">
+              ${renderNumberCell(item.main, true)}
+              ${renderNumberCell(item.num2, false)}
+              ${renderNumberCell(item.num3, false)}
+            </div>
+          `;
+        }
+      }
+      gridHtml += '</div>';
+    }
+
+    return `
+      <div style="
+        background: var(--card-bg, rgba(255,255,255,0.02));
+        border-radius: 8px;
+        padding: 8px;
+        border: 1px solid var(--border-color, rgba(255,255,255,0.06));
+      ">
+        <div style="
+          text-align: center;
+          font-size: 12px;
+          font-weight: 800;
+          color: var(--text-main, #ff9d00);
+          letter-spacing: 0.5px;
+          margin-bottom: 6px;
+          padding-bottom: 4px;
+          border-bottom: 1px solid var(--border-color, rgba(255,255,255,0.06));
+        ">
+          ${label} CHART PLAY
+        </div>
+        ${renderLeavingMeetingInfo(true)}
+        <div style="padding: 0 2px;">
+          ${gridHtml}
+        </div>
+      </div>
+    `;
+  }
+
+  // ======================================
+  // BUILD THE MAIN HTML
+  // ======================================
+
+  const carouselId = 'pwc-carousel-' + Date.now();
+
+  // Build carousel slides (each slide is a full chart)
+  const slidesHtml = chartDefinitions.map((chart, idx) => `
+    <div class="pwc-slide" data-index="${idx}" style="
+      min-width: 100%;
+      scroll-snap-align: start;
+      padding: 2px;
+      box-sizing: border-box;
+    ">
+      ${renderChart(chart.id, chart.label)}
+    </div>
+  `).join('');
+
+  // Dots
+  let dotsHtml = '';
+  for (let i = 0; i < chartDefinitions.length; i++) {
+    dotsHtml += `
+      <span class="pwc-dot" data-index="${i}" style="
+        width: 6px; height: 6px;
+        background: ${i === 0 ? '#ff9d00' : '#555'};
+        border-radius: 50%;
+        display: inline-block;
+        margin: 0 4px;
+        cursor: pointer;
+        transition: all 0.3s ease;
+        ${i === 0 ? 'width: 16px; border-radius: 4px;' : ''}
+      "></span>
+    `;
+  }
+
+  // Legend for Leaving/Meeting
+  const legendHtml = `
+    <div style="
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      gap: 16px;
+      margin-top: 6px;
+      padding: 6px 12px;
+      background: var(--card-bg, rgba(255,255,255,0.02));
+      border-radius: 6px;
+      border: 1px solid var(--border-color, rgba(255,255,255,0.06));
+      flex-wrap: wrap;
+    ">
+      <div style="display: flex; align-items: center; gap: 4px;">
+        <span style="display: inline-block; width: 12px; height: 12px; background: rgba(88,166,255,0.25); border: 1px solid #58a6ff; border-radius: 3px;"></span>
+        <span style="font-size: 8px; color: var(--text-dim, #64748b);">LEAVING</span>
+      </div>
+      <div style="display: flex; align-items: center; gap: 4px;">
+        <span style="display: inline-block; width: 12px; height: 12px; background: rgba(255,157,0,0.25); border: 1px solid #ff9d00; border-radius: 3px;"></span>
+        <span style="font-size: 8px; color: var(--text-dim, #64748b);">MEETING</span>
+      </div>
+      <div style="display: flex; align-items: center; gap: 4px;">
+        <span style="display: inline-block; width: 12px; height: 12px; background: var(--card-bg, rgba(255,255,255,0.03)); border: 1px solid var(--border-color, rgba(255,255,255,0.06)); border-radius: 3px;"></span>
+        <span style="font-size: 8px; color: var(--text-dim, #64748b);">MAIN NUMBER</span>
+      </div>
+      <div style="display: flex; align-items: center; gap: 4px;">
+        <span style="font-size: 8px; color: var(--text-dim, #64748b);">↳</span>
+        <span style="font-size: 8px; color: var(--text-dim, #64748b);">CHART NUMBERS</span>
+      </div>
+    </div>
+  `;
+
+  return `
+    <style>
+      .pwc-track::-webkit-scrollbar { display: none; }
+      .pwc-track { -ms-overflow-style: none; scrollbar-width: none; }
+    </style>
+
+    <div style="
+      background: var(--bg-start, linear-gradient(135deg, #0f172a, #1e293b));
+      border-radius: 16px;
+      padding: 12px;
+      margin-bottom: 15px;
+      border: 1px solid var(--border-color, #ff9d00);
+    ">
+
+      <!-- Header -->
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; flex-wrap: wrap; gap: 4px;">
+        <div>
+          <div style="font-size: 14px; font-weight: 800; color: var(--text-main, #ff9d00); letter-spacing: 0.3px;">
+            ♠️ PLAY WHE CHART PLAY VIEW • v2
+          </div>
+          <div style="font-size: 7px; color: var(--text-dim, #64748b); margin-top: 1px;">
+            ${chartDefinitions.map(c => c.label).join(' • ')} • Leaving/Meeting Highlighted
+          </div>
+        </div>
+        <div style="display: flex; align-items: center; gap: 4px; font-size: 6px; color: var(--text-dim, #94a3b8);">
+          <span style="color: #ff9d00; font-weight: bold; font-size: 6px;">${globalTrackingCode}</span>
+        </div>
+      </div>
+
+      <!-- Carousel Navigation -->
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px;">
+        <button class="pwc-prev" style="
+          background: rgba(255,157,0,0.15);
+          border: 1px solid rgba(255,157,0,0.3);
+          color: #ff9d00;
+          font-weight: 800;
+          font-size: 12px;
+          padding: 4px 14px;
+          border-radius: 20px;
+          cursor: pointer;
+          transition: all 0.2s ease;
+        ">◀ Prev</button>
+
+        <span id="${carouselId}-label" style="
+          font-size: 10px;
+          font-weight: 700;
+          color: var(--text-dim, #94a3b8);
+          letter-spacing: 0.3px;
+        ">${chartDefinitions[0].label} Chart</span>
+
+        <button class="pwc-next" style="
+          background: rgba(255,157,0,0.15);
+          border: 1px solid rgba(255,157,0,0.3);
+          color: #ff9d00;
+          font-weight: 800;
+          font-size: 12px;
+          padding: 4px 14px;
+          border-radius: 20px;
+          cursor: pointer;
+          transition: all 0.2s ease;
+        ">Next ▶</button>
+      </div>
+
+      <!-- Carousel Track -->
+      <div id="${carouselId}" class="pwc-track" style="
+        display: flex;
+        overflow-x: auto;
+        scroll-snap-type: x mandatory;
+        scroll-behavior: smooth;
+        -webkit-overflow-scrolling: touch;
+        gap: 0;
+        padding: 0;
+      ">
+        ${slidesHtml}
+      </div>
+
+      <!-- Dots -->
+      <div id="${carouselId}-dots" style="display: flex; justify-content: center; align-items: center; margin-top: 8px;">
+        ${dotsHtml}
+      </div>
+
+      <!-- Legend -->
+      ${legendHtml}
+
+      <!-- Footer -->
+      <div style="margin-top: 6px; padding-top: 4px; border-top: 1px solid var(--border-color, rgba(255,255,255,0.02)); display: flex; justify-content: center; align-items: center; gap: 6px; flex-wrap: wrap;">
+        <span style="font-size: 7px; color: var(--text-dim, #64748b);">CodeWithGlasgow • CWG Chart Analysis ©️</span>
+        <span style="font-size: 7px; color: var(--text-dim, #64748b);">Updated: ${new Date().toLocaleDateString()}</span>
+      </div>
+
+    </div>
+
+    <script>
+      (function() {
+        var trackId = '${carouselId}';
+        var track = document.getElementById(trackId);
+        if (!track) return;
+
+        var dots = document.querySelectorAll('#' + trackId + '-dots .pwc-dot');
+        var label = document.getElementById(trackId + '-label');
+        var prevBtn = track.parentElement.querySelector('.pwc-prev');
+        var nextBtn = track.parentElement.querySelector('.pwc-next');
+
+        var labels = ${JSON.stringify(chartDefinitions.map(c => c.label + ' Chart'))};
+        var totalSlides = ${chartDefinitions.length};
+        var currentIndex = 0;
+        var scrollTimeout;
+
+        function updateDots() {
+          dots.forEach(function(dot, idx) {
+            if (idx === currentIndex) {
+              dot.style.background = '#ff9d00';
+              dot.style.width = '16px';
+              dot.style.borderRadius = '4px';
+            } else {
+              dot.style.background = '#555';
+              dot.style.width = '6px';
+              dot.style.borderRadius = '50%';
+            }
+          });
+          if (label && labels[currentIndex]) {
+            label.textContent = labels[currentIndex];
+          }
+        }
+
+        function scrollToSlide(index) {
+          if (index < 0) index = 0;
+          if (index >= totalSlides) index = totalSlides - 1;
+          currentIndex = index;
+          var slideWidth = track.children[0] ? track.children[0].offsetWidth : 0;
+          if (slideWidth > 0) {
+            track.scrollTo({ left: index * slideWidth, behavior: 'smooth' });
+          }
+          updateDots();
+        }
+
+        function handleScroll() {
+          if (scrollTimeout) clearTimeout(scrollTimeout);
+          scrollTimeout = setTimeout(function() {
+            var slideWidth = track.children[0] ? track.children[0].offsetWidth : 0;
+            if (slideWidth <= 0) return;
+            var newIndex = Math.round(track.scrollLeft / slideWidth);
+            if (newIndex !== currentIndex && newIndex >= 0 && newIndex < totalSlides) {
+              currentIndex = newIndex;
+              updateDots();
+            }
+          }, 80);
+        }
+
+        track.addEventListener('scroll', handleScroll);
+        dots.forEach(function(dot) {
+          dot.addEventListener('click', function() {
+            scrollToSlide(parseInt(dot.getAttribute('data-index'), 10));
+          });
+        });
+        if (prevBtn) prevBtn.addEventListener('click', function() { scrollToSlide(currentIndex - 1); });
+        if (nextBtn) nextBtn.addEventListener('click', function() { scrollToSlide(currentIndex + 1); });
+
+        updateDots();
+      })();
+    </script>
+  `;
+}
+// === Version 3
+// ======================================
+// PLAY WHE 5-CHART VIEW v3
+// Carousel: Swipe between 1/16, 1/8, 1/9, 1/7, 1/5 Charts
+// Each chart has Leaving/Meeting info + Analysis table
+// Analysis table shows: MARK | HITS | LINE | LAST PLAYED | STAT
+// Doubles = ONLY 8, 11, 22, 33
+// Red dot = Leaving in chart, Green dot = Meeting in chart
+// ======================================
+function renderPlayWheFiveChartsv3(weeksData) {
+  if (!weeksData || weeksData.length === 0) {
+    return `
+      <div style="background: linear-gradient(135deg, #0f172a, #1e293b); border-radius: 16px; padding: 16px; margin-bottom: 15px; border: 1px solid #58a6ff; text-align:center;">
+        📊 Loading Chart data...
+      </div>
+    `;
+  }
+
+  // ======================================
+  // CONSTANTS & MAPPINGS
+  // ======================================
+
+  const dayNames = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+  const slots = ["MOR", "MID", "NON", "EVE"];
+  const now = new Date();
+
+  // Line mapping
+  const numToLineMap = {
+    1:1, 10:1, 19:1, 28:1, 2:2, 11:2, 20:2, 29:2, 3:3, 12:3, 21:3, 30:3,
+    4:4, 13:4, 22:4, 31:4, 5:5, 14:5, 23:5, 32:5, 6:6, 15:6, 24:6, 33:6,
+    7:7, 16:7, 25:7, 34:7, 8:8, 17:8, 26:8, 35:8, 9:9, 18:9, 27:9, 36:9
+  };
+
+  const lineColors = [
+    "#00f2ff", "#ff9f0a", "#32d74b", "#ff375f", 
+    "#ffd60a", "#bf5af2", "#1e90ff", "#ff1493", "#00ff7f"
+  ];
+
+  // ONLY THESE 4 NUMBERS ARE DOUBLES
+  const doubleNumbers = [8, 11, 22, 33];
+
+  const chartDefinitions = [
+    { id: '1/16', label: '1/16' },
+    { id: '1/8', label: '1/8' },
+    { id: '1/9', label: '1/9' },
+    { id: '1/7', label: '1/7' },
+    { id: '1/5', label: '1/5' }
+  ];
+
+function generateChartData(chartType) {
+  const data = [];
+
+  // Row 1 base values for each chart (from the reference screenshot)
+  const baseRows = {
+    '1/16': { main: 1, num2: 29, num3: 16 },
+    '1/8':  { main: 1, num2: 8,  num3: 25 },
+    '1/9':  { main: 1, num2: 9,  num3: 25 },
+    '1/7':  { main: 1, num2: 7,  num3: 12 },
+    '1/5':  { main: 1, num2: 5,  num3: 27 }
+  };
+
+  const base = baseRows[chartType];
+  if (!base) return data;
+
+  // Helper to wrap numbers into 1-36 range
+  function wrap(n) {
+    while (n > 36) n -= 36;
+    while (n < 1) n += 36;
+    return n;
+  }
+
+  // Generate 36 rows by incrementing all three values by 1 each row
+  for (let i = 0; i < 36; i++) {
+    data.push({
+      main: wrap(base.main + i),
+      num2: wrap(base.num2 + i),
+      num3: wrap(base.num3 + i)
+    });
+  }
+
+  return data;
+}
+
+  // ======================================
+  // DATA COLLECTION
+  // ======================================
+
+  function getDraw(week, dayName, slot) {
+    if (!week) return null;
+    const day = week.days.find(d => d.dayName === dayName);
+    if (!day) return null;
+    const val = day.draws[slot];
+    return val && val !== "-" && val !== "PENDING" && val !== "HOLIDAY" ? parseInt(val, 10) : null;
+  }
+
+  const sortedWeeks = [...weeksData].sort((a, b) => {
+    let pa = a.startDate.split(" ");
+    let pb = b.startDate.split(" ");
+    return new Date(pa[2] + "-" + pa[1] + "-" + pa[0]) - new Date(pb[2] + "-" + pb[1] + "-" + pb[0]);
+  });
+
+  const currentWeek = sortedWeeks[sortedWeeks.length - 1];
+  const previousWeek = sortedWeeks.length >= 2 ? sortedWeeks[sortedWeeks.length - 2] : currentWeek;
+
+  // ======================================
+  // GET LEAVING & MEETING NUMBERS
+  // ======================================
+
+  function getDateForDraw(week, dayName) {
+    if (!week || !week.startDate) return null;
+    const parts = week.startDate.split(" ");
+    const monthMap = {"Jan":0,"Feb":1,"Mar":2,"Apr":3,"May":4,"Jun":5,"Jul":6,"Aug":7,"Sep":8,"Oct":9,"Nov":10,"Dec":11};
+    const startDate = new Date(parts[2], monthMap[parts[1]], parseInt(parts[0]));
+    const dayIndex = dayNames.indexOf(dayName);
+    if (dayIndex === -1) return null;
+    const drawDate = new Date(startDate);
+    drawDate.setDate(startDate.getDate() + dayIndex);
+    return drawDate;
+  }
+
+  function getLeavingMeetingNumbers() {
+    let leavingNumber = null, leavingSlot = null, leavingDate = null;
+    let meetingNumber = null, meetingSlot = null, meetingDate = null;
+    
+    const todayIdx = now.getDay();
+    const currentHour = now.getHours();
+    
+    let currentSlotIdx = -1;
+    if (currentHour >= 9 && currentHour < 12) currentSlotIdx = 0;
+    else if (currentHour >= 12 && currentHour < 15) currentSlotIdx = 1;
+    else if (currentHour >= 15 && currentHour < 18) currentSlotIdx = 2;
+    else if (currentHour >= 18) currentSlotIdx = 3;
+    
+    let leavingDayIdx = -1, leavingSlotIdx = -1;
+    
+    for (let d = todayIdx; d >= 0; d--) {
+      const maxSlot = (d === todayIdx) ? currentSlotIdx : slots.length - 1;
+      for (let s = maxSlot; s >= 0; s--) {
+        const draw = getDraw(currentWeek, dayNames[d], slots[s]);
+        if (draw) {
+          leavingNumber = draw; leavingDayIdx = d; leavingSlotIdx = s;
+          leavingSlot = slots[s];
+          leavingDate = getDateForDraw(currentWeek, dayNames[d]);
+          break;
+        }
+      }
+      if (leavingNumber) break;
+    }
+    
+    if (!leavingNumber) {
+      for (let w = sortedWeeks.length - 2; w >= 0; w--) {
+        const week = sortedWeeks[w];
+        for (let d = dayNames.length - 1; d >= 0; d--) {
+          for (let s = slots.length - 1; s >= 0; s--) {
+            const draw = getDraw(week, dayNames[d], slots[s]);
+            if (draw) {
+              leavingNumber = draw; leavingDayIdx = d; leavingSlotIdx = s;
+              leavingSlot = slots[s];
+              leavingDate = getDateForDraw(week, dayNames[d]);
+              break;
+            }
+          }
+          if (leavingNumber) break;
+        }
+        if (leavingNumber) break;
+      }
+    }
+    
+    if (leavingNumber && leavingDayIdx !== -1 && leavingSlotIdx !== -1) {
+      let nextDayIdx = leavingDayIdx;
+      let nextSlotIdx = leavingSlotIdx + 1;
+      
+      if (nextSlotIdx >= slots.length) {
+        nextSlotIdx = 0;
+        nextDayIdx = leavingDayIdx + 1;
+      }
+      if (nextDayIdx >= dayNames.length) nextDayIdx = 0;
+      
+      if (nextDayIdx >= 0 && nextDayIdx < dayNames.length) {
+        const targetDay = dayNames[nextDayIdx];
+        const targetSlot = slots[nextSlotIdx];
+        
+        meetingNumber = getDraw(previousWeek, targetDay, targetSlot);
+        if (meetingNumber) {
+          meetingSlot = targetSlot;
+          meetingDate = getDateForDraw(previousWeek, targetDay);
+        }
+        
+        if (!meetingNumber) {
+          for (let w = sortedWeeks.length - 2; w >= 0; w--) {
+            const week = sortedWeeks[w];
+            const draw = getDraw(week, targetDay, targetSlot);
+            if (draw) {
+              meetingNumber = draw;
+              meetingSlot = targetSlot;
+              meetingDate = getDateForDraw(week, targetDay);
+              break;
+            }
+          }
+        }
+        
+        if (!meetingNumber) {
+          const draw = getDraw(currentWeek, targetDay, targetSlot);
+          if (draw) {
+            meetingNumber = draw;
+            meetingSlot = targetSlot;
+            meetingDate = getDateForDraw(currentWeek, targetDay);
+          }
+        }
+      }
+    }
+    
+    return { leavingNumber, leavingSlot, leavingDate, meetingNumber, meetingSlot, meetingDate };
+  }
+
+  const { leavingNumber, leavingSlot, leavingDate, meetingNumber, meetingSlot, meetingDate } = getLeavingMeetingNumbers();
+
+  // ======================================
+  // BUILD TIMELINE FOR ANALYSIS
+  // ======================================
+
+  const allDraws = [];
+  for (let w = sortedWeeks.length - 1; w >= 0 && allDraws.length < 500; w--) {
+    const week = sortedWeeks[w];
+    const weekStart = new Date(week.startDate);
+    for (let d = dayNames.length - 1; d >= 0 && allDraws.length < 500; d--) {
+      const drawDate = new Date(weekStart);
+      drawDate.setDate(weekStart.getDate() + d);
+      for (let s = slots.length - 1; s >= 0 && allDraws.length < 500; s--) {
+        const draw = getDraw(week, dayNames[d], slots[s]);
+        if (draw) {
+          allDraws.push({ num: draw, date: drawDate, day: dayNames[d], slot: slots[s] });
+        }
+      }
+    }
+  }
+
+  // Get last played date and hit count for each number (from 500 draws)
+  const lastPlayed = {};
+  const hitCounts = {};
+  allDraws.forEach(draw => {
+    if (!lastPlayed[draw.num] || draw.date > lastPlayed[draw.num]) {
+      lastPlayed[draw.num] = draw.date;
+    }
+    hitCounts[draw.num] = (hitCounts[draw.num] || 0) + 1;
+  });
+
+  // Current & previous week draws
+  const currentWeekDraws = [];
+  for (let d = 0; d < dayNames.length; d++) {
+    for (let s = 0; s < slots.length; s++) {
+      const draw = getDraw(currentWeek, dayNames[d], slots[s]);
+      if (draw) currentWeekDraws.push(draw);
+    }
+  }
+
+  const previousWeekDraws = [];
+  for (const day of dayNames) {
+    for (const slot of slots) {
+      const draw = getDraw(previousWeek, day, slot);
+      if (draw) previousWeekDraws.push(draw);
+    }
+  }
+
+  const prevWeekCounts = {};
+  const currWeekCounts = {};
+  for (let i = 1; i <= 36; i++) {
+    prevWeekCounts[i] = 0;
+    currWeekCounts[i] = 0;
+  }
+  previousWeekDraws.forEach(num => { prevWeekCounts[num] = (prevWeekCounts[num] || 0) + 1; });
+  currentWeekDraws.forEach(num => { currWeekCounts[num] = (currWeekCounts[num] || 0) + 1; });
+
+  // ======================================
+  // HELPER FUNCTIONS
+  // ======================================
+
+  function getLine(num) { return numToLineMap[num] || null; }
+  function getLineDisplay(num) {
+    const line = getLine(num);
+    return line ? `${line}L` : "—";
+  }
+  function getLineColor(num) {
+    const line = getLine(num);
+    return line ? lineColors[(line - 1) % lineColors.length] : "#94a3b8";
+  }
+
+  function formatDateDisplay(date) {
+    if (!date) return "Never";
+    const days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    return `${days[date.getDay()]} ${date.getDate()} ${months[date.getMonth()]} '${date.getFullYear().toString().slice(-2)}`;
+  }
+
+  // CORRECTED STAT LOGIC
+  // Doubles = ONLY 8, 11, 22, 33 (these are the double numbers)
+  // Any other number that plays once is NOT "TO DOUBLE"
+  function getStat(num) {
+    const prevCount = prevWeekCounts[num] || 0;
+    const currCount = currWeekCounts[num] || 0;
+    const isDoubleNum = doubleNumbers.includes(num);
+    
+    // QUAD status (any number can get to 4)
+    if (currCount >= 4) return { label: "✅ QUAD DONE", color: "#32d74b" };
+    if (currCount === 3) return { label: "🔥 TO QUAD", color: "#ff375f" };
+    
+    // TRIPLE status
+    if (currCount === 2) return { label: "🔥 TO TRIPLE", color: "#ff9d00" };
+    if (prevCount === 3 && currCount === 0) return { label: "⏳ QUAD PENDING", color: "#58a6ff" };
+    if (prevCount === 2 && currCount === 0) return { label: "⏳ TRIPLE PENDING", color: "#58a6ff" };
+    
+    // DOUBLE status — ONLY for 8, 11, 22, 33
+    if (isDoubleNum) {
+      if (currCount === 1) return { label: "🔥 TO DOUBLE", color: "#32d74b" };
+      if (prevCount === 1 && currCount === 0) return { label: "⏳ DOUBLE PENDING", color: "#58a6ff" };
+    }
+    
+    // Played last week (non-double numbers)
+    if (prevCount > 0) return { label: "📅 PLAYED LW", color: "#94a3b8" };
+    
+    // Due based on days since last played
+    const lastDate = lastPlayed[num];
+    if (lastDate) {
+      const daysSince = Math.floor((now - lastDate) / (1000 * 60 * 60 * 24));
+      if (daysSince > 21) return { label: "🔥 DUE NOW", color: "#ff375f" };
+      if (daysSince > 14) return { label: "♨️ HEATING UP", color: "#ff9d00" };
+      if (daysSince > 7) return { label: "⚡️ PULL BACK", color: "#ffd60a" };
+    }
+    
+    return { label: "—", color: "#64748b" };
+  }
+
+  // ======================================
+  // RENDER FUNCTIONS
+  // ======================================
+
+  function renderLeavingMeetingInfo(compact = false) {
+    const leavingDisplay = leavingNumber ? `#${leavingNumber}` : '—';
+    const meetingDisplay = meetingNumber ? `#${meetingNumber}` : '—';
+    const leavingDateDisplay = leavingDate ? formatDateDisplay(leavingDate) : 'No data';
+    const meetingDateDisplay = meetingDate ? formatDateDisplay(meetingDate) : 'No data';
+
+    const pad = compact ? '5px 8px' : '8px 10px';
+    const numSize = compact ? '16px' : '22px';
+    const lblSize = compact ? '9px' : '10px';
+    const dateSize = compact ? '8px' : '9px';
+
+    return `
+      <div style="display: flex; gap: 6px; margin-bottom: 6px;">
+        <div style="flex: 1; border-radius: 6px; padding: ${pad}; text-align: center; border: 1px solid #58a6ff; background: rgba(88,166,255,0.08);">
+          <div style="font-size: ${lblSize}; font-weight: 800; color: #58a6ff; text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 2px;">🔵 LEAVING</div>
+          <div style="font-size: ${numSize}; font-weight: 900; color: #58a6ff; margin: 2px 0; line-height: 1.1;">${leavingDisplay}</div>
+          <div style="font-size: ${dateSize}; color: var(--text-dim, #94a3b8); margin-top: 1px; display: flex; justify-content: center; align-items: center; gap: 4px; flex-wrap: wrap;">
+            <span>📆 ${leavingDateDisplay}</span><span>•</span><span>${leavingSlot || '—'}</span>
+          </div>
+        </div>
+        <div style="flex: 1; border-radius: 6px; padding: ${pad}; text-align: center; border: 1px solid #ff9d00; background: rgba(255,157,0,0.08);">
+          <div style="font-size: ${lblSize}; font-weight: 800; color: #ff9d00; text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 2px;">🟡 MEETING</div>
+          <div style="font-size: ${numSize}; font-weight: 900; color: #ff9d00; margin: 2px 0; line-height: 1.1;">${meetingDisplay}</div>
+          <div style="font-size: ${dateSize}; color: var(--text-dim, #94a3b8); margin-top: 1px; display: flex; justify-content: center; align-items: center; gap: 4px; flex-wrap: wrap;">
+            <span>📆 ${meetingDateDisplay}</span><span>•</span><span>${meetingSlot || '—'}</span>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+
+  // Analysis table with HITS column
+  // numbers is an array of { num, hasRedDot, hasGreenDot }
+  function renderAnalysisTable(numbers, title, titleColor) {
+    if (!numbers || numbers.length === 0) {
+      return `<div style="text-align:center; padding:6px; color:var(--text-dim,#64748b); font-size:9px;">No data available</div>`;
+    }
+
+    const rowsHtml = numbers.map(item => {
+      const num = item.num;
+      const line = getLineDisplay(num);
+      const lineColor = getLineColor(num);
+      const hits = hitCounts[num] || 0;
+      const lastDate = lastPlayed[num] ? formatDateDisplay(lastPlayed[num]) : "Never";
+      const stat = getStat(num);
+      
+      // Dots indicator
+      let dotsHtml = '';
+      if (item.hasRedDot && item.hasGreenDot) {
+        dotsHtml = `<span style="display:inline-block; width:8px; height:8px; background:#ff375f; border-radius:50%; margin-right:3px;"></span><span style="display:inline-block; width:8px; height:8px; background:#32d74b; border-radius:50%;"></span>`;
+      } else if (item.hasRedDot) {
+        dotsHtml = `<span style="display:inline-block; width:8px; height:8px; background:#ff375f; border-radius:50%;"></span>`;
+      } else if (item.hasGreenDot) {
+        dotsHtml = `<span style="display:inline-block; width:8px; height:8px; background:#32d74b; border-radius:50%;"></span>`;
+      }
+
+      return `
+        <tr style="border-bottom: 1px solid var(--border-color, rgba(255,255,255,0.04));">
+          <td style="padding: 4px 6px; text-align: center; font-weight: 900; font-size: 13px; color: ${titleColor}; white-space: nowrap;">
+            ${num} ${dotsHtml}
+          </td>
+          <td style="padding: 4px 6px; text-align: center; font-weight: 700; font-size: 10px; color: var(--text-main, #e2e8f0);">${hits}x</td>
+          <td style="padding: 4px 6px; text-align: center; font-weight: 700; font-size: 10px; color: ${lineColor};">${line}</td>
+          <td style="padding: 4px 6px; text-align: center; font-size: 9px; color: var(--text-dim, #94a3b8); white-space: nowrap;">${lastDate}</td>
+          <td style="padding: 4px 6px; text-align: center; font-size: 8px; font-weight: 700; color: ${stat.color}; white-space: nowrap;">${stat.label}</td>
+        </tr>
+      `;
+    }).join('');
+
+    return `
+      <div style="margin-bottom: 6px;">
+        <div style="font-size: 9px; font-weight: 800; color: ${titleColor}; margin-bottom: 3px; letter-spacing: 0.3px;">${title}</div>
+        <div style="background: var(--card-bg, rgba(255,255,255,0.02)); border-radius: 6px; overflow-x: auto; border: 1px solid var(--border-color, rgba(255,255,255,0.04));">
+          <table style="width: 100%; border-collapse: collapse; min-width: 320px;">
+            <thead>
+              <tr style="background: var(--header-bg, rgba(255,255,255,0.04)); border-bottom: 1px solid var(--border-color, rgba(255,255,255,0.06));">
+                <th style="padding: 4px 6px; text-align: center; color: var(--text-main, #ff9d00); font-weight: 700; font-size: 8px; letter-spacing: 0.3px;">MARK</th>
+                <th style="padding: 4px 6px; text-align: center; color: var(--text-main, #ff9d00); font-weight: 700; font-size: 8px; letter-spacing: 0.3px;">HITS</th>
+                <th style="padding: 4px 6px; text-align: center; color: var(--text-main, #ff9d00); font-weight: 700; font-size: 8px; letter-spacing: 0.3px;">LINE</th>
+                <th style="padding: 4px 6px; text-align: center; color: var(--text-main, #ff9d00); font-weight: 700; font-size: 8px; letter-spacing: 0.3px;">LAST PLAYED</th>
+                <th style="padding: 4px 6px; text-align: center; color: var(--text-main, #ff9d00); font-weight: 700; font-size: 8px; letter-spacing: 0.3px;">STAT</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${rowsHtml}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    `;
+  }
+
+  // Cell with red/green dot for leaving/meeting occurrences in chart
+  function renderNumberCell(num, isMain = false) {
+    const isLeaving = num === leavingNumber;
+    const isMeeting = num === meetingNumber;
+    
+    let bgColor = 'var(--card-bg, rgba(255,255,255,0.03))';
+    let borderColor = 'var(--border-color, rgba(255,255,255,0.08))';
+    let textColor = 'var(--text-main, #e2e8f0)';
+    let fontWeight = isMain ? '700' : '400';
+    let extraStyle = '';
+    
+    if (isLeaving && isMeeting) {
+      // Both - show split highlight
+      bgColor = 'rgba(139,90,120,0.25)';
+      borderColor = '#c061a0';
+      textColor = '#ffd700';
+      fontWeight = '900';
+      extraStyle = 'box-shadow: 0 0 8px rgba(192,97,160,0.4);';
+    } else if (isLeaving) {
+      bgColor = 'rgba(88,166,255,0.25)';
+      borderColor = '#58a6ff';
+      textColor = '#58a6ff';
+      fontWeight = '900';
+      extraStyle = 'box-shadow: 0 0 8px rgba(88,166,255,0.3);';
+    } else if (isMeeting) {
+      bgColor = 'rgba(255,157,0,0.25)';
+      borderColor = '#ff9d00';
+      textColor = '#ff9d00';
+      fontWeight = '900';
+      extraStyle = 'box-shadow: 0 0 8px rgba(255,157,0,0.3);';
+    }
+    
+    // Dot indicators
+    let dotHtml = '';
+    if (isLeaving && isMeeting) {
+      dotHtml = `<span style="display:inline-block; width:5px; height:5px; background:#ff375f; border-radius:50%; margin-left:2px;"></span><span style="display:inline-block; width:5px; height:5px; background:#32d74b; border-radius:50%; margin-left:1px;"></span>`;
+    } else if (isLeaving) {
+      dotHtml = `<span style="display:inline-block; width:5px; height:5px; background:#ff375f; border-radius:50%; margin-left:2px;"></span>`;
+    } else if (isMeeting) {
+      dotHtml = `<span style="display:inline-block; width:5px; height:5px; background:#32d74b; border-radius:50%; margin-left:2px;"></span>`;
+    }
+    
+    return `
+      <div style="display: flex; align-items: center; justify-content: center; min-width: 24px; padding: 3px 4px; background: ${bgColor}; border: 1px solid ${borderColor}; border-radius: 3px; ${extraStyle} transition: all 0.2s ease;">
+        <span style="font-size: ${isMain ? '12px' : '11px'}; font-weight: ${fontWeight}; color: ${textColor}; line-height: 1.1;">${num}</span>
+        ${dotHtml}
+      </div>
+    `;
+  }
+
+  // ======================================
+  // BUILD CAROUSEL SLIDES
+  // ======================================
+
+  const carouselId = 'pw-5chart-carousel-' + Date.now();
+
+  const slidesHtml = chartDefinitions.map((chart, idx) => {
+    const data = generateChartData(chart.id);
+    
+    // Build 3x3 grid
+    let gridHtml = '';
+    const rows = 12;
+    const cols = 3;
+    
+    for (let r = 0; r < rows; r++) {
+      gridHtml += '<div style="display:flex; justify-content:center; gap:3px; margin-bottom:3px;">';
+      for (let c = 0; c < cols; c++) {
+        const index = r * cols + c;
+        if (index < data.length) {
+          const item = data[index];
+          gridHtml += `
+            <div style="display: flex; align-items: center; gap: 3px; flex: 1; padding: 2px; background: var(--card-bg, rgba(255,255,255,0.01)); border-radius: 5px; border: 1px solid var(--border-color, rgba(255,255,255,0.03));">
+              ${renderNumberCell(item.main, true)}
+              ${renderNumberCell(item.num2, false)}
+              ${renderNumberCell(item.num3, false)}
+            </div>
+          `;
+        }
+      }
+      gridHtml += '</div>';
+    }
+
+    // ==================================
+    // COLLECT ALL LEAVING/MEEING RELATED NUMBERS
+    // ==================================
+    // Get every occurrence of the leaving and meeting numbers in this chart
+    // Each number can appear multiple times as main, num2, or num3
+    const leavingRelatedMap = new Map();  // num -> { hasRedDot, hasGreenDot, count }
+    const meetingRelatedMap = new Map();
+    
+    // First, mark all leaving/meeting positions
+    const leavingPositions = [];
+    const meetingPositions = [];
+    
+    if (leavingNumber) {
+      data.forEach(item => {
+        if (item.main === leavingNumber) leavingPositions.push({ num: item.main, role: 'main' });
+        if (item.num2 === leavingNumber) leavingPositions.push({ num: item.num2, role: 'chart' });
+        if (item.num3 === leavingNumber) leavingPositions.push({ num: item.num3, role: 'chart' });
+      });
+    }
+    
+    if (meetingNumber) {
+      data.forEach(item => {
+        if (item.main === meetingNumber) meetingPositions.push({ num: item.main, role: 'main' });
+        if (item.num2 === meetingNumber) meetingPositions.push({ num: item.num2, role: 'chart' });
+        if (item.num3 === meetingNumber) meetingPositions.push({ num: item.num3, role: 'chart' });
+      });
+    }
+    
+    // Build leaving related list - numbers that share a row with the leaving number
+    // The leaving number appears as main, and its associated numbers are num2, num3
+    if (leavingNumber) {
+      // Add the leaving number itself
+      leavingRelatedMap.set(leavingNumber, { num: leavingNumber, hasRedDot: true, hasGreenDot: false });
+      
+      // Find every occurrence of leaving in the chart and add its associated numbers
+      data.forEach(item => {
+        const isLeavingPresent = item.main === leavingNumber || item.num2 === leavingNumber || item.num3 === leavingNumber;
+        if (isLeavingPresent) {
+          // Add all numbers in this row
+          [item.main, item.num2, item.num3].forEach(n => {
+            if (!leavingRelatedMap.has(n)) {
+              leavingRelatedMap.set(n, { num: n, hasRedDot: n === leavingNumber, hasGreenDot: n === meetingNumber });
+            } else {
+              // Update dots
+              const existing = leavingRelatedMap.get(n);
+              if (n === leavingNumber) existing.hasRedDot = true;
+              if (n === meetingNumber) existing.hasGreenDot = true;
+            }
+          });
+        }
+      });
+    }
+    
+    // Build meeting related list similarly
+    if (meetingNumber) {
+      meetingRelatedMap.set(meetingNumber, { num: meetingNumber, hasRedDot: false, hasGreenDot: true });
+      
+      data.forEach(item => {
+        const isMeetingPresent = item.main === meetingNumber || item.num2 === meetingNumber || item.num3 === meetingNumber;
+        if (isMeetingPresent) {
+          [item.main, item.num2, item.num3].forEach(n => {
+            if (!meetingRelatedMap.has(n)) {
+              meetingRelatedMap.set(n, { num: n, hasRedDot: n === leavingNumber, hasGreenDot: n === meetingNumber });
+            } else {
+              const existing = meetingRelatedMap.get(n);
+              if (n === leavingNumber) existing.hasRedDot = true;
+              if (n === meetingNumber) existing.hasGreenDot = true;
+            }
+          });
+        }
+      });
+    }
+    
+    const leavingRelated = Array.from(leavingRelatedMap.values()).sort((a, b) => a.num - b.num);
+    const meetingRelated = Array.from(meetingRelatedMap.values()).sort((a, b) => a.num - b.num);
+
+    return `
+      <div class="pw-slide" style="min-width: 100%; scroll-snap-align: start; padding: 4px 2px;">
+        <div style="background: var(--card-bg, rgba(255,255,255,0.02)); border-radius: 8px; padding: 8px; border: 1px solid var(--border-color, rgba(255,255,255,0.06));">
+          <!-- Chart Title -->
+          <div style="text-align: center; font-size: 13px; font-weight: 800; color: var(--text-main, #ff9d00); letter-spacing: 0.5px; margin-bottom: 6px; padding-bottom: 4px; border-bottom: 1px solid var(--border-color, rgba(255,255,255,0.06));">
+            ${chart.label} CHART PLAY
+          </div>
+          
+          <!-- Leaving/Meeting Info -->
+          ${renderLeavingMeetingInfo(true)}
+          
+          <!-- Chart Grid -->
+          <div style="padding: 0 2px; margin-bottom: 8px;">
+            ${gridHtml}
+          </div>
+          
+          <!-- Dots Legend -->
+          <div style="display:flex; justify-content:center; gap:12px; margin-bottom:6px; padding:4px; background: var(--card-bg, rgba(255,255,255,0.02)); border-radius:4px; border:1px solid var(--border-color, rgba(255,255,255,0.04));">
+            <div style="display:flex; align-items:center; gap:4px;">
+              <span style="display:inline-block; width:7px; height:7px; background:#ff375f; border-radius:50%;"></span>
+              <span style="font-size:7px; color:var(--text-dim,#64748b);">LEAVING</span>
+            </div>
+            <div style="display:flex; align-items:center; gap:4px;">
+              <span style="display:inline-block; width:7px; height:7px; background:#32d74b; border-radius:50%;"></span>
+              <span style="font-size:7px; color:var(--text-dim,#64748b);">MEETING</span>
+            </div>
+          </div>
+          
+          <!-- Separator -->
+          <div style="margin: 4px 0; border-top: 1px solid var(--border-color, #000000);"></div>
+          
+          <!-- Analysis Tables -->
+          ${renderAnalysisTable(leavingRelated, '🔵 LEAVING RELATED MARKS', '#58a6ff')}
+          ${renderAnalysisTable(meetingRelated, '🟡 MEETING RELATED MARKS', '#ff9d00')}
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  const legendHtml = `
+    <div style="display: flex; justify-content: center; align-items: center; gap: 16px; margin-top: 6px; padding: 6px 12px; background: var(--card-bg, rgba(255,255,255,0.02)); border-radius: 6px; border: 1px solid var(--border-color, rgba(255,255,255,0.06)); flex-wrap: wrap;">
+      <div style="display: flex; align-items: center; gap: 4px;">
+        <span style="display: inline-block; width: 12px; height: 12px; background: rgba(88,166,255,0.25); border: 1px solid #58a6ff; border-radius: 3px;"></span>
+        <span style="font-size: 8px; color: var(--text-dim, #64748b);">LEAVING</span>
+      </div>
+      <div style="display: flex; align-items: center; gap: 4px;">
+        <span style="display: inline-block; width: 12px; height: 12px; background: rgba(255,157,0,0.25); border: 1px solid #ff9d00; border-radius: 3px;"></span>
+        <span style="font-size: 8px; color: var(--text-dim, #64748b);">MEETING</span>
+      </div>
+      <div style="display: flex; align-items: center; gap: 4px;">
+        <span style="display: inline-block; width: 12px; height: 12px; background: var(--card-bg, rgba(255,255,255,0.03)); border: 1px solid var(--border-color, rgba(255,255,255,0.06)); border-radius: 3px;"></span>
+        <span style="font-size: 8px; color: var(--text-dim, #64748b);">MAIN NUMBER</span>
+      </div>
+    </div>
+  `;
+
+  return `
+    <div style="background: var(--bg-start, linear-gradient(135deg, #0f172a, #1e293b)); border-radius: 16px; padding: 12px; margin-bottom: 15px; border: 1px solid var(--border-color, #ff9d00);">
+      
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; flex-wrap: wrap; gap: 4px;">
+        <div>
+          <div style="font-size: 14px; font-weight: 800; color: var(--text-main, #ff9d00); letter-spacing: 0.3px;">
+     ♠️ PLAY WHE: CHART PLAY VIEW • v3
+          </div>
+          <div style="font-size: 7px; color: var(--text-dim, #64748b); margin-top: 1px;">
+            ${chartDefinitions.map(c => c.label).join(' • ')} • Swipe to Navigate
+          </div>
+        </div>
+        <div style="display: flex; align-items: center; gap: 4px; font-size: 6px; color: var(--text-dim, #94a3b8);">
+          <span style="color: #ff9d00; font-weight: bold; font-size: 6px;">${globalTrackingCode}</span>
+        </div>
+      </div>
+      
+      <div id="${carouselId}" style="overflow-x: auto; scroll-snap-type: x mandatory; display: flex; scroll-behavior: smooth; -webkit-overflow-scrolling: touch; gap: 12px; margin-bottom: 6px;">
+        ${slidesHtml}
+      </div>
+      
+      <div id="${carouselId}-dots" style="display: flex; justify-content: center; gap: 6px; margin-bottom: 6px;">
+        ${chartDefinitions.map((_, i) => `
+          <span class="pw-dot" data-index="${i}" style="width: ${i === 0 ? '20px' : '8px'}; height: 8px; background: ${i === 0 ? '#ff9d00' : '#334155'}; border-radius: ${i === 0 ? '4px' : '50%'}; display: inline-block; cursor: pointer; transition: all 0.3s ease;"></span>
+        `).join('')}
+      </div>
+      
+      ${legendHtml}
+      
+      <div style="margin-top: 6px; padding-top: 4px; border-top: 1px solid var(--border-color, rgba(255,255,255,0.02)); display: flex; justify-content: center; align-items: center; gap: 6px; flex-wrap: wrap;">
+        <span style="font-size: 7px; color: var(--text-dim, #64748b);">CodeWithGlasgow • CWG Chart Analysis ©️</span>
+        <span style="font-size: 7px; color: var(--text-dim, #64748b);">Updated: ${new Date().toLocaleDateString()}</span>
+      </div>
+    </div>
+    
+    <style>
+      .pw-slide {
+        scroll-snap-align: start;
+        flex: 0 0 100%;
+        min-width: 0;
+      }
+      .pw-dot.active {
+        background: #ff9d00 !important;
+        width: 20px !important;
+        border-radius: 4px !important;
+      }
+    </style>
+    
+    <script>
+      (function() {
+        var carousel = document.getElementById('${carouselId}');
+        var dots = document.querySelectorAll('#${carouselId}-dots .pw-dot');
+        var currentIndex = 0;
+        var totalSlides = ${chartDefinitions.length};
+        var scrollTimeout;
+
+        function updateDots() {
+          dots.forEach(function(dot, idx) {
+            if (idx === currentIndex) {
+              dot.classList.add('active');
+          dot.style.background = '#ff9d00';
+          dot.style.width = '20px';
+         dot.style.borderRadius = '4px';
+            } else {
+              dot.classList.remove('active');
+        dot.style.background = '#334155';
+            dot.style.width = '8px';
+          dot.style.borderRadius = '50%';
+            }
+          });
+        }
+
+        function scrollToSlide(index) {
+          if (index < 0) index = 0;
+          if (index >= totalSlides) index = totalSlides - 1;
+          currentIndex = index;
+          var slideWidth = carousel.children[0] ? carousel.children[0].offsetWidth : 0;
+          if (slideWidth > 0) {
+            carousel.scrollTo({ left: index * (slideWidth + 12), behavior: 'smooth' });
+          }
+          updateDots();
+        }
+
+        function handleScroll() {
+          if (scrollTimeout) clearTimeout(scrollTimeout);
+          scrollTimeout = setTimeout(function() {
+            var slideWidth = carousel.children[0] ? carousel.children[0].offsetWidth : 0;
+            var scrollPosition = carousel.scrollLeft;
+            var newIndex = Math.round(scrollPosition / (slideWidth + 12));
+            if (newIndex !== currentIndex && newIndex >= 0 && newIndex < totalSlides) {
+              currentIndex = newIndex;
+              updateDots();
+            }
+          }, 100);
+        }
+
+        if (carousel) {
+          carousel.addEventListener('scroll', handleScroll);
+          dots.forEach(function(dot, idx) {
+            dot.addEventListener('click', function() { scrollToSlide(idx); });
+          });
+        }
+
+        updateDots();
+        setTimeout(function() { scrollToSlide(0); }, 100);
+      })();
+    </script>
+  `;
+}
+//////////////////////////////////////////
+// ======================================
+// 3-YEAR HISTORICAL COMPARISON — PLAY WHE, PICK 2, PICK 4
+// Looks back 3 years (excluding current year) for the current day + month
+// and shows what was drawn on this exact date in each slot
+// Sub-headers replace MOR/MID/NON/EVE with time labels
+// ======================================
+function renderThreeYearHistory(pwWeeks, p2Weeks, p4Weeks) {
+  // ======================================
+  // TIME LABELS
+  // ======================================
+  const slotLabels = {
+    MOR: "10:30 AM",
+    MID: "1:00 PM",
+    NON: "4:00 PM",
+    EVE: "7:00 PM"
+  };
+  const slotOrder = ["MOR", "MID", "NON", "EVE"];
+
+  const dayNames = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+  const now = new Date();
+  const todayDay = now.getDate();
+  const todayMonth = now.getMonth();
+  const currentYear = now.getFullYear();
+  const dayOfWeek = dayNames[now.getDay()];
+
+  // ======================================
+  // HELPERS
+  // ======================================
+  function parseWeekStart(str) {
+    if (!str) return null;
+    const parts = str.split(" ");
+    const monthMap = {"Jan":0,"Feb":1,"Mar":2,"Apr":3,"May":4,"Jun":5,"Jul":6,"Aug":7,"Sep":8,"Oct":9,"Nov":10,"Dec":11};
+    return new Date(parts[2], monthMap[parts[1]], parseInt(parts[0]));
+  }
+
+  function formatMonthDay(date) {
+    const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    const d = date.getDate();
+    const m = months[date.getMonth()];
+    const y = date.getFullYear();
+    const dow = dayNames[date.getDay()].slice(0, 3);
+    return `${dow} ${d} ${m} ${y}`;
+  }
+
+  function getDraw(week, dayName, slot) {
+    if (!week) return null;
+    const day = week.days.find(d => d.dayName === dayName);
+    if (!day) return null;
+    const val = day.draws[slot];
+    return val && val !== "-" && val !== "PENDING" && val !== "HOLIDAY" ? val.toString() : null;
+  }
+
+  // ======================================
+  // FIND DRAWS FOR CURRENT DAY + MONTH — EXCLUDING CURRENT YEAR
+  // ======================================
+  // Returns array of { year, date, week, weekStart } sorted newest first
+  function findHistoricalDrawsForToday(weeks) {
+    if (!weeks || weeks.length === 0) return [];
+    const found = [];
+    const seenYears = new Set();
+
+    weeks.forEach(week => {
+      const weekStart = parseWeekStart(week.startDate);
+      if (!weekStart) return;
+
+      // For each day in the week, compute its actual calendar date
+      for (let i = 0; i < week.days.length; i++) {
+        const day = week.days[i];
+        if (!day) continue;
+        const dayIdx = dayNames.indexOf(day.dayName);
+        if (dayIdx === -1) continue;
+
+        const drawDate = new Date(weekStart);
+        drawDate.setDate(weekStart.getDate() + dayIdx);
+
+        // Check if this date matches today's day-of-month AND month
+        if (drawDate.getDate() === todayDay && drawDate.getMonth() === todayMonth) {
+          const year = drawDate.getFullYear();
+
+          // EXCLUDE CURRENT YEAR
+          if (year === currentYear) continue;
+
+          if (!seenYears.has(year)) {
+            seenYears.add(year);
+            found.push({
+              year: year,
+              date: drawDate,
+              dayName: day.dayName,
+              week: week
+            });
+          }
+        }
+      }
+    });
+
+    // Sort newest year first, keep only 3 most recent prior years
+    found.sort((a, b) => b.year - a.year);
+    return found.slice(0, 3);
+  }
+
+  // ======================================
+  // RENDER ONE GAME SECTION
+  // ======================================
+  function renderGameSection(title, weeks, color, gameKey) {
+    const entries = findHistoricalDrawsForToday(weeks);
+
+    // Build table rows
+    let rowsHtml = "";
+
+    if (entries.length === 0) {
+      rowsHtml = `
+        <tr>
+          <td colspan="5" style="text-align:center; padding:10px; color:var(--text-dim,#64748b); font-size:10px;">
+            No historical data found for this date
+          </td>
+        </tr>
+      `;
+    } else {
+      entries.forEach(entry => {
+        const dateLabel = formatMonthDay(entry.date);
+        const slotCells = slotOrder.map(slot => {
+          const val = getDraw(entry.week, entry.dayName, slot);
+          return `
+            <td style="
+              padding:6px 4px;
+              text-align:center;
+              font-size:13px;
+              font-weight:800;
+              color:${val ? color : 'var(--text-dim, #64748b)'};
+              border-bottom:1px solid var(--border-color, rgba(255,255,255,0.05));
+            ">${val || '—'}</td>
+          `;
+        }).join('');
+
+        rowsHtml += `
+          <tr>
+            <td style="
+              padding:6px 6px;
+              text-align:left;
+              font-size:10px;
+              font-weight:700;
+              color:var(--text-main, #e2e8f0);
+              border-bottom:1px solid var(--border-color, rgba(255,255,255,0.05));
+              white-space:nowrap;
+            ">${dateLabel}</td>
+            ${slotCells}
+          </tr>
+        `;
+      });
+    }
+
+    return `
+      <div style="
+        background: var(--card-bg, rgba(255,255,255,0.02));
+        border-radius: 10px;
+        padding: 8px;
+        border: 1px solid var(--border-color, rgba(255,255,255,0.06));
+        margin-bottom: 8px;
+      ">
+        <!-- Game Title -->
+        <div style="
+          display:flex;
+          align-items:center;
+          gap:6px;
+          margin-bottom:6px;
+          padding-bottom:5px;
+          border-bottom:1px solid var(--border-color, rgba(255,255,255,0.06));
+        ">
+          <span style="
+            display:inline-block;
+            width:8px;
+            height:8px;
+            border-radius:50%;
+            background:${color};
+            box-shadow: 0 0 8px ${color}80;
+          "></span>
+          <span style="
+            font-size:13px;
+            font-weight:900;
+            color:var(--text-main, #ff9d00);
+            letter-spacing:0.5px;
+          ">${title} • ${currentYear}</span>
+          <span style="
+            margin-left:auto;
+            font-size:8px;
+            color:var(--text-dim, #64748b);
+          ">${entries.length} year${entries.length !== 1 ? 's' : ''} found</span>
+        </div>
+
+        <!-- Table -->
+        <div style="overflow-x:auto; -webkit-overflow-scrolling:touch;">
+          <table style="width:100%; border-collapse:collapse; font-size:11px;">
+            <thead>
+              <tr style="background:var(--header-bg, rgba(255,255,255,0.04));">
+                <th style="
+                  padding:6px 6px;
+                  text-align:left;
+                  font-size:9px;
+                  font-weight:800;
+                  color:var(--text-main, #ff9d00);
+                  letter-spacing:0.3px;
+                  border-bottom:1px solid var(--border-color, rgba(255,255,255,0.1));
+                ">DATE</th>
+                ${slotOrder.map(slot => `
+                  <th style="
+                    padding:6px 4px;
+                    text-align:center;
+                    font-size:9px;
+                    font-weight:800;
+                    color:var(--text-main, #ff9d00);
+                    letter-spacing:0.3px;
+                    border-bottom:1px solid var(--border-color, rgba(255,255,255,0.1));
+                    white-space:nowrap;
+                  ">${slotLabels[slot]}</th>
+                `).join('')}
+              </tr>
+            </thead>
+            <tbody>
+              ${rowsHtml}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    `;
+  }
+
+  // ======================================
+  // BUILD MAIN CONTAINER
+  // ======================================
+  const todayLabel = formatMonthDay(now);
+
+  return `
+    <div style="
+      background: var(--bg-start, linear-gradient(135deg, #0f172a, #1e293b));
+      border-radius: 16px;
+      padding: 12px;
+      margin-bottom: 15px;
+      border: 1px solid var(--border-color, #ff9d00);
+    ">
+      <!-- Header -->
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; flex-wrap:wrap; gap:4px;">
+        <div>
+          <div style="font-size:14px; font-weight:800; color:var(--text-main, #ff9d00); letter-spacing:0.3px;">
+            ♠️ 3-YEAR HISTORICAL RECAP • ${currentYear}
+          </div>
+          <div style="font-size:12px; color:var(--text-dim, #64748b); margin-top:1px;">
+            ${dayOfWeek} ${todayDay} • Comparing ${currentYear - 1}, ${currentYear - 2}, ${currentYear - 3}
+          </div>
+        </div>
+        <div style="display:flex; align-items:center; gap:4px; font-size:6px; color:var(--text-dim, #94a3b8);">
+          <span style="color:#ff9d00; font-weight:bold; font-size:6px;">${globalTrackingCode}</span>
+        </div>
+      </div>
+
+      <!-- PLAY WHE -->
+      ${renderGameSection("PLAY WHE", pwWeeks, "#ff6b6b", "pw")}
+
+      <!-- PICK 2 -->
+      ${renderGameSection("PICK 2", p2Weeks, "#58a6ff", "p2")}
+
+      <!-- PICK 4 -->
+      ${renderGameSection("PICK 4", p4Weeks, "#32d74b", "p4")}
+
+      <!-- Footer -->
+      <div style="margin-top:6px; padding-top:4px; border-top:1px solid var(--border-color, rgba(255,255,255,0.02)); display:flex; justify-content:center; align-items:center; gap:6px; flex-wrap:wrap;">
+        <span style="font-size:7px; color:var(--text-dim, #64748b);">CodeWithGlasgow • CWG Chart Analysis ©️</span>
+        <span style="font-size:7px; color:var(--text-dim, #64748b);">${todayLabel}</span>
+      </div>
+    </div>
+  `;
+}
+//////////////////////////////////////////
+// ======== Lines & Plays Insight =======
+// ======================================
+// PLAY WHE LINE RULES & PATTERNS
+// Analyzes line relationships and provides predictive insights
+// Based on ALL Play Whe rules from screenshots
+// Shows both ACTIVE and INACTIVE rules
+// ======================================
+function renderPlayWheLineRules(weeksData) {
+  if (!weeksData || weeksData.length === 0) {
+    return `
+      <div style="background: linear-gradient(135deg, #0f172a, #1e293b); border-radius: 16px; padding: 16px; margin-bottom: 15px; border: 1px solid #58a6ff; text-align:center;">
+        📊 Loading Play Whe Line Rules...
+      </div>
+    `;
+  }
+
+  // ======================================
+  // CONSTANTS & MAPPINGS
+  // ======================================
+
+  const dayNames = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+  const slots = ["MOR", "MID", "NON", "EVE"];
+  const now = new Date();
+
+  // Line mapping
+  const numToLineMap = {
+    1:1, 10:1, 19:1, 28:1, 2:2, 11:2, 20:2, 29:2, 3:3, 12:3, 21:3, 30:3,
+    4:4, 13:4, 22:4, 31:4, 5:5, 14:5, 23:5, 32:5, 6:6, 15:6, 24:6, 33:6,
+    7:7, 16:7, 25:7, 34:7, 8:8, 17:8, 26:8, 35:8, 9:9, 18:9, 27:9, 36:9
+  };
+
+  const lineColors = [
+    "#00f2ff", "#ff9f0a", "#32d74b", "#ff375f", 
+    "#ffd60a", "#bf5af2", "#1e90ff", "#ff1493", "#00ff7f"
+  ];
+
+  const lineNames = {
+    1: "1 Line",
+    2: "2 Line",
+    3: "3 Line",
+    4: "4 Line",
+    5: "5 Line",
+    6: "6 Line",
+    7: "7 Line",
+    8: "8 Line",
+    9: "9 Line"
+  };
+
+  // ======================================
+  // COMPLETE RULES FROM BOTH SCREENSHOTS
+  // ======================================
+
+  // Line Rules (from first screenshot)
+  const lineRules = {
+    1: {
+      pulls: [5],
+      description: "1 line does pull 5 line mainly because 5/1 is mark and spirit",
+      related: "5/1 mark and spirit"
+    },
+    2: {
+      pulls: [7],
+      description: "2 line does pull 7 line",
+      related: "2/7 pull"
+    },
+    3: {
+      pulls: [7, 5],
+      description: "3 line does play with 7 line and 5 line mostly to complete the 357 play",
+      related: "357 play"
+    },
+    4: {
+      pulls: [8, 7],
+      description: "4 line does pull 8 line and 7 line",
+      related: "4/8/7"
+    },
+    5: {
+      pulls: [1, 9],
+      description: "5 line does pull 1 line and 9 line",
+      related: "5/1/9"
+    },
+    6: {
+      pulls: [6],
+      description: "6 line does pull 6 line",
+      related: "self-pull"
+    },
+    7: {
+      pulls: [7, 4],
+      description: "7 line does pull 7 line and 4 line",
+      related: "7/4"
+    },
+    8: {
+      pulls: [8, 4],
+      description: "8 line does pull 8 line and 4 line",
+      related: "8/4"
+    },
+    9: {
+      pulls: [5, 4, 8],
+      description: "9 line does pull 5 line and 4 line and sometimes 8 line",
+      related: "9/5/4/8"
+    }
+  };
+
+  // ======================================
+  // RULES FROM DARK SCREENSHOT
+  // ======================================
+
+  // Rule 1: Dogs pull dogs (2, 8, 17, 20)
+  const dogs = [2, 8, 17, 20];
+  
+  // Rule 2: 5 or 31 brings dogs or snakes
+  const dogSnakeTrigger = [5, 31];
+  const snakes = [1, 5, 27, 32, 35, 12];
+  
+  // Rule 3: 2, 19, 12, 21 pull each other
+  const group3 = [2, 19, 12, 21];
+  
+  // Rule 4: Wappi or Pull Down brings Doubles (11, 22, 33)
+  const doubles = [11, 22, 33];
+  
+  // Rule 5: Man pulls man (4, 5, 12, 29, 34)
+  const man = [4, 5, 12, 29, 34];
+  
+  // Rule 6: 23 brings birds and snakes
+  const birds = [3, 11, 13, 17, 18, 26, 28, 34];
+  
+  // Rule 7: 5 line brings back 5 line or 9 line
+  const line5 = [5, 14, 23, 32];
+  const line9 = [9, 18, 27, 36];
+  
+  // Rule 8: Birds will bring birds
+  // Rule 9: 11 play look for doubles, wappi, birds roof(23), snakes, birds
+  // Rule 10: 22 play look for 8, 30, doubles(11,22,33), 8 line, 3 line or suit
+  // Rule 11: 10 play look for 13, 17, zeros (10,20,30) vice versa
+  const zeros = [10, 20, 30];
+
+  // ======================================
+  // HELPER FUNCTIONS
+  // ======================================
+
+  function getDraw(week, dayName, slot) {
+    if (!week) return null;
+    const day = week.days.find(d => d.dayName === dayName);
+    if (!day) return null;
+    const val = day.draws[slot];
+    return val && val !== "-" && val !== "PENDING" && val !== "HOLIDAY" ? parseInt(val, 10) : null;
+  }
+
+  function getLine(num) {
+    return numToLineMap[num] || null;
+  }
+
+  function getLineColor(num) {
+    const line = getLine(num);
+    if (line === null) return "#94a3b8";
+    return lineColors[(line - 1) % lineColors.length];
+  }
+
+  function getLineName(num) {
+    const line = getLine(num);
+    if (line === null) return "?";
+    return lineNames[line] || `Line ${line}`;
+  }
+
+  function getGroup(num) {
+    const groups = [];
+    if (dogs.includes(num)) groups.push("🐕 DOG");
+    if (snakes.includes(num)) groups.push("🐍 SNAKE");
+    if (birds.includes(num)) groups.push("🐦 BIRD");
+    if (doubles.includes(num)) groups.push("🔢 DOUBLE");
+    if (man.includes(num)) groups.push("👤 MAN");
+    if (zeros.includes(num)) groups.push("0️⃣ ZERO");
+    if (group3.includes(num)) groups.push("🔗 2/19/12/21");
+    if (line5.includes(num)) groups.push("📏 5 LINE");
+    if (line9.includes(num)) groups.push("📏 9 LINE");
+    return groups;
+  }
+
+  function getGroupEmoji(num) {
+    const groups = getGroup(num);
+    return groups.length > 0 ? groups.join(" • ") : "";
+  }
+
+  // Spirit Emoji mapping
+  const spiritEmoji = {
+    1: "🔪", 2: "👵🏾", 3: "🚕", 4: "⚰️", 5: "👨🏾‍🦳", 6: "🤰🏽", 7: "🐗", 8: "🐯",
+    9: "🐮", 10: "🐒", 11: "🦅", 12: "🤴🏽", 13: "🐸", 14: "💰", 15: "🤧", 16: "💃🏽",
+    17: "🐦‍⬛", 18: "🚤", 19: "🐎", 20: "🐶", 21: "👄", 22: "🐀", 23: "🏡", 24: "🫅🏽",
+    25: "🐢", 26: "🐔", 27: "🐍", 28: "🐟", 29: "🍻", 30: "🐈‍⬛", 31: "👵🏾", 32: "🦐",
+    33: "🕷️", 34: "👨🏾‍🦯", 35: "🐍", 36: "🫏"
+  };
+
+  // Sort weeks chronologically
+  const sortedWeeks = [...weeksData].sort((a, b) => {
+    let pa = a.startDate.split(" ");
+    let pb = b.startDate.split(" ");
+    return new Date(pa[2] + "-" + pa[1] + "-" + pa[0]) - new Date(pb[2] + "-" + pb[1] + "-" + pb[0]);
+  });
+
+  const currentWeek = sortedWeeks[sortedWeeks.length - 1];
+  const previousWeek = sortedWeeks.length >= 2 ? sortedWeeks[sortedWeeks.length - 2] : currentWeek;
+
+  // ======================================
+  // GET LEAVING & MEETING NUMBERS
+  // ======================================
+
+  function getLeavingMeetingNumbers() {
+    let leavingNumber = null;
+    let leavingSlot = null;
+    let leavingDate = null;
+    let meetingNumber = null;
+    let meetingSlot = null;
+    let meetingDate = null;
+    
+    const todayIdx = now.getDay();
+    const currentHour = now.getHours();
+    
+    function getDateForDraw(week, dayName) {
+      if (!week || !week.startDate) return null;
+      const parts = week.startDate.split(" ");
+      const monthMap = {"Jan":0,"Feb":1,"Mar":2,"Apr":3,"May":4,"Jun":5,"Jul":6,"Aug":7,"Sep":8,"Oct":9,"Nov":10,"Dec":11};
+      const startDate = new Date(parts[2], monthMap[parts[1]], parseInt(parts[0]));
+      const dayIndex = dayNames.indexOf(dayName);
+      if (dayIndex === -1) return null;
+      const drawDate = new Date(startDate);
+      drawDate.setDate(startDate.getDate() + dayIndex);
+      return drawDate;
+    }
+    
+    let currentSlotIdx = -1;
+    if (currentHour >= 9 && currentHour < 12) currentSlotIdx = 0;
+    else if (currentHour >= 12 && currentHour < 15) currentSlotIdx = 1;
+    else if (currentHour >= 15 && currentHour < 18) currentSlotIdx = 2;
+    else if (currentHour >= 18) currentSlotIdx = 3;
+    
+    let leavingDayIdx = -1;
+    let leavingSlotIdx = -1;
+    
+    for (let d = todayIdx; d >= 0; d--) {
+      const maxSlot = (d === todayIdx) ? currentSlotIdx : slots.length - 1;
+      for (let s = maxSlot; s >= 0; s--) {
+        const draw = getDraw(currentWeek, dayNames[d], slots[s]);
+        if (draw) {
+          leavingNumber = draw;
+          leavingDayIdx = d;
+          leavingSlotIdx = s;
+          leavingSlot = slots[s];
+          leavingDate = getDateForDraw(currentWeek, dayNames[d]);
+          break;
+        }
+      }
+      if (leavingNumber) break;
+    }
+    
+    if (!leavingNumber) {
+      for (let w = sortedWeeks.length - 2; w >= 0; w--) {
+        const week = sortedWeeks[w];
+        for (let d = dayNames.length - 1; d >= 0; d--) {
+          for (let s = slots.length - 1; s >= 0; s--) {
+            const draw = getDraw(week, dayNames[d], slots[s]);
+            if (draw) {
+              leavingNumber = draw;
+              leavingDayIdx = d;
+              leavingSlotIdx = s;
+              leavingSlot = slots[s];
+              leavingDate = getDateForDraw(week, dayNames[d]);
+              break;
+            }
+          }
+          if (leavingNumber) break;
+        }
+        if (leavingNumber) break;
+      }
+    }
+    
+    if (leavingNumber && leavingDayIdx !== -1 && leavingSlotIdx !== -1) {
+      let nextDayIdx = leavingDayIdx;
+      let nextSlotIdx = leavingSlotIdx + 1;
+      
+      if (nextSlotIdx >= slots.length) {
+        nextSlotIdx = 0;
+        nextDayIdx = leavingDayIdx + 1;
+      }
+      
+      if (nextDayIdx >= dayNames.length) {
+        nextDayIdx = 0;
+      }
+      
+      if (nextDayIdx >= 0 && nextDayIdx < dayNames.length) {
+        const targetDay = dayNames[nextDayIdx];
+        const targetSlot = slots[nextSlotIdx];
+        
+        meetingNumber = getDraw(previousWeek, targetDay, targetSlot);
+        if (meetingNumber) {
+          meetingSlot = targetSlot;
+          meetingDate = getDateForDraw(previousWeek, targetDay);
+        }
+        
+        if (!meetingNumber) {
+          for (let w = sortedWeeks.length - 2; w >= 0; w--) {
+            const week = sortedWeeks[w];
+            const draw = getDraw(week, targetDay, targetSlot);
+            if (draw) {
+              meetingNumber = draw;
+              meetingSlot = targetSlot;
+              meetingDate = getDateForDraw(week, targetDay);
+              break;
+            }
+          }
+        }
+        
+        if (!meetingNumber) {
+          const draw = getDraw(currentWeek, targetDay, targetSlot);
+          if (draw) {
+            meetingNumber = draw;
+            meetingSlot = targetSlot;
+            meetingDate = getDateForDraw(currentWeek, targetDay);
+          }
+        }
+      }
+    }
+    
+    return { leavingNumber, leavingSlot, leavingDate, meetingNumber, meetingSlot, meetingDate };
+  }
+
+  const { leavingNumber, leavingSlot, leavingDate, meetingNumber, meetingSlot, meetingDate } = getLeavingMeetingNumbers();
+
+  // ======================================
+  // GET CURRENT & PREVIOUS WEEK DRAWS
+  // ======================================
+
+  function getWeekDraws(week) {
+    const draws = [];
+    if (!week) return draws;
+    for (const day of dayNames) {
+      for (const slot of slots) {
+        const draw = getDraw(week, day, slot);
+        if (draw) draws.push(draw);
+      }
+    }
+    return draws;
+  }
+
+  const currentWeekDraws = getWeekDraws(currentWeek);
+  const previousWeekDraws = getWeekDraws(previousWeek);
+
+  // ======================================
+  // ANALYZE LINE PULLS
+  // ======================================
+
+  function analyzeLinePulls() {
+    const results = [];
+    const leavingLine = leavingNumber ? getLine(leavingNumber) : null;
+    
+    for (let line = 1; line <= 9; line++) {
+      const rule = lineRules[line];
+      if (!rule) continue;
+      
+      const pulls = rule.pulls || [];
+      const pullLines = pulls.map(l => ({
+        line: l,
+        name: lineNames[l] || `Line ${l}`,
+        color: lineColors[(l - 1) % lineColors.length]
+      }));
+      
+      const lineNumbers = Object.keys(numToLineMap)
+        .filter(key => numToLineMap[key] === line)
+        .map(Number);
+      
+      const activeNumbers = lineNumbers.filter(n => currentWeekDraws.includes(n));
+      const isLeavingLine = leavingLine === line;
+      
+      const activePulls = pullLines.filter(pl => {
+        const pullLineNumbers = Object.keys(numToLineMap)
+          .filter(key => numToLineMap[key] === pl.line)
+          .map(Number);
+        return pullLineNumbers.some(n => currentWeekDraws.includes(n));
+      });
+      
+      results.push({
+        line: line,
+        name: lineNames[line] || `Line ${line}`,
+        color: lineColors[(line - 1) % lineColors.length],
+        rule: rule,
+        pullLines: pullLines,
+        activeNumbers: activeNumbers,
+        isLeavingLine: isLeavingLine,
+        activePulls: activePulls,
+        hasActivePull: activePulls.length > 0
+      });
+    }
+    
+    return results;
+  }
+
+  const lineAnalysis = analyzeLinePulls();
+
+  // ======================================
+  // ANALYZE ALL RULES - BOTH ACTIVE AND INACTIVE
+  // ======================================
+
+  function analyzeAllRules() {
+    const allRules = [];
+    
+    // Rule 1: Dogs pull dogs (2, 8, 17, 20)
+    const activeDogs = currentWeekDraws.filter(n => dogs.includes(n));
+    const pendingDogs = dogs.filter(n => !currentWeekDraws.includes(n));
+    allRules.push({
+      type: "🐕 DOGS PULL DOGS",
+      numbers: dogs,
+      active: pendingDogs.length > 0 && activeDogs.length > 0,
+      activeNumbers: activeDogs,
+      pendingNumbers: pendingDogs,
+      description: "Dogs played, expect more dogs",
+      priority: 1
+    });
+    
+    // Rule 2: 5 or 31 brings dogs or snakes
+    const triggerPlayed = currentWeekDraws.filter(n => dogSnakeTrigger.includes(n));
+    const pendingSnakes = snakes.filter(n => !currentWeekDraws.includes(n));
+    const pendingDogsRule2 = dogs.filter(n => !currentWeekDraws.includes(n));
+    allRules.push({
+      type: "🐍🐕 5/31 TRIGGER",
+      numbers: [...dogSnakeTrigger, ...snakes, ...dogs],
+      active: triggerPlayed.length > 0 && (pendingSnakes.length > 0 || pendingDogsRule2.length > 0),
+      activeNumbers: triggerPlayed,
+      pendingNumbers: [...pendingSnakes.slice(0, 3), ...pendingDogsRule2.slice(0, 3)],
+      description: `${triggerPlayed.length > 0 ? triggerPlayed.join(', ') : '5 or 31'} played, expect snakes or dogs`,
+      priority: 2
+    });
+    
+    // Rule 3: 2, 19, 12, 21 pull each other
+    const group3Played = currentWeekDraws.filter(n => group3.includes(n));
+    const pendingGroup3 = group3.filter(n => !currentWeekDraws.includes(n));
+    allRules.push({
+      type: "🔗 2/19/12/21 PULL",
+      numbers: group3,
+      active: group3Played.length > 0 && pendingGroup3.length > 0,
+      activeNumbers: group3Played,
+      pendingNumbers: pendingGroup3,
+      description: `${group3Played.length > 0 ? group3Played.join(', ') : '2/19/12/21'} played, expect from group`,
+      priority: 3
+    });
+    
+    // Rule 4: Wappi or Pull Down brings Doubles (11, 22, 33)
+    const hasWappi = currentWeekDraws.some((n, i, arr) => i > 0 && n === arr[i-1]);
+    const hasPullDown = currentWeekDraws.some(n => previousWeekDraws.includes(n));
+    const pendingDoubles = doubles.filter(n => !currentWeekDraws.includes(n));
+    allRules.push({
+      type: "🔢 WAPPI/PULL → DOUBLES",
+      numbers: doubles,
+      active: (hasWappi || hasPullDown) && pendingDoubles.length > 0,
+      activeNumbers: currentWeekDraws.filter(n => doubles.includes(n)),
+      pendingNumbers: pendingDoubles,
+      description: `${hasWappi ? 'Wappi' : ''}${hasWappi && hasPullDown ? ' & ' : ''}${hasPullDown ? 'Pull Down' : 'Wappi/Pull Down'} detected, expect doubles`,
+      priority: 4
+    });
+    
+    // Rule 5: Man pulls man (4, 5, 12, 29, 34)
+    const manPlayed = currentWeekDraws.filter(n => man.includes(n));
+    const pendingMan = man.filter(n => !currentWeekDraws.includes(n));
+    allRules.push({
+      type: "👤 MAN PULLS MAN",
+      numbers: man,
+      active: manPlayed.length > 0 && pendingMan.length > 0,
+      activeNumbers: manPlayed,
+      pendingNumbers: pendingMan,
+      description: `${manPlayed.length > 0 ? manPlayed.join(', ') : 'Man'} played, expect more man numbers`,
+      priority: 5
+    });
+    
+    // Rule 6: 23 brings birds and snakes
+    const has23 = currentWeekDraws.includes(23);
+    const pendingBirdsRule6 = birds.filter(n => !currentWeekDraws.includes(n));
+    const pendingSnakesRule6 = snakes.filter(n => !currentWeekDraws.includes(n));
+    allRules.push({
+      type: "🏡 23 → BIRDS & SNAKES",
+      numbers: [23, ...birds, ...snakes],
+      active: has23 && (pendingBirdsRule6.length > 0 || pendingSnakesRule6.length > 0),
+      activeNumbers: [23],
+      pendingNumbers: [...pendingBirdsRule6.slice(0, 3), ...pendingSnakesRule6.slice(0, 3)],
+      description: has23 ? "23 played, expect birds and snakes" : "23 not played yet",
+      priority: 6
+    });
+    
+    // Rule 7: 5 line brings back 5 line or 9 line
+    const line5Played = currentWeekDraws.filter(n => line5.includes(n));
+    const pendingLine5 = line5.filter(n => !currentWeekDraws.includes(n));
+    const pendingLine9 = line9.filter(n => !currentWeekDraws.includes(n));
+    allRules.push({
+      type: "📏 5 LINE → 5/9 LINE",
+      numbers: [...line5, ...line9],
+      active: line5Played.length > 0 && (pendingLine5.length > 0 || pendingLine9.length > 0),
+      activeNumbers: line5Played,
+      pendingNumbers: [...pendingLine5.slice(0, 2), ...pendingLine9.slice(0, 2)],
+      description: `${line5Played.length > 0 ? '5 line' : '5 line'} played, expect 5 or 9 line`,
+      priority: 7
+    });
+    
+    // Rule 8: Birds will bring birds
+    const birdsPlayed = currentWeekDraws.filter(n => birds.includes(n));
+    const pendingBirdsRule8 = birds.filter(n => !currentWeekDraws.includes(n));
+    allRules.push({
+      type: "🐦 BIRDS → BIRDS",
+      numbers: birds,
+      active: birdsPlayed.length > 0 && pendingBirdsRule8.length > 0,
+      activeNumbers: birdsPlayed,
+      pendingNumbers: pendingBirdsRule8.slice(0, 4),
+      description: `${birdsPlayed.length > 0 ? birdsPlayed.join(', ') : 'Birds'} played, expect more birds`,
+      priority: 8
+    });
+    
+    // Rule 9: 11 play → doubles, wappi, birds roof(23), snakes, birds
+    const has11 = currentWeekDraws.includes(11);
+    const pendingDoublesRule9 = doubles.filter(n => !currentWeekDraws.includes(n));
+    const pendingBirdsRule9 = birds.filter(n => !currentWeekDraws.includes(n));
+    const pendingSnakesRule9 = snakes.filter(n => !currentWeekDraws.includes(n));
+    allRules.push({
+      type: "🦅 11 → DOUBLES/WAPPI/BIRDS/SNAKES",
+      numbers: [11, ...doubles, ...birds, ...snakes],
+      active: has11 && (pendingDoublesRule9.length > 0 || pendingBirdsRule9.length > 0 || pendingSnakesRule9.length > 0),
+      activeNumbers: [11],
+      pendingNumbers: [...pendingDoublesRule9.slice(0, 2), ...pendingBirdsRule9.slice(0, 2), ...pendingSnakesRule9.slice(0, 2)],
+      description: has11 ? "11 played, expect doubles, birds, snakes" : "11 not played yet",
+      priority: 9
+    });
+    
+    // Rule 10: 22 play → 8, 30, doubles, 8 line, 3 line or suit
+    const has22 = currentWeekDraws.includes(22);
+    const pendingDoublesRule10 = doubles.filter(n => !currentWeekDraws.includes(n));
+    const eightAndThirty = [8, 30].filter(n => !currentWeekDraws.includes(n));
+    const line8Nums = Object.keys(numToLineMap).filter(key => numToLineMap[key] === 8).map(Number);
+    const pendingLine8 = line8Nums.filter(n => !currentWeekDraws.includes(n));
+    const line3Nums = Object.keys(numToLineMap).filter(key => numToLineMap[key] === 3).map(Number);
+    const pendingLine3 = line3Nums.filter(n => !currentWeekDraws.includes(n));
+    allRules.push({
+      type: "🐀 22 → 8/30/DOUBLES/8LINE/3LINE",
+      numbers: [22, 8, 30, ...doubles, ...line8Nums, ...line3Nums],
+      active: has22 && (pendingDoublesRule10.length > 0 || eightAndThirty.length > 0 || pendingLine8.length > 0 || pendingLine3.length > 0),
+      activeNumbers: [22],
+      pendingNumbers: [...pendingDoublesRule10.slice(0, 2), ...eightAndThirty.slice(0, 2), ...pendingLine8.slice(0, 2), ...pendingLine3.slice(0, 2)],
+      description: has22 ? "22 played, expect 8, 30, doubles, 8 or 3 line" : "22 not played yet",
+      priority: 10
+    });
+    
+    // Rule 11: 10 play → 13, 17, zeros (10,20,30) vice versa
+    const has10 = currentWeekDraws.includes(10);
+    const thirteenSeventeen = [13, 17].filter(n => !currentWeekDraws.includes(n));
+    const pendingZeros = zeros.filter(n => !currentWeekDraws.includes(n));
+    allRules.push({
+      type: "0️⃣ 10 → 13/17/ZEROS",
+      numbers: [10, 13, 17, ...zeros],
+      active: has10 && (thirteenSeventeen.length > 0 || pendingZeros.length > 0),
+      activeNumbers: [10],
+      pendingNumbers: [...thirteenSeventeen, ...pendingZeros],
+      description: has10 ? "10 played, expect 13, 17, or zeros" : "10 not played yet",
+      priority: 11
+    });
+    
+    // Sort by priority
+    allRules.sort((a, b) => a.priority - b.priority);
+    
+    return allRules;
+  }
+
+  const allRules = analyzeAllRules();
+
+  // ======================================
+  // RENDER FUNCTIONS
+  // ======================================
+
+  function formatDateDisplay(date) {
+    if (!date) return "No data";
+    const days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    return `${days[date.getDay()]} ${date.getDate()} ${months[date.getMonth()]} '${date.getFullYear().toString().slice(-2)}`;
+  }
+
+  // Section 1: Line Chart Rules & Mapping
+  function renderLineRules() {
+    let rowsHtml = '';
+    
+    for (const item of lineAnalysis) {
+      const pullHtml = item.pullLines.map(pl => `
+        <span style="display: inline-block; padding: 1px 6px; border-radius: 3px; background: ${pl.color}33; color: ${pl.color}; font-weight: 700; font-size: 9px; margin: 0 2px;">
+          ${pl.name}
+        </span>
+      `).join('');
+      
+      const activeHtml = item.activeNumbers.length > 0 ? 
+        item.activeNumbers.map(n => `
+          <span style="display: inline-block; padding: 1px 4px; border-radius: 3px; background: ${item.color}33; color: ${item.color}; font-weight: 700; font-size: 9px; margin: 0 1px;">
+            ${n}${spiritEmoji[n] || ''}
+          </span>
+        `).join(' ') : 
+        '<span style="color: var(--text-dim, #64748b); font-size: 8px;">None</span>';
+      
+      const isActive = item.isLeavingLine;
+      
+      rowsHtml += `
+        <div style="display: flex; align-items: center; padding: 3px 6px; border-bottom: 1px solid var(--border-color, rgba(255,255,255,0.04)); ${isActive ? 'background: var(--card-bg, rgba(255,255,255,0.05)); border-left: 3px solid ' + item.color : ''}">
+          <div style="min-width: 60px; display: flex; align-items: center; gap: 4px;">
+            <span style="font-weight: 800; font-size: 11px; color: ${item.color};">${item.name}</span>
+            ${isActive ? '<span style="font-size: 7px; color: #ff9d00; font-weight: 700;">🟢⚡️</span>' : ''}
+          </div>
+          <div style="flex: 1; display: flex; align-items: center; gap: 4px; flex-wrap: wrap;">
+            <span style="font-size: 7px; color: var(--text-dim, #64748b); font-weight: 600;">→</span>
+            ${pullHtml}
+            <span style="font-size: 7px; color: var(--text-dim, #64748b); margin-left: 4px;">${item.rule.description || ''}</span>
+          </div>
+          <div style="font-size: 8px; color: var(--text-dim, #64748b); min-width: 60px; text-align: right;">
+            ${activeHtml}
+          </div>
+        </div>
+      `;
+    }
+    
+    return `
+      <div style="margin-top: 6px; padding-top: 6px; border-top: 1px dashed var(--border-color, rgba(255,255,255,0.06));">
+        <div style="font-size: 10px; font-weight: 800; color: var(--text-main, #ff9d00); margin-bottom: 4px; text-align: center; letter-spacing: 0.3px;">
+          📊 LINE CHART RULES & MAPPING
+        </div>
+        <div style="background: var(--card-bg, rgba(255,255,255,0.02)); border-radius: 6px; overflow: hidden; border: 1px solid var(--border-color, rgba(255,255,255,0.04));">
+          ${rowsHtml}
+        </div>
+        <div style="font-size: 6px; color: var(--text-dim, #64748b); text-align: center; margin-top: 3px;">
+          Based on Play Whe line pull rules • Active numbers shown in current week
+        </div>
+      </div>
+    `;
+  }
+
+  // Section 2: Current Pattern Analysis - Shows ALL Rules
+  function renderPatternAnalysis() {
+    // Leaving/Meeting display
+    const leavingDisplay = leavingNumber ? 
+      `<span style="font-size: 18px; font-weight: 900; color: var(--text-main, #58a6ff);">${leavingNumber}${spiritEmoji[leavingNumber] || ''}</span>
+       <span style="font-size: 8px; color: var(--text-dim, #64748b);">${leavingSlot || ''}</span>
+       <span style="font-size: 7px; color: var(--text-dim, #64748b);">${leavingDate ? formatDateDisplay(leavingDate) : ''}</span>` : 
+      '<span style="color: var(--text-dim, #64748b);">—</span>';
+    
+    const meetingDisplay = meetingNumber ? 
+      `<span style="font-size: 18px; font-weight: 900; color: var(--text-main, #ff9d00);">${meetingNumber}${spiritEmoji[meetingNumber] || ''}</span>
+       <span style="font-size: 8px; color: var(--text-dim, #64748b);">${meetingSlot || ''}</span>
+       <span style="font-size: 7px; color: var(--text-dim, #64748b);">${meetingDate ? formatDateDisplay(meetingDate) : ''}</span>` : 
+      '<span style="color: var(--text-dim, #64748b);">—</span>';
+
+    // ALL Rules - both active and inactive
+    const rulesHtml = allRules.map(rule => {
+      const isActive = rule.active;
+      const bgColor = isActive ? 'var(--card-bg, rgba(255,215,0,0.05))' : 'var(--card-bg, rgba(255,255,255,0.01))';
+      const borderColor = isActive ? 'rgba(255,215,0,0.2)' : 'var(--border-color, rgba(255,255,255,0.03))';
+      const statusIcon = isActive ? '✅' : '⏳';
+      const statusColor = isActive ? '#32d74b' : '#64748b';
+      
+      // Show active numbers that triggered this rule
+      const triggerHtml = rule.activeNumbers && rule.activeNumbers.length > 0 ?
+        rule.activeNumbers.map(n => `
+          <span style="display: inline-block; padding: 1px 4px; border-radius: 3px; background: #ff9d0033; color: #ffd700; font-weight: 700; font-size: 9px; margin: 0 1px;">
+            ${n}${spiritEmoji[n] || ''}
+          </span>
+        `).join(' ') : 
+        '<span style="color: var(--text-dim, #64748b); font-size: 8px;">Waiting</span>';
+      
+      // Show pending numbers (what to expect)
+      const pendingHtml = rule.pendingNumbers && rule.pendingNumbers.length > 0 ?
+        rule.pendingNumbers.map(n => `
+          <span style="display: inline-block; padding: 1px 4px; border-radius: 3px; background: #32d74b33; color: #32d74b; font-weight: 700; font-size: 9px; margin: 0 1px;">
+            ${n}${spiritEmoji[n] || ''}
+          </span>
+        `).join(' ') : 
+        '<span style="color: var(--text-dim, #64748b); font-size: 8px;">Complete</span>';
+      
+      return `
+        <div style="display: flex; align-items: center; gap: 6px; padding: 3px 6px; background: ${bgColor}; border-bottom: 1px solid ${borderColor}; ${isActive ? 'border-left: 2px solid #ffd700;' : ''}">
+          <div style="min-width: 18px; font-size: 10px;">${statusIcon}</div>
+          <div style="min-width: 55px;">
+            <span style="font-size: 7px; font-weight: 700; color: ${isActive ? '#ffd700' : 'var(--text-dim, #64748b)'};">${rule.type}</span>
+          </div>
+          <div style="display: flex; align-items: center; gap: 3px; flex-wrap: wrap; flex: 1;">
+            <span style="font-size: 6px; color: var(--text-dim, #64748b);">→</span>
+            <span style="font-size: 6px; color: var(--text-dim, #64748b);">TRIGGER:</span>
+            <span style="display: flex; gap: 1px; flex-wrap: wrap;">${triggerHtml}</span>
+            <span style="font-size: 6px; color: var(--text-dim, #64748b);">→</span>
+            <span style="font-size: 6px; color: var(--text-dim, #64748b);">EXPECT:</span>
+            <span style="display: flex; gap: 1px; flex-wrap: wrap;">${pendingHtml}</span>
+          </div>
+          <div style="font-size: 5px; color: ${statusColor}; min-width: 30px; text-align: right;">
+            ${isActive ? 'ACTIVE' : 'PENDING'}
+          </div>
+        </div>
+      `;
+    }).join('');
+
+    return `
+      <div style="margin-top: 6px; padding-top: 6px; border-top: 1px dashed var(--border-color, rgba(255,255,255,0.06));">
+        <div style="font-size: 10px; font-weight: 800; color: var(--text-main, #ff9d00); margin-bottom: 4px; text-align: center; letter-spacing: 0.3px;">
+          🔍 ALL RULES ANALYSIS (${allRules.filter(r => r.active).length} ACTIVE • ${allRules.filter(r => !r.active).length} PENDING)
+        </div>
+        
+        <!-- Leaving/Meeting -->
+        <div style="display: flex; gap: 8px; margin-bottom: 6px;">
+          <div style="flex: 1; background: var(--card-bg, rgba(88,166,255,0.06)); border-radius: 4px; padding: 4px 8px; text-align: center; border: 1px solid rgba(88,166,255,0.2);">
+            <div style="font-size: 7px; font-weight: 800; color: #58a6ff; text-transform: uppercase; letter-spacing: 0.3px;">LEAVING</div>
+            <div style="display: flex; align-items: center; justify-content: center; gap: 4px; flex-wrap: wrap;">${leavingDisplay}</div>
+            <div style="font-size: 6px; color: var(--text-dim, #64748b);">${leavingNumber ? getLineName(leavingNumber) : ''} ${leavingNumber ? getGroupEmoji(leavingNumber) : ''}</div>
+          </div>
+          <div style="flex: 1; background: var(--card-bg, rgba(255,157,0,0.06)); border-radius: 4px; padding: 4px 8px; text-align: center; border: 1px solid rgba(255,157,0,0.2);">
+            <div style="font-size: 7px; font-weight: 800; color: #ff9d00; text-transform: uppercase; letter-spacing: 0.3px;">MEETING</div>
+            <div style="display: flex; align-items: center; justify-content: center; gap: 4px; flex-wrap: wrap;">${meetingDisplay}</div>
+            <div style="font-size: 6px; color: var(--text-dim, #64748b);">${meetingNumber ? getLineName(meetingNumber) : ''} ${meetingNumber ? getGroupEmoji(meetingNumber) : ''}</div>
+          </div>
+        </div>
+        
+        <!-- All Rules -->
+        <div style="background: var(--card-bg, rgba(255,255,255,0.02)); border-radius: 4px; border: 1px solid var(--border-color, rgba(255,255,255,0.04)); padding: 4px 6px; max-height: 400px; overflow-y: auto;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; padding: 0 2px;">
+            <span style="font-size: 7px; font-weight: 700; color: var(--text-main, #ff9d00);">📋 RULES STATUS</span>
+            <div style="display: flex; gap: 8px; font-size: 6px;">
+              <span style="color: #32d74b;">✅ ${allRules.filter(r => r.active).length} Active</span>
+              <span style="color: #64748b;">⏳ ${allRules.filter(r => !r.active).length} Pending</span>
+            </div>
+          </div>
+          ${rulesHtml}
+        </div>
+        
+        <div style="font-size: 6px; color: var(--text-dim, #64748b); text-align: center; margin-top: 3px;">
+          Based on all Play Whe rules • ✅ Active rules have triggers • ⏳ Pending rules waiting for triggers
+        </div>
+      </div>
+    `;
+  }
+
+  // ======================================
+  // BUILD THE MAIN HTML
+  // ======================================
+
+  const lineRulesHtml = renderLineRules();
+  const patternAnalysisHtml = renderPatternAnalysis();
+
+  return `
+    <div style="
+      background: var(--bg-start, linear-gradient(135deg, #0f172a, #1e293b));
+      border-radius: 16px; 
+      padding: 10px; 
+      margin-bottom: 15px; 
+      border: 1px solid var(--border-color, #ff9d00);
+    ">
+      
+      <!-- Header -->
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; flex-wrap: wrap; gap: 4px;">
+        <div>
+          <div style="font-size: 13px; font-weight: 800; color: var(--text-main, #ff9d00); letter-spacing: 0.3px;">
+            ♠️ PLAY WHE LINE RULES & PATTERNS
+          </div>
+          <div style="font-size: 7px; color: var(--text-dim, #64748b); margin-top: 1px;">
+            All 11 rules • Line pulls • Dogs/Snakes/Birds/Doubles/Man/Zeros
+          </div>
+        </div>
+        <div style="display: flex; align-items: center; gap: 4px; font-size: 6px; color: var(--text-dim, #94a3b8);">
+          <span style="color: #ff9d00; font-weight: bold; font-size: 6px;">${globalTrackingCode}</span>
+        </div>
+      </div>
+      
+      <!-- Section 1: Line Rules -->
+      ${lineRulesHtml}
+      
+      <!-- Separator -->
+      <div style="margin: 4px 0; border-top: 2px solid var(--border-color, #000000);"></div>
+      
+      <!-- Section 2: All Rules Analysis -->
+      ${patternAnalysisHtml}
+      
+      <!-- Footer -->
+      <div style="margin-top: 4px; padding-top: 4px; border-top: 1px solid var(--border-color, rgba(255,255,255,0.02)); display: flex; justify-content: center; align-items: center; gap: 6px; flex-wrap: wrap;">
+        <span style="font-size: 6px; color: var(--text-dim, #64748b);">CodeWithGlasgow • CWG Chart Analysis ©️</span>
+        <span style="font-size: 6px; color: var(--text-dim, #64748b);">Updated: ${new Date().toLocaleDateString()}</span>
+      </div>
+      
+    </div>
+  `;
+}
+/////////////////////////////////////////
+//==== Line Chart Rules =======
+// ======================================
+// PLAY WHE LINE RULES & MAPPING VERSION 1
+// Shows all 9 lines with their pull rules and active numbers
+// ======================================
+function renderPlayWheLineRulesMapping(weeksData) {
+  if (!weeksData || weeksData.length === 0) {
+    return `
+      <div style="background: linear-gradient(135deg, #0f172a, #1e293b); border-radius: 16px; padding: 16px; margin-bottom: 15px; border: 1px solid #58a6ff; text-align:center;">
+        📊 Loading Play Whe Line Rules...
+      </div>
+    `;
+  }
+
+  // ======================================
+  // CONSTANTS & MAPPINGS
+  // ======================================
+
+  const dayNames = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+  const slots = ["MOR", "MID", "NON", "EVE"];
+  const now = new Date();
+
+  // Line mapping
+  const numToLineMap = {
+    1:1, 10:1, 19:1, 28:1, 2:2, 11:2, 20:2, 29:2, 3:3, 12:3, 21:3, 30:3,
+    4:4, 13:4, 22:4, 31:4, 5:5, 14:5, 23:5, 32:5, 6:6, 15:6, 24:6, 33:6,
+    7:7, 16:7, 25:7, 34:7, 8:8, 17:8, 26:8, 35:8, 9:9, 18:9, 27:9, 36:9
+  };
+
+  const lineColors = [
+    "#00f2ff", "#ff9f0a", "#32d74b", "#ff375f", 
+    "#ffd60a", "#bf5af2", "#1e90ff", "#ff1493", "#00ff7f"
+  ];
+
+  const lineNames = {
+    1: "1 Line",
+    2: "2 Line",
+    3: "3 Line",
+    4: "4 Line",
+    5: "5 Line",
+    6: "6 Line",
+    7: "7 Line",
+    8: "8 Line",
+    9: "9 Line"
+  };
+
+  // Line Rules
+  const lineRules = {
+    1: {
+      pulls: [5],
+      description: "1 line does pull 5 line mainly because 5/1 is mark and spirit",
+      related: "5/1 mark and spirit"
+    },
+    2: {
+      pulls: [7],
+      description: "2 line does pull 7 line",
+      related: "2/7 pull"
+    },
+    3: {
+      pulls: [7, 5],
+      description: "3 line does play with 7 line and 5 line mostly to complete the 357 play",
+      related: "357 play"
+    },
+    4: {
+      pulls: [8, 7],
+      description: "4 line does pull 8 line and 7 line",
+      related: "4/8/7"
+    },
+    5: {
+      pulls: [1, 9],
+      description: "5 line does pull 1 line and 9 line",
+      related: "5/1/9"
+    },
+    6: {
+      pulls: [6],
+      description: "6 line does pull 6 line",
+      related: "self-pull"
+    },
+    7: {
+      pulls: [7, 4],
+      description: "7 line does pull 7 line and 4 line",
+      related: "7/4"
+    },
+    8: {
+      pulls: [8, 4],
+      description: "8 line does pull 8 line and 4 line",
+      related: "8/4"
+    },
+    9: {
+      pulls: [5, 4, 8],
+      description: "9 line does pull 5 line and 4 line and sometimes 8 line",
+      related: "9/5/4/8"
+    }
+  };
+
+  // ======================================
+  // HELPER FUNCTIONS
+  // ======================================
+
+  function getDraw(week, dayName, slot) {
+    if (!week) return null;
+    const day = week.days.find(d => d.dayName === dayName);
+    if (!day) return null;
+    const val = day.draws[slot];
+    return val && val !== "-" && val !== "PENDING" && val !== "HOLIDAY" ? parseInt(val, 10) : null;
+  }
+
+  function getLine(num) {
+    return numToLineMap[num] || null;
+  }
+
+  function getLineColor(num) {
+    const line = getLine(num);
+    if (line === null) return "#94a3b8";
+    return lineColors[(line - 1) % lineColors.length];
+  }
+
+  function getLineName(num) {
+    const line = getLine(num);
+    if (line === null) return "?";
+    return lineNames[line] || `Line ${line}`;
+  }
+
+  // Spirit Emoji mapping
+  const spiritEmoji = {
+    1: "🔪", 2: "👵🏾", 3: "🚕", 4: "⚰️", 5: "👨🏾‍🦳", 6: "🤰🏽", 7: "🐗", 8: "🐯",
+    9: "🐮", 10: "🐒", 11: "🦅", 12: "🤴🏽", 13: "🐸", 14: "💰", 15: "🤧", 16: "💃🏽",
+    17: "🐦‍⬛", 18: "🚤", 19: "🐎", 20: "🐶", 21: "👄", 22: "🐀", 23: "🏡", 24: "🫅🏽",
+    25: "🐢", 26: "🐔", 27: "🐍", 28: "🐟", 29: "🍻", 30: "🐈‍⬛", 31: "👵🏾", 32: "🦐",
+    33: "🕷️", 34: "👨🏾‍🦯", 35: "🐍", 36: "🫏"
+  };
+
+  // Sort weeks chronologically
+  const sortedWeeks = [...weeksData].sort((a, b) => {
+    let pa = a.startDate.split(" ");
+    let pb = b.startDate.split(" ");
+    return new Date(pa[2] + "-" + pa[1] + "-" + pa[0]) - new Date(pb[2] + "-" + pb[1] + "-" + pb[0]);
+  });
+
+  const currentWeek = sortedWeeks[sortedWeeks.length - 1];
+
+  // ======================================
+  // GET LEAVING NUMBER
+  // ======================================
+
+  function getLeavingNumber() {
+    let leavingNumber = null;
+    let leavingSlot = null;
+    const todayIdx = now.getDay();
+    const currentHour = now.getHours();
+    
+    let currentSlotIdx = -1;
+    if (currentHour >= 9 && currentHour < 12) currentSlotIdx = 0;
+    else if (currentHour >= 12 && currentHour < 15) currentSlotIdx = 1;
+    else if (currentHour >= 15 && currentHour < 18) currentSlotIdx = 2;
+    else if (currentHour >= 18) currentSlotIdx = 3;
+    
+    for (let d = todayIdx; d >= 0; d--) {
+      const maxSlot = (d === todayIdx) ? currentSlotIdx : slots.length - 1;
+      for (let s = maxSlot; s >= 0; s--) {
+        const draw = getDraw(currentWeek, dayNames[d], slots[s]);
+        if (draw) {
+          leavingNumber = draw;
+          leavingSlot = slots[s];
+          break;
+        }
+      }
+      if (leavingNumber) break;
+    }
+    
+    if (!leavingNumber) {
+      for (let w = sortedWeeks.length - 2; w >= 0; w--) {
+        const week = sortedWeeks[w];
+        for (let d = dayNames.length - 1; d >= 0; d--) {
+          for (let s = slots.length - 1; s >= 0; s--) {
+            const draw = getDraw(week, dayNames[d], slots[s]);
+            if (draw) {
+              leavingNumber = draw;
+              leavingSlot = slots[s];
+              break;
+            }
+          }
+          if (leavingNumber) break;
+        }
+        if (leavingNumber) break;
+      }
+    }
+    
+    return { leavingNumber, leavingSlot };
+  }
+
+  const { leavingNumber, leavingSlot } = getLeavingNumber();
+
+  // ======================================
+  // GET CURRENT WEEK DRAWS
+  // ======================================
+
+  function getWeekDraws(week) {
+    const draws = [];
+    if (!week) return draws;
+    for (const day of dayNames) {
+      for (const slot of slots) {
+        const draw = getDraw(week, day, slot);
+        if (draw) draws.push(draw);
+      }
+    }
+    return draws;
+  }
+
+  const currentWeekDraws = getWeekDraws(currentWeek);
+
+  // ======================================
+  // ANALYZE LINE PULLS
+  // ======================================
+
+  function analyzeLinePulls() {
+    const results = [];
+    const leavingLine = leavingNumber ? getLine(leavingNumber) : null;
+    
+    for (let line = 1; line <= 9; line++) {
+      const rule = lineRules[line];
+      if (!rule) continue;
+      
+      const pulls = rule.pulls || [];
+      const pullLines = pulls.map(l => ({
+        line: l,
+        name: lineNames[l] || `Line ${l}`,
+        color: lineColors[(l - 1) % lineColors.length]
+      }));
+      
+      const lineNumbers = Object.keys(numToLineMap)
+        .filter(key => numToLineMap[key] === line)
+        .map(Number);
+      
+      const activeNumbers = lineNumbers.filter(n => currentWeekDraws.includes(n));
+      const isLeavingLine = leavingLine === line;
+      
+      results.push({
+        line: line,
+        name: lineNames[line] || `Line ${line}`,
+        color: lineColors[(line - 1) % lineColors.length],
+        rule: rule,
+        pullLines: pullLines,
+        activeNumbers: activeNumbers,
+        isLeavingLine: isLeavingLine
+      });
+    }
+    
+    return results;
+  }
+
+  const lineAnalysis = analyzeLinePulls();
+
+  // ======================================
+  // RENDER FUNCTION
+  // ======================================
+
+  function renderLineRules() {
+    let rowsHtml = '';
+    
+    for (const item of lineAnalysis) {
+      const pullHtml = item.pullLines.map(pl => `
+        <span style="display: inline-block; padding: 1px 6px; border-radius: 3px; background: ${pl.color}33; color: ${pl.color}; font-weight: 700; font-size: 9px; margin: 0 2px;">
+          ${pl.name}
+        </span>
+      `).join('');
+      
+      const activeHtml = item.activeNumbers.length > 0 ? 
+        item.activeNumbers.map(n => `
+          <span style="display: inline-block; padding: 1px 4px; border-radius: 3px; background: ${item.color}33; color: ${item.color}; font-weight: 700; font-size: 9px; margin: 0 1px;">
+            ${n}${spiritEmoji[n] || ''}
+          </span>
+        `).join(' ') : 
+        '<span style="color: var(--text-dim, #64748b); font-size: 8px;">None</span>';
+      
+      const isActive = item.isLeavingLine;
+      
+      rowsHtml += `
+        <div style="display: flex; align-items: center; padding: 3px 6px; border-bottom: 1px solid var(--border-color, rgba(255,255,255,0.04)); ${isActive ? 'background: var(--card-bg, rgba(255,255,255,0.05)); border-left: 3px solid ' + item.color : ''}">
+          <div style="min-width: 60px; display: flex; align-items: center; gap: 4px;">
+            <span style="font-weight: 800; font-size: 11px; color: ${item.color};">${item.name}</span>
+            ${isActive ? '<span style="font-size: 7px; color: #ff9d00; font-weight: 700;">🟢⚡️</span>' : ''}
+          </div>
+          <div style="flex: 1; display: flex; align-items: center; gap: 4px; flex-wrap: wrap;">
+            <span style="font-size: 7px; color: var(--text-dim, #64748b); font-weight: 600;">→</span>
+            ${pullHtml}
+            <span style="font-size: 7px; color: var(--text-dim, #64748b); margin-left: 4px;">${item.rule.description || ''}</span>
+          </div>
+          <div style="font-size: 8px; color: var(--text-dim, #64748b); min-width: 60px; text-align: right;">
+            ${activeHtml}
+          </div>
+        </div>
+      `;
+    }
+    
+    return `
+      <div style="margin-top: 6px; padding-top: 6px; border-top: 1px dashed var(--border-color, rgba(255,255,255,0.06));">
+        <div style="font-size: 10px; font-weight: 800; color: var(--text-main, #ff9d00); margin-bottom: 4px; text-align: center; letter-spacing: 0.3px;">
+          📊 LINE CHART RULES & MAPPING
+        </div>
+        <div style="background: var(--card-bg, rgba(255,255,255,0.02)); border-radius: 6px; overflow: hidden; border: 1px solid var(--border-color, rgba(255,255,255,0.04));">
+          ${rowsHtml}
+        </div>
+        <div style="font-size: 6px; color: var(--text-dim, #64748b); text-align: center; margin-top: 3px;">
+          Based on Play Whe line pull rules • Active numbers shown in current week
+        </div>
+      </div>
+    `;
+  }
+
+  // ======================================
+  // BUILD THE HTML
+  // ======================================
+
+  const lineRulesHtml = renderLineRules();
+
+  return `
+    <div style="
+      background: var(--bg-start, linear-gradient(135deg, #0f172a, #1e293b));
+      border-radius: 16px; 
+      padding: 10px; 
+      margin-bottom: 15px; 
+      border: 1px solid var(--border-color, #ff9d00);
+    ">
+      
+      <!-- Header -->
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; flex-wrap: wrap; gap: 4px;">
+        <div>
+          <div style="font-size: 13px; font-weight: 800; color: var(--text-main, #ff9d00); letter-spacing: 0.3px;">
+            ♠️ PLAY WHE LINE RULES & MAPPING
+          </div>
+          <div style="font-size: 7px; color: var(--text-dim, #64748b); margin-top: 1px;">
+            All 9 lines • Pull rules • Active numbers
+          </div>
+        </div>
+        <div style="display: flex; align-items: center; gap: 4px; font-size: 6px; color: var(--text-dim, #94a3b8);">
+          <span style="color: #ff9d00; font-weight: bold; font-size: 6px;">${globalTrackingCode}</span>
+        </div>
+      </div>
+      
+      <!-- Line Rules -->
+      ${lineRulesHtml}
+      
+      <!-- Footer -->
+      <div style="margin-top: 4px; padding-top: 4px; border-top: 1px solid var(--border-color, rgba(255,255,255,0.02)); display: flex; justify-content: center; align-items: center; gap: 6px; flex-wrap: wrap;">
+        <span style="font-size: 6px; color: var(--text-dim, #64748b);">CodeWithGlasgow • CWG Chart Analysis ©️</span>
+        <span style="font-size: 6px; color: var(--text-dim, #64748b);">Updated: ${new Date().toLocaleDateString()}</span>
+      </div>
+      
+    </div>
+  `;
+}
+//////////////////////////////////////////
+// ======================================
+// PLAY WHE LINE RULES & MAPPING VERSION 2
+// Shows all 9 lines with their pull rules and active numbers
+// + Line Chart with last 24 weeks stats (count + last played date)
+// ======================================
+function renderPlayWheLineRulesMappingv2(weeksData) {
+  if (!weeksData || weeksData.length === 0) {
+    return `
+      <div style="background: linear-gradient(135deg, #0f172a, #1e293b); border-radius: 16px; padding: 16px; margin-bottom: 15px; border: 1px solid #58a6ff; text-align:center;">
+        📊 Loading Play Whe Line Rules...
+      </div>
+    `;
+  }
+
+  // ======================================
+  // CONSTANTS & MAPPINGS
+  // ======================================
+
+  const dayNames = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+  const slots = ["MOR", "MID", "NON", "EVE"];
+  const now = new Date();
+
+  const numToLineMap = {
+    1:1, 10:1, 19:1, 28:1, 2:2, 11:2, 20:2, 29:2, 3:3, 12:3, 21:3, 30:3,
+    4:4, 13:4, 22:4, 31:4, 5:5, 14:5, 23:5, 32:5, 6:6, 15:6, 24:6, 33:6,
+    7:7, 16:7, 25:7, 34:7, 8:8, 17:8, 26:8, 35:8, 9:9, 18:9, 27:9, 36:9
+  };
+
+  const lineColors = [
+    "#00f2ff", "#ff9f0a", "#32d74b", "#ff375f", 
+    "#ffd60a", "#bf5af2", "#1e90ff", "#ff1493", "#00ff7f"
+  ];
+
+  const lineNames = {
+    1: "1 Line",
+    2: "2 Line",
+    3: "3 Line",
+    4: "4 Line",
+    5: "5 Line",
+    6: "6 Line",
+    7: "7 Line",
+    8: "8 Line",
+    9: "9 Line"
+  };
+
+  const lineMembers = {
+    1: [1, 10, 19, 28],
+    2: [2, 11, 20, 29],
+    3: [3, 12, 21, 30],
+    4: [4, 13, 22, 31],
+    5: [5, 14, 23, 32],
+    6: [6, 15, 24, 33],
+    7: [7, 16, 25, 34],
+    8: [8, 17, 26, 35],
+    9: [9, 18, 27, 36]
+  };
+
+  const lineRules = {
+    1: { pulls: [5], description: "1 line does pull 5 line mainly because 5/1 is mark and spirit", related: "5/1 mark and spirit" },
+    2: { pulls: [7], description: "2 line does pull 7 line", related: "2/7 pull" },
+    3: { pulls: [7, 5], description: "3 line does play with 7 line and 5 line mostly to complete the 357 play", related: "357 play" },
+    4: { pulls: [8, 7], description: "4 line does pull 8 line and 7 line", related: "4/8/7" },
+    5: { pulls: [1, 9], description: "5 line does pull 1 line and 9 line", related: "5/1/9" },
+    6: { pulls: [6], description: "6 line does pull 6 line", related: "self-pull" },
+    7: { pulls: [7, 4], description: "7 line does pull 7 line and 4 line", related: "7/4" },
+    8: { pulls: [8, 4], description: "8 line does pull 8 line and 4 line", related: "8/4" },
+    9: { pulls: [5, 4, 8], description: "9 line does pull 5 line and 4 line and sometimes 8 line", related: "9/5/4/8" }
+  };
+
+  // ======================================
+  // HELPER FUNCTIONS
+  // ======================================
+
+  function getDraw(week, dayName, slot) {
+    if (!week) return null;
+    const day = week.days.find(d => d.dayName === dayName);
+    if (!day) return null;
+    const val = day.draws[slot];
+    return val && val !== "-" && val !== "PENDING" && val !== "HOLIDAY" ? parseInt(val, 10) : null;
+  }
+
+  function getLine(num) {
+    return numToLineMap[num] || null;
+  }
+
+  function getLineColor(num) {
+    const line = getLine(num);
+    if (line === null) return "#94a3b8";
+    return lineColors[(line - 1) % lineColors.length];
+  }
+
+  function getLineName(num) {
+    const line = getLine(num);
+    if (line === null) return "?";
+    return lineNames[line] || `Line ${line}`;
+  }
+
+  const spiritEmoji = {
+    1: "🔪", 2: "👵🏾", 3: "🚕", 4: "⚰️", 5: "👨🏾‍🦳", 6: "🤰🏽", 7: "🐗", 8: "🐯",
+    9: "🐮", 10: "🐒", 11: "🦅", 12: "🤴🏽", 13: "🐸", 14: "💰", 15: "🤧", 16: "💃🏽",
+    17: "🐦‍⬛", 18: "🚤", 19: "🐎", 20: "🐶", 21: "👄", 22: "🐀", 23: "🏡", 24: "🫅🏽",
+    25: "🐢", 26: "🐔", 27: "🐍", 28: "🐟", 29: "🍻", 30: "🐈‍⬛", 31: "👵🏾", 32: "🦐",
+    33: "🕷️", 34: "👨🏾‍🦯", 35: "🐍", 36: "🫏"
+  };
+
+  const sortedWeeks = [...weeksData].sort((a, b) => {
+    let pa = a.startDate.split(" ");
+    let pb = b.startDate.split(" ");
+    return new Date(pa[2] + "-" + pa[1] + "-" + pa[0]) - new Date(pb[2] + "-" + pb[1] + "-" + pb[0]);
+  });
+
+  const currentWeek = sortedWeeks[sortedWeeks.length - 1];
+
+  // ======================================
+  // GET LEAVING NUMBER
+  // ======================================
+
+  function getLeavingNumber() {
+    let leavingNumber = null;
+    let leavingSlot = null;
+    const todayIdx = now.getDay();
+    const currentHour = now.getHours();
+
+    let currentSlotIdx = -1;
+    if (currentHour >= 9 && currentHour < 12) currentSlotIdx = 0;
+    else if (currentHour >= 12 && currentHour < 15) currentSlotIdx = 1;
+    else if (currentHour >= 15 && currentHour < 18) currentSlotIdx = 2;
+    else if (currentHour >= 18) currentSlotIdx = 3;
+
+    for (let d = todayIdx; d >= 0; d--) {
+      const maxSlot = (d === todayIdx) ? currentSlotIdx : slots.length - 1;
+      for (let s = maxSlot; s >= 0; s--) {
+        const draw = getDraw(currentWeek, dayNames[d], slots[s]);
+        if (draw) {
+          leavingNumber = draw;
+          leavingSlot = slots[s];
+          break;
+        }
+      }
+      if (leavingNumber) break;
+    }
+
+    if (!leavingNumber) {
+      for (let w = sortedWeeks.length - 2; w >= 0; w--) {
+        const week = sortedWeeks[w];
+        for (let d = dayNames.length - 1; d >= 0; d--) {
+          for (let s = slots.length - 1; s >= 0; s--) {
+            const draw = getDraw(week, dayNames[d], slots[s]);
+            if (draw) {
+              leavingNumber = draw;
+              leavingSlot = slots[s];
+              break;
+            }
+          }
+          if (leavingNumber) break;
+        }
+        if (leavingNumber) break;
+      }
+    }
+
+    return { leavingNumber, leavingSlot };
+  }
+
+  const { leavingNumber, leavingSlot } = getLeavingNumber();
+
+  function getWeekDraws(week) {
+    const draws = [];
+    if (!week) return draws;
+    for (const day of dayNames) {
+      for (const slot of slots) {
+        const draw = getDraw(week, day, slot);
+        if (draw) draws.push(draw);
+      }
+    }
+    return draws;
+  }
+
+  const currentWeekDraws = getWeekDraws(currentWeek);
+
+  // ======================================
+  // ANALYZE LINE PULLS
+  // ======================================
+
+  function analyzeLinePulls() {
+    const results = [];
+    const leavingLine = leavingNumber ? getLine(leavingNumber) : null;
+
+    for (let line = 1; line <= 9; line++) {
+      const rule = lineRules[line];
+      if (!rule) continue;
+
+      const pulls = rule.pulls || [];
+      const pullLines = pulls.map(l => ({
+        line: l,
+        name: lineNames[l] || `Line ${l}`,
+        color: lineColors[(l - 1) % lineColors.length]
+      }));
+
+      const lineNumbers = Object.keys(numToLineMap)
+        .filter(key => numToLineMap[key] === line)
+        .map(Number);
+
+      const activeNumbers = lineNumbers.filter(n => currentWeekDraws.includes(n));
+      const isLeavingLine = leavingLine === line;
+
+      results.push({
+        line: line,
+        name: lineNames[line] || `Line ${line}`,
+        color: lineColors[(line - 1) % lineColors.length],
+        rule: rule,
+        pullLines: pullLines,
+        activeNumbers: activeNumbers,
+        isLeavingLine: isLeavingLine
+      });
+    }
+
+    return results;
+  }
+
+  const lineAnalysis = analyzeLinePulls();
+
+  // ======================================
+  // LINE STATS — LAST 24 WEEKS
+  // ======================================
+  const last24Weeks = sortedWeeks.slice(-24);
+
+  function getActualDateForDraw(week, dayName) {
+    if (!week || !week.startDate) return null;
+    const parts = week.startDate.split(" ");
+    const monthMap = {"Jan":0,"Feb":1,"Mar":2,"Apr":3,"May":4,"Jun":5,"Jul":6,"Aug":7,"Sep":8,"Oct":9,"Nov":10,"Dec":11};
+    const startDate = new Date(parts[2], monthMap[parts[1]], parseInt(parts[0]));
+    const dayIndex = dayNames.indexOf(dayName);
+    if (dayIndex === -1) return null;
+    const drawDate = new Date(startDate);
+    drawDate.setDate(startDate.getDate() + dayIndex);
+    return drawDate;
+  }
+
+  const numberStats = {};
+  for (let i = 1; i <= 36; i++) {
+    numberStats[i] = { count: 0, lastDate: null };
+  }
+
+  last24Weeks.forEach(week => {
+    dayNames.forEach(dayName => {
+      const actualDate = getActualDateForDraw(week, dayName);
+      slots.forEach(slot => {
+        const num = getDraw(week, dayName, slot);
+        if (num && numberStats[num]) {
+          numberStats[num].count++;
+          if (!numberStats[num].lastDate || actualDate > numberStats[num].lastDate) {
+            numberStats[num].lastDate = actualDate;
+          }
+        }
+      });
+    });
+  });
+
+  // Compute HITS per line = sum of all member counts over last 24 weeks
+  function getLineHits(line) {
+    const members = lineMembers[line] || [];
+    return members.reduce((sum, num) => sum + (numberStats[num]?.count || 0), 0);
+  }
+
+  function formatShortDate(date) {
+    if (!date) return "—";
+    const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    return `${date.getDate()} ${months[date.getMonth()]}`;
+  }
+
+  // ======================================
+  // RENDER: LINE RULES
+  // ======================================
+
+  function renderLineRules() {
+    let rowsHtml = '';
+
+    for (const item of lineAnalysis) {
+      const pullHtml = item.pullLines.map(pl => `
+        <span style="display: inline-block; padding: 1px 6px; border-radius: 3px; background: ${pl.color}33; color: ${pl.color}; font-weight: 700; font-size: 9px; margin: 0 2px;">
+          ${pl.name}
+        </span>
+      `).join('');
+
+      const activeHtml = item.activeNumbers.length > 0 ?
+        item.activeNumbers.map(n => `
+          <span style="display: inline-block; padding: 1px 4px; border-radius: 3px; background: ${item.color}33; color: ${item.color}; font-weight: 700; font-size: 9px; margin: 0 1px;">
+            ${n}${spiritEmoji[n] || ''}
+          </span>
+        `).join(' ') :
+        '<span style="color: var(--text-dim, #64748b); font-size: 8px;">None</span>';
+
+      const isActive = item.isLeavingLine;
+
+      rowsHtml += `
+        <div style="display: flex; align-items: center; padding: 3px 6px; border-bottom: 1px solid var(--border-color, rgba(255,255,255,0.04)); ${isActive ? 'background: var(--card-bg, rgba(255,255,255,0.05)); border-left: 3px solid ' + item.color : ''}">
+          <div style="min-width: 60px; display: flex; align-items: center; gap: 4px;">
+            <span style="font-weight: 800; font-size: 11px; color: ${item.color};">${item.name}</span>
+            ${isActive ? '<span style="font-size: 7px; color: #ff9d00; font-weight: 700;">🟢⚡️</span>' : ''}
+          </div>
+          <div style="flex: 1; display: flex; align-items: center; gap: 4px; flex-wrap: wrap;">
+            <span style="font-size: 7px; color: var(--text-dim, #64748b); font-weight: 600;">→</span>
+            ${pullHtml}
+            <span style="font-size: 7px; color: var(--text-dim, #64748b); margin-left: 4px;">${item.rule.description || ''}</span>
+          </div>
+          <div style="font-size: 8px; color: var(--text-dim, #64748b); min-width: 60px; text-align: right;">
+            ${activeHtml}
+          </div>
+        </div>
+      `;
+    }
+
+    return `
+      <div style="margin-top: 6px; padding-top: 6px; border-top: 1px dashed var(--border-color, rgba(255,255,255,0.06));">
+        <div style="font-size: 10px; font-weight: 800; color: var(--text-main, #ff9d00); margin-bottom: 4px; text-align: center; letter-spacing: 0.3px;">
+          📊 LINE CHART RULES & MAPPING
+        </div>
+        <div style="background: var(--card-bg, rgba(255,255,255,0.02)); border-radius: 6px; overflow: hidden; border: 1px solid var(--border-color, rgba(255,255,255,0.04));">
+          ${rowsHtml}
+        </div>
+        <div style="font-size: 6px; color: var(--text-dim, #64748b); text-align: center; margin-top: 3px;">
+          Based on Play Whe line pull rules • Active numbers shown in current week
+        </div>
+      </div>
+    `;
+  }
+
+  // ======================================
+  // RENDER: LINE CHART — Compact, no leaving highlight
+  // Columns: LINE | HITS | MARKS CHART (merged 3 sub-columns)
+  // ======================================
+
+  function renderLineChart() {
+    const textColor = 'var(--text-main, #ffffff)';
+    const dimColor = 'var(--text-dim, #64748b)';
+
+    // Header row: LINE | HITS | MARKS CHART (colspan=3)
+    const headerHtml = `
+      <tr style="background: var(--header-bg, rgba(255,255,255,0.04));">
+        <th style="
+          padding:4px 4px;
+          text-align:center;
+          font-size:8px;
+          font-weight:800;
+          color:${textColor};
+          border-bottom:1px solid var(--border-color, rgba(255,255,255,0.1));
+          letter-spacing:0.4px;
+          width:38px;
+        ">LINE</th>
+        <th style="
+          padding:4px 4px;
+          text-align:center;
+          font-size:8px;
+          font-weight:800;
+          color:${textColor};
+          border-bottom:1px solid var(--border-color, rgba(255,255,255,0.1));
+          letter-spacing:0.4px;
+          width:38px;
+        ">HITS</th>
+        <th colspan="3" style="
+          padding:4px 4px;
+          text-align:center;
+          font-size:8px;
+          font-weight:800;
+          color:${textColor};
+          border-bottom:1px solid var(--border-color, rgba(255,255,255,0.1));
+          letter-spacing:0.4px;
+        ">MARKS CHART</th>
+      </tr>
+    `;
+
+    let bodyHtml = '';
+
+    // Member cell — compact, no leaving highlight
+    function makeMemberCell(num) {
+      const stats = numberStats[num] || { count: 0, lastDate: null };
+
+      return `
+        <div style="
+          display:flex;
+          flex-direction:column;
+          align-items:center;
+          justify-content:center;
+          padding:2px 2px;
+          border-radius:4px;
+          min-width:0;
+          flex:1;
+        ">
+          <span style="
+            font-size:11px;
+            font-weight:900;
+            color:${textColor};
+            line-height:1.1;
+          ">${num}</span>
+          <span style="
+            font-size:8px;
+            font-weight:700;
+            color:${textColor};
+            margin-top:1px;
+            line-height:1.1;
+          ">${stats.count}x</span>
+          <span style="
+            font-size:7px;
+            color:${dimColor};
+            margin-top:1px;
+            line-height:1.1;
+          ">${formatShortDate(stats.lastDate)}</span>
+        </div>
+      `;
+    }
+
+    for (let line = 1; line <= 9; line++) {
+      const members = lineMembers[line];
+      const hits = getLineHits(line);
+
+      bodyHtml += `
+        <tr>
+          <td style="
+            padding:3px 4px;
+            text-align:center;
+            font-size:11px;
+            font-weight:900;
+            color:${textColor};
+            border-bottom:1px solid var(--border-color, rgba(255,255,255,0.05));
+            vertical-align:middle;
+          ">${line} L</td>
+          <td style="
+            padding:3px 4px;
+            text-align:center;
+            font-size:11px;
+            font-weight:900;
+            color:${textColor};
+            border-bottom:1px solid var(--border-color, rgba(255,255,255,0.05));
+            vertical-align:middle;
+          ">${hits}x</td>
+          <td style="
+            padding:2px 3px;
+            border-bottom:1px solid var(--border-color, rgba(255,255,255,0.05));
+            vertical-align:middle;
+          ">
+            <div style="display:flex; gap:2px;">
+              ${makeMemberCell(members[0])}
+            </div>
+          </td>
+          <td style="
+            padding:2px 3px;
+            border-bottom:1px solid var(--border-color, rgba(255,255,255,0.05));
+            vertical-align:middle;
+          ">
+            <div style="display:flex; gap:2px;">
+              ${makeMemberCell(members[1])}
+            </div>
+          </td>
+          <td style="
+            padding:2px 3px;
+            border-bottom:1px solid var(--border-color, rgba(255,255,255,0.05));
+            vertical-align:middle;
+          ">
+            <div style="display:flex; gap:2px;">
+              ${makeMemberCell(members[2])}
+              ${makeMemberCell(members[3])}
+            </div>
+          </td>
+        </tr>
+      `;
+    }
+
+    return `
+      <div style="margin-top: 6px;">
+        <div style="
+          font-size:10px;
+          font-weight:800;
+          color:${textColor};
+          margin-bottom:4px;
+          text-align:center;
+          letter-spacing:0.4px;
+        ">📈 LINE CHART (LAST 24 WEEKS)</div>
+        <div style="
+          background: var(--card-bg, rgba(255,255,255,0.02));
+          border-radius:5px;
+          overflow:hidden;
+          border:1px solid var(--border-color, rgba(255,255,255,0.04));
+        ">
+          <div style="overflow-x:auto; -webkit-overflow-scrolling:touch;">
+            <table style="width:100%; border-collapse:collapse; font-size:10px; min-width:280px;">
+              <thead>${headerHtml}</thead>
+              <tbody>${bodyHtml}</tbody>
+            </table>
+          </div>
+        </div>
+        <div style="
+          font-size:6px;
+          color:${dimColor};
+          text-align:center;
+          margin-top:2px;
+        ">HITS = total line plays over last 24 weeks • #x = number's count • Date = last played (day month)</div>
+      </div>
+    `;
+  }
+
+  // ======================================
+  // BUILD THE HTML
+  // ======================================
+
+  const lineRulesHtml = renderLineRules();
+  const lineChartHtml = renderLineChart();
+
+  const thickDivider = `
+    <div style="
+      margin: 10px 0;
+      height: 3px;
+      border-radius: 2px;
+      background: var(--text-main, #ffffff);
+    "></div>
+  `;
+
+  return `
+    <div style="
+      background: var(--bg-start, linear-gradient(135deg, #0f172a, #1e293b));
+      border-radius: 16px; 
+      padding: 10px; 
+      margin-bottom: 15px; 
+      border: 1px solid var(--border-color, #ff9d00);
+    ">
+      
+      <!-- Header -->
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; flex-wrap: wrap; gap: 4px;">
+        <div>
+          <div style="font-size: 13px; font-weight: 800; color: var(--text-main, #ff9d00); letter-spacing: 0.3px;">
+            ♠️ PLAY WHE LINE RULES & MAPPING
+          </div>
+          <div style="font-size: 7px; color: var(--text-dim, #64748b); margin-top: 1px;">
+            All 9 lines • Pull rules • Active numbers
+          </div>
+        </div>
+        <div style="display: flex; align-items: center; gap: 4px; font-size: 6px; color: var(--text-dim, #94a3b8);">
+          <span style="color: #ff9d00; font-weight: bold; font-size: 6px;">${globalTrackingCode}</span>
+        </div>
+      </div>
+      
+      <!-- Line Rules -->
+      ${lineRulesHtml}
+
+      <!-- Thick Divider (white / black) -->
+      ${thickDivider}
+
+      <!-- Line Chart (last 24 weeks) -->
+      ${lineChartHtml}
+      
+      <!-- Footer -->
+      <div style="margin-top: 6px; padding-top: 4px; border-top: 1px solid var(--border-color, rgba(255,255,255,0.02)); display: flex; justify-content: center; align-items: center; gap: 6px; flex-wrap: wrap;">
+        <span style="font-size: 6px; color: var(--text-dim, #64748b);">CodeWithGlasgow • CWG Chart Analysis ©️</span>
+        <span style="font-size: 6px; color: var(--text-dim, #64748b);">Updated: ${new Date().toLocaleDateString()}</span>
+      </div>
+      
+    </div>
+  `;
+}
+/////////////////////////////////////////
+// ==== Pattern & Rules Analysis ====
+// ======================================
+// PLAY WHE PATTERN & RULES ANALYSIS
+// Shows all 11 rules with ACTIVE/PENDING status
+// ======================================
+function renderPlayWhePatternRulesAnalysis(weeksData) {
+  if (!weeksData || weeksData.length === 0) {
+    return `
+      <div style="background: linear-gradient(135deg, #0f172a, #1e293b); border-radius: 16px; padding: 16px; margin-bottom: 15px; border: 1px solid #58a6ff; text-align:center;">
+        📊 Loading Play Whe Pattern Analysis...
+      </div>
+    `;
+  }
+
+  // ======================================
+  // CONSTANTS & MAPPINGS
+  // ======================================
+
+  const dayNames = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+  const slots = ["MOR", "MID", "NON", "EVE"];
+  const now = new Date();
+
+  // Line mapping
+  const numToLineMap = {
+    1:1, 10:1, 19:1, 28:1, 2:2, 11:2, 20:2, 29:2, 3:3, 12:3, 21:3, 30:3,
+    4:4, 13:4, 22:4, 31:4, 5:5, 14:5, 23:5, 32:5, 6:6, 15:6, 24:6, 33:6,
+    7:7, 16:7, 25:7, 34:7, 8:8, 17:8, 26:8, 35:8, 9:9, 18:9, 27:9, 36:9
+  };
+
+  const lineColors = [
+    "#00f2ff", "#ff9f0a", "#32d74b", "#ff375f", 
+    "#ffd60a", "#bf5af2", "#1e90ff", "#ff1493", "#00ff7f"
+  ];
+
+  const lineNames = {
+    1: "1 Line",
+    2: "2 Line",
+    3: "3 Line",
+    4: "4 Line",
+    5: "5 Line",
+    6: "6 Line",
+    7: "7 Line",
+    8: "8 Line",
+    9: "9 Line"
+  };
+
+  // Rules from dark screenshot
+  const dogs = [2, 8, 17, 20];
+  const dogSnakeTrigger = [5, 31];
+  const snakes = [1, 5, 27, 32, 35, 12];
+  const group3 = [2, 19, 12, 21];
+  const doubles = [11, 22, 33];
+  const man = [4, 5, 12, 29, 34];
+  const birds = [3, 11, 13, 17, 18, 26, 28, 34];
+  const line5 = [5, 14, 23, 32];
+  const line9 = [9, 18, 27, 36];
+  const zeros = [10, 20, 30];
+
+  // ======================================
+  // HELPER FUNCTIONS
+  // ======================================
+
+  function getDraw(week, dayName, slot) {
+    if (!week) return null;
+    const day = week.days.find(d => d.dayName === dayName);
+    if (!day) return null;
+    const val = day.draws[slot];
+    return val && val !== "-" && val !== "PENDING" && val !== "HOLIDAY" ? parseInt(val, 10) : null;
+  }
+
+  function getLine(num) {
+    return numToLineMap[num] || null;
+  }
+
+  function getLineColor(num) {
+    const line = getLine(num);
+    if (line === null) return "#94a3b8";
+    return lineColors[(line - 1) % lineColors.length];
+  }
+
+  function getLineName(num) {
+    const line = getLine(num);
+    if (line === null) return "?";
+    return lineNames[line] || `Line ${line}`;
+  }
+
+  function getGroup(num) {
+    const groups = [];
+    if (dogs.includes(num)) groups.push("🐕 DOG");
+    if (snakes.includes(num)) groups.push("🐍 SNAKE");
+    if (birds.includes(num)) groups.push("🐦 BIRD");
+    if (doubles.includes(num)) groups.push("🔢 DOUBLE");
+    if (man.includes(num)) groups.push("👤 MAN");
+    if (zeros.includes(num)) groups.push("0️⃣ ZERO");
+    if (group3.includes(num)) groups.push("🔗 2/19/12/21");
+    if (line5.includes(num)) groups.push("📏 5 LINE");
+    if (line9.includes(num)) groups.push("📏 9 LINE");
+    return groups;
+  }
+
+  function getGroupEmoji(num) {
+    const groups = getGroup(num);
+    return groups.length > 0 ? groups.join(" • ") : "";
+  }
+
+  // Spirit Emoji mapping
+  const spiritEmoji = {
+    1: "🔪", 2: "👵🏾", 3: "🚕", 4: "⚰️", 5: "👨🏾‍🦳", 6: "🤰🏽", 7: "🐗", 8: "🐯",
+    9: "🐮", 10: "🐒", 11: "🦅", 12: "🤴🏽", 13: "🐸", 14: "💰", 15: "🤧", 16: "💃🏽",
+    17: "🐦‍⬛", 18: "🚤", 19: "🐎", 20: "🐶", 21: "👄", 22: "🐀", 23: "🏡", 24: "🫅🏽",
+    25: "🐢", 26: "🐔", 27: "🐍", 28: "🐟", 29: "🍻", 30: "🐈‍⬛", 31: "👵🏾", 32: "🦐",
+    33: "🕷️", 34: "👨🏾‍🦯", 35: "🐍", 36: "🫏"
+  };
+
+  // Sort weeks chronologically
+  const sortedWeeks = [...weeksData].sort((a, b) => {
+    let pa = a.startDate.split(" ");
+    let pb = b.startDate.split(" ");
+    return new Date(pa[2] + "-" + pa[1] + "-" + pa[0]) - new Date(pb[2] + "-" + pb[1] + "-" + pb[0]);
+  });
+
+  const currentWeek = sortedWeeks[sortedWeeks.length - 1];
+  const previousWeek = sortedWeeks.length >= 2 ? sortedWeeks[sortedWeeks.length - 2] : currentWeek;
+
+  // ======================================
+  // GET LEAVING & MEETING NUMBERS
+  // ======================================
+
+  function getLeavingMeetingNumbers() {
+    let leavingNumber = null;
+    let leavingSlot = null;
+    let leavingDate = null;
+    let meetingNumber = null;
+    let meetingSlot = null;
+    let meetingDate = null;
+    
+    const todayIdx = now.getDay();
+    const currentHour = now.getHours();
+    
+    function getDateForDraw(week, dayName) {
+      if (!week || !week.startDate) return null;
+      const parts = week.startDate.split(" ");
+      const monthMap = {"Jan":0,"Feb":1,"Mar":2,"Apr":3,"May":4,"Jun":5,"Jul":6,"Aug":7,"Sep":8,"Oct":9,"Nov":10,"Dec":11};
+      const startDate = new Date(parts[2], monthMap[parts[1]], parseInt(parts[0]));
+      const dayIndex = dayNames.indexOf(dayName);
+      if (dayIndex === -1) return null;
+      const drawDate = new Date(startDate);
+      drawDate.setDate(startDate.getDate() + dayIndex);
+      return drawDate;
+    }
+    
+    let currentSlotIdx = -1;
+    if (currentHour >= 9 && currentHour < 12) currentSlotIdx = 0;
+    else if (currentHour >= 12 && currentHour < 15) currentSlotIdx = 1;
+    else if (currentHour >= 15 && currentHour < 18) currentSlotIdx = 2;
+    else if (currentHour >= 18) currentSlotIdx = 3;
+    
+    let leavingDayIdx = -1;
+    let leavingSlotIdx = -1;
+    
+    for (let d = todayIdx; d >= 0; d--) {
+      const maxSlot = (d === todayIdx) ? currentSlotIdx : slots.length - 1;
+      for (let s = maxSlot; s >= 0; s--) {
+        const draw = getDraw(currentWeek, dayNames[d], slots[s]);
+        if (draw) {
+          leavingNumber = draw;
+          leavingDayIdx = d;
+          leavingSlotIdx = s;
+          leavingSlot = slots[s];
+          leavingDate = getDateForDraw(currentWeek, dayNames[d]);
+          break;
+        }
+      }
+      if (leavingNumber) break;
+    }
+    
+    if (!leavingNumber) {
+      for (let w = sortedWeeks.length - 2; w >= 0; w--) {
+        const week = sortedWeeks[w];
+        for (let d = dayNames.length - 1; d >= 0; d--) {
+          for (let s = slots.length - 1; s >= 0; s--) {
+            const draw = getDraw(week, dayNames[d], slots[s]);
+            if (draw) {
+              leavingNumber = draw;
+              leavingDayIdx = d;
+              leavingSlotIdx = s;
+              leavingSlot = slots[s];
+              leavingDate = getDateForDraw(week, dayNames[d]);
+              break;
+            }
+          }
+          if (leavingNumber) break;
+        }
+        if (leavingNumber) break;
+      }
+    }
+    
+    if (leavingNumber && leavingDayIdx !== -1 && leavingSlotIdx !== -1) {
+      let nextDayIdx = leavingDayIdx;
+      let nextSlotIdx = leavingSlotIdx + 1;
+      
+      if (nextSlotIdx >= slots.length) {
+        nextSlotIdx = 0;
+        nextDayIdx = leavingDayIdx + 1;
+      }
+      
+      if (nextDayIdx >= dayNames.length) {
+        nextDayIdx = 0;
+      }
+      
+      if (nextDayIdx >= 0 && nextDayIdx < dayNames.length) {
+        const targetDay = dayNames[nextDayIdx];
+        const targetSlot = slots[nextSlotIdx];
+        
+        meetingNumber = getDraw(previousWeek, targetDay, targetSlot);
+        if (meetingNumber) {
+          meetingSlot = targetSlot;
+          meetingDate = getDateForDraw(previousWeek, targetDay);
+        }
+        
+        if (!meetingNumber) {
+          for (let w = sortedWeeks.length - 2; w >= 0; w--) {
+            const week = sortedWeeks[w];
+            const draw = getDraw(week, targetDay, targetSlot);
+            if (draw) {
+              meetingNumber = draw;
+              meetingSlot = targetSlot;
+              meetingDate = getDateForDraw(week, targetDay);
+              break;
+            }
+          }
+        }
+        
+        if (!meetingNumber) {
+          const draw = getDraw(currentWeek, targetDay, targetSlot);
+          if (draw) {
+            meetingNumber = draw;
+            meetingSlot = targetSlot;
+            meetingDate = getDateForDraw(currentWeek, targetDay);
+          }
+        }
+      }
+    }
+    
+    return { leavingNumber, leavingSlot, leavingDate, meetingNumber, meetingSlot, meetingDate };
+  }
+
+  const { leavingNumber, leavingSlot, leavingDate, meetingNumber, meetingSlot, meetingDate } = getLeavingMeetingNumbers();
+
+  // ======================================
+  // GET CURRENT & PREVIOUS WEEK DRAWS
+  // ======================================
+
+  function getWeekDraws(week) {
+    const draws = [];
+    if (!week) return draws;
+    for (const day of dayNames) {
+      for (const slot of slots) {
+        const draw = getDraw(week, day, slot);
+        if (draw) draws.push(draw);
+      }
+    }
+    return draws;
+  }
+
+  const currentWeekDraws = getWeekDraws(currentWeek);
+  const previousWeekDraws = getWeekDraws(previousWeek);
+
+  // ======================================
+  // ANALYZE ALL RULES
+  // ======================================
+
+  function analyzeAllRules() {
+    const allRules = [];
+    
+    // Rule 1: Dogs pull dogs
+    const activeDogs = currentWeekDraws.filter(n => dogs.includes(n));
+    const pendingDogs = dogs.filter(n => !currentWeekDraws.includes(n));
+    allRules.push({
+      type: "🐕 DOGS PULL DOGS",
+      numbers: dogs,
+      active: pendingDogs.length > 0 && activeDogs.length > 0,
+      activeNumbers: activeDogs,
+      pendingNumbers: pendingDogs,
+      description: "Dogs played, expect more dogs",
+      priority: 1
+    });
+    
+    // Rule 2: 5 or 31 brings dogs or snakes
+    const triggerPlayed = currentWeekDraws.filter(n => dogSnakeTrigger.includes(n));
+    const pendingSnakes = snakes.filter(n => !currentWeekDraws.includes(n));
+    const pendingDogsRule2 = dogs.filter(n => !currentWeekDraws.includes(n));
+    allRules.push({
+      type: "🐍🐕 5/31 TRIGGER",
+      numbers: [...dogSnakeTrigger, ...snakes, ...dogs],
+      active: triggerPlayed.length > 0 && (pendingSnakes.length > 0 || pendingDogsRule2.length > 0),
+      activeNumbers: triggerPlayed,
+      pendingNumbers: [...pendingSnakes.slice(0, 3), ...pendingDogsRule2.slice(0, 3)],
+      description: `${triggerPlayed.length > 0 ? triggerPlayed.join(', ') : '5 or 31'} played, expect snakes or dogs`,
+      priority: 2
+    });
+    
+    // Rule 3: 2, 19, 12, 21 pull each other
+    const group3Played = currentWeekDraws.filter(n => group3.includes(n));
+    const pendingGroup3 = group3.filter(n => !currentWeekDraws.includes(n));
+    allRules.push({
+      type: "🔗 2/19/12/21 PULL",
+      numbers: group3,
+      active: group3Played.length > 0 && pendingGroup3.length > 0,
+      activeNumbers: group3Played,
+      pendingNumbers: pendingGroup3,
+      description: `${group3Played.length > 0 ? group3Played.join(', ') : '2/19/12/21'} played, expect from group`,
+      priority: 3
+    });
+    
+    // Rule 4: Wappi or Pull Down brings Doubles
+    const hasWappi = currentWeekDraws.some((n, i, arr) => i > 0 && n === arr[i-1]);
+    const hasPullDown = currentWeekDraws.some(n => previousWeekDraws.includes(n));
+    const pendingDoubles = doubles.filter(n => !currentWeekDraws.includes(n));
+    allRules.push({
+      type: "🔢 WAPPI/PULL → DOUBLES",
+      numbers: doubles,
+      active: (hasWappi || hasPullDown) && pendingDoubles.length > 0,
+      activeNumbers: currentWeekDraws.filter(n => doubles.includes(n)),
+      pendingNumbers: pendingDoubles,
+      description: `${hasWappi ? 'Wappi' : ''}${hasWappi && hasPullDown ? ' & ' : ''}${hasPullDown ? 'Pull Down' : 'Wappi/Pull Down'} detected, expect doubles`,
+      priority: 4
+    });
+    
+    // Rule 5: Man pulls man
+    const manPlayed = currentWeekDraws.filter(n => man.includes(n));
+    const pendingMan = man.filter(n => !currentWeekDraws.includes(n));
+    allRules.push({
+      type: "👤 MAN PULLS MAN",
+      numbers: man,
+      active: manPlayed.length > 0 && pendingMan.length > 0,
+      activeNumbers: manPlayed,
+      pendingNumbers: pendingMan,
+      description: `${manPlayed.length > 0 ? manPlayed.join(', ') : 'Man'} played, expect more man numbers`,
+      priority: 5
+    });
+    
+    // Rule 6: 23 brings birds and snakes
+    const has23 = currentWeekDraws.includes(23);
+    const pendingBirdsRule6 = birds.filter(n => !currentWeekDraws.includes(n));
+    const pendingSnakesRule6 = snakes.filter(n => !currentWeekDraws.includes(n));
+    allRules.push({
+      type: "🏡 23 → BIRDS & SNAKES",
+      numbers: [23, ...birds, ...snakes],
+      active: has23 && (pendingBirdsRule6.length > 0 || pendingSnakesRule6.length > 0),
+      activeNumbers: [23],
+      pendingNumbers: [...pendingBirdsRule6.slice(0, 3), ...pendingSnakesRule6.slice(0, 3)],
+      description: has23 ? "23 played, expect birds and snakes" : "23 not played yet",
+      priority: 6
+    });
+    
+    // Rule 7: 5 line brings back 5 line or 9 line
+    const line5Played = currentWeekDraws.filter(n => line5.includes(n));
+    const pendingLine5 = line5.filter(n => !currentWeekDraws.includes(n));
+    const pendingLine9 = line9.filter(n => !currentWeekDraws.includes(n));
+    allRules.push({
+      type: "📏 5 LINE → 5/9 LINE",
+      numbers: [...line5, ...line9],
+      active: line5Played.length > 0 && (pendingLine5.length > 0 || pendingLine9.length > 0),
+      activeNumbers: line5Played,
+      pendingNumbers: [...pendingLine5.slice(0, 2), ...pendingLine9.slice(0, 2)],
+      description: `${line5Played.length > 0 ? '5 line' : '5 line'} played, expect 5 or 9 line`,
+      priority: 7
+    });
+    
+    // Rule 8: Birds will bring birds
+    const birdsPlayed = currentWeekDraws.filter(n => birds.includes(n));
+    const pendingBirdsRule8 = birds.filter(n => !currentWeekDraws.includes(n));
+    allRules.push({
+      type: "🐦 BIRDS → BIRDS",
+      numbers: birds,
+      active: birdsPlayed.length > 0 && pendingBirdsRule8.length > 0,
+      activeNumbers: birdsPlayed,
+      pendingNumbers: pendingBirdsRule8.slice(0, 4),
+      description: `${birdsPlayed.length > 0 ? birdsPlayed.join(', ') : 'Birds'} played, expect more birds`,
+      priority: 8
+    });
+    
+    // Rule 9: 11 play → doubles, wappi, birds roof(23), snakes, birds
+    const has11 = currentWeekDraws.includes(11);
+    const pendingDoublesRule9 = doubles.filter(n => !currentWeekDraws.includes(n));
+    const pendingBirdsRule9 = birds.filter(n => !currentWeekDraws.includes(n));
+    const pendingSnakesRule9 = snakes.filter(n => !currentWeekDraws.includes(n));
+    allRules.push({
+      type: "🦅 11 → DOUBLES/WAPPI/BIRDS/SNAKES",
+      numbers: [11, ...doubles, ...birds, ...snakes],
+      active: has11 && (pendingDoublesRule9.length > 0 || pendingBirdsRule9.length > 0 || pendingSnakesRule9.length > 0),
+      activeNumbers: [11],
+      pendingNumbers: [...pendingDoublesRule9.slice(0, 2), ...pendingBirdsRule9.slice(0, 2), ...pendingSnakesRule9.slice(0, 2)],
+      description: has11 ? "11 played, expect doubles, birds, snakes" : "11 not played yet",
+      priority: 9
+    });
+    
+    // Rule 10: 22 play → 8, 30, doubles, 8 line, 3 line or suit
+    const has22 = currentWeekDraws.includes(22);
+    const pendingDoublesRule10 = doubles.filter(n => !currentWeekDraws.includes(n));
+    const eightAndThirty = [8, 30].filter(n => !currentWeekDraws.includes(n));
+    const line8Nums = Object.keys(numToLineMap).filter(key => numToLineMap[key] === 8).map(Number);
+    const pendingLine8 = line8Nums.filter(n => !currentWeekDraws.includes(n));
+    const line3Nums = Object.keys(numToLineMap).filter(key => numToLineMap[key] === 3).map(Number);
+    const pendingLine3 = line3Nums.filter(n => !currentWeekDraws.includes(n));
+    allRules.push({
+      type: "🐀 22 → 8/30/DOUBLES/8LINE/3LINE",
+      numbers: [22, 8, 30, ...doubles, ...line8Nums, ...line3Nums],
+      active: has22 && (pendingDoublesRule10.length > 0 || eightAndThirty.length > 0 || pendingLine8.length > 0 || pendingLine3.length > 0),
+      activeNumbers: [22],
+      pendingNumbers: [...pendingDoublesRule10.slice(0, 2), ...eightAndThirty.slice(0, 2), ...pendingLine8.slice(0, 2), ...pendingLine3.slice(0, 2)],
+      description: has22 ? "22 played, expect 8, 30, doubles, 8 or 3 line" : "22 not played yet",
+      priority: 10
+    });
+    
+    // Rule 11: 10 play → 13, 17, zeros
+    const has10 = currentWeekDraws.includes(10);
+    const thirteenSeventeen = [13, 17].filter(n => !currentWeekDraws.includes(n));
+    const pendingZeros = zeros.filter(n => !currentWeekDraws.includes(n));
+    allRules.push({
+      type: "0️⃣ 10 → 13/17/ZEROS",
+      numbers: [10, 13, 17, ...zeros],
+      active: has10 && (thirteenSeventeen.length > 0 || pendingZeros.length > 0),
+      activeNumbers: [10],
+      pendingNumbers: [...thirteenSeventeen, ...pendingZeros],
+      description: has10 ? "10 played, expect 13, 17, or zeros" : "10 not played yet",
+      priority: 11
+    });
+    
+    allRules.sort((a, b) => a.priority - b.priority);
+    return allRules;
+  }
+
+  const allRules = analyzeAllRules();
+
+  // ======================================
+  // RENDER FUNCTIONS
+  // ======================================
+
+  function formatDateDisplay(date) {
+    if (!date) return "No data";
+    const days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    return `${days[date.getDay()]} ${date.getDate()} ${months[date.getMonth()]} '${date.getFullYear().toString().slice(-2)}`;
+  }
+
+  function renderPatternAnalysis() {
+    // Leaving/Meeting display
+    const leavingDisplay = leavingNumber ? 
+      `<span style="font-size: 18px; font-weight: 900; color: var(--text-main, #58a6ff);">${leavingNumber}${spiritEmoji[leavingNumber] || ''}</span>
+       <span style="font-size: 8px; color: var(--text-dim, #64748b);">${leavingSlot || ''}</span>
+       <span style="font-size: 7px; color: var(--text-dim, #64748b);">${leavingDate ? formatDateDisplay(leavingDate) : ''}</span>` : 
+      '<span style="color: var(--text-dim, #64748b);">—</span>';
+    
+    const meetingDisplay = meetingNumber ? 
+      `<span style="font-size: 18px; font-weight: 900; color: var(--text-main, #ff9d00);">${meetingNumber}${spiritEmoji[meetingNumber] || ''}</span>
+       <span style="font-size: 8px; color: var(--text-dim, #64748b);">${meetingSlot || ''}</span>
+       <span style="font-size: 7px; color: var(--text-dim, #64748b);">${meetingDate ? formatDateDisplay(meetingDate) : ''}</span>` : 
+      '<span style="color: var(--text-dim, #64748b);">—</span>';
+
+    // ALL Rules - both active and inactive
+    const rulesHtml = allRules.map(rule => {
+      const isActive = rule.active;
+      const bgColor = isActive ? 'var(--card-bg, rgba(255,215,0,0.05))' : 'var(--card-bg, rgba(255,255,255,0.01))';
+      const borderColor = isActive ? 'rgba(255,215,0,0.2)' : 'var(--border-color, rgba(255,255,255,0.03))';
+      const statusIcon = isActive ? '✅' : '⏳';
+      const statusColor = isActive ? '#32d74b' : '#64748b';
+      
+      const triggerHtml = rule.activeNumbers && rule.activeNumbers.length > 0 ?
+        rule.activeNumbers.map(n => `
+          <span style="display: inline-block; padding: 1px 4px; border-radius: 3px; background: #ff9d0033; color: #ffd700; font-weight: 700; font-size: 9px; margin: 0 1px;">
+            ${n}${spiritEmoji[n] || ''}
+          </span>
+        `).join(' ') : 
+        '<span style="color: var(--text-dim, #64748b); font-size: 8px;">Waiting</span>';
+      
+      const pendingHtml = rule.pendingNumbers && rule.pendingNumbers.length > 0 ?
+        rule.pendingNumbers.map(n => `
+          <span style="display: inline-block; padding: 1px 4px; border-radius: 3px; background: #32d74b33; color: #32d74b; font-weight: 700; font-size: 9px; margin: 0 1px;">
+            ${n}${spiritEmoji[n] || ''}
+          </span>
+        `).join(' ') : 
+        '<span style="color: var(--text-dim, #64748b); font-size: 8px;">Complete</span>';
+      
+      return `
+        <div style="display: flex; align-items: center; gap: 6px; padding: 3px 6px; background: ${bgColor}; border-bottom: 1px solid ${borderColor}; ${isActive ? 'border-left: 2px solid #ffd700;' : ''}">
+          <div style="min-width: 18px; font-size: 10px;">${statusIcon}</div>
+          <div style="min-width: 55px;">
+            <span style="font-size: 7px; font-weight: 700; color: ${isActive ? '#ffd700' : 'var(--text-dim, #64748b)'};">${rule.type}</span>
+          </div>
+          <div style="display: flex; align-items: center; gap: 3px; flex-wrap: wrap; flex: 1;">
+            <span style="font-size: 6px; color: var(--text-dim, #64748b);">→</span>
+            <span style="font-size: 6px; color: var(--text-dim, #64748b);">TRIGGER:</span>
+            <span style="display: flex; gap: 1px; flex-wrap: wrap;">${triggerHtml}</span>
+            <span style="font-size: 6px; color: var(--text-dim, #64748b);">→</span>
+            <span style="font-size: 6px; color: var(--text-dim, #64748b);">EXPECT:</span>
+            <span style="display: flex; gap: 1px; flex-wrap: wrap;">${pendingHtml}</span>
+          </div>
+          <div style="font-size: 5px; color: ${statusColor}; min-width: 30px; text-align: right;">
+            ${isActive ? 'ACTIVE' : 'PENDING'}
+          </div>
+        </div>
+      `;
+    }).join('');
+
+    return `
+      <div style="margin-top: 6px; padding-top: 6px; border-top: 1px dashed var(--border-color, rgba(255,255,255,0.06));">
+        <div style="font-size: 10px; font-weight: 800; color: var(--text-main, #ff9d00); margin-bottom: 4px; text-align: center; letter-spacing: 0.3px;">
+          🔍 ALL RULES ANALYSIS (${allRules.filter(r => r.active).length} ACTIVE • ${allRules.filter(r => !r.active).length} PENDING)
+        </div>
+        
+        <!-- Leaving/Meeting -->
+        <div style="display: flex; gap: 8px; margin-bottom: 6px;">
+          <div style="flex: 1; background: var(--card-bg, rgba(88,166,255,0.06)); border-radius: 4px; padding: 4px 8px; text-align: center; border: 1px solid rgba(88,166,255,0.2);">
+            <div style="font-size: 7px; font-weight: 800; color: #58a6ff; text-transform: uppercase; letter-spacing: 0.3px;">LEAVING</div>
+            <div style="display: flex; align-items: center; justify-content: center; gap: 4px; flex-wrap: wrap;">${leavingDisplay}</div>
+            <div style="font-size: 6px; color: var(--text-dim, #64748b);">${leavingNumber ? getLineName(leavingNumber) : ''} ${leavingNumber ? getGroupEmoji(leavingNumber) : ''}</div>
+          </div>
+          <div style="flex: 1; background: var(--card-bg, rgba(255,157,0,0.06)); border-radius: 4px; padding: 4px 8px; text-align: center; border: 1px solid rgba(255,157,0,0.2);">
+            <div style="font-size: 7px; font-weight: 800; color: #ff9d00; text-transform: uppercase; letter-spacing: 0.3px;">MEETING</div>
+            <div style="display: flex; align-items: center; justify-content: center; gap: 4px; flex-wrap: wrap;">${meetingDisplay}</div>
+            <div style="font-size: 6px; color: var(--text-dim, #64748b);">${meetingNumber ? getLineName(meetingNumber) : ''} ${meetingNumber ? getGroupEmoji(meetingNumber) : ''}</div>
+          </div>
+        </div>
+        
+        <!-- All Rules -->
+        <div style="background: var(--card-bg, rgba(255,255,255,0.02)); border-radius: 4px; border: 1px solid var(--border-color, rgba(255,255,255,0.04)); padding: 4px 6px; max-height: 400px; overflow-y: auto;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px; padding: 0 2px;">
+            <span style="font-size: 7px; font-weight: 700; color: var(--text-main, #ff9d00);">📋 RULES STATUS</span>
+            <div style="display: flex; gap: 8px; font-size: 6px;">
+              <span style="color: #32d74b;">✅ ${allRules.filter(r => r.active).length} Active</span>
+              <span style="color: #64748b;">⏳ ${allRules.filter(r => !r.active).length} Pending</span>
+            </div>
+          </div>
+          ${rulesHtml}
+        </div>
+        
+        <div style="font-size: 6px; color: var(--text-dim, #64748b); text-align: center; margin-top: 3px;">
+          Based on all Play Whe rules • ✅ Active rules have triggers • ⏳ Pending rules waiting for triggers
+        </div>
+      </div>
+    `;
+  }
+
+  // ======================================
+  // BUILD THE HTML
+  // ======================================
+
+  const patternAnalysisHtml = renderPatternAnalysis();
+
+  return `
+    <div style="
+      background: var(--bg-start, linear-gradient(135deg, #0f172a, #1e293b));
+      border-radius: 16px; 
+      padding: 10px; 
+      margin-bottom: 15px; 
+      border: 1px solid var(--border-color, #ff9d00);
+    ">
+      
+      <!-- Header -->
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; flex-wrap: wrap; gap: 4px;">
+        <div>
+          <div style="font-size: 13px; font-weight: 800; color: var(--text-main, #ff9d00); letter-spacing: 0.3px;">
+            ♠️ PLAY WHE PATTERN & RULES ANALYSIS
+          </div>
+          <div style="font-size: 7px; color: var(--text-dim, #64748b); margin-top: 1px;">
+            All 11 rules • ACTIVE/PENDING status • TRIGGER → EXPECT
+          </div>
+        </div>
+        <div style="display: flex; align-items: center; gap: 4px; font-size: 6px; color: var(--text-dim, #94a3b8);">
+          <span style="color: #ff9d00; font-weight: bold; font-size: 6px;">${globalTrackingCode}</span>
+        </div>
+      </div>
+      
+      <!-- Pattern Analysis -->
+      ${patternAnalysisHtml}
+      
+      <!-- Footer -->
+      <div style="margin-top: 4px; padding-top: 4px; border-top: 1px solid var(--border-color, rgba(255,255,255,0.02)); display: flex; justify-content: center; align-items: center; gap: 6px; flex-wrap: wrap;">
+        <span style="font-size: 6px; color: var(--text-dim, #64748b);">CodeWithGlasgow • CWG Chart Analysis ©️</span>
+        <span style="font-size: 6px; color: var(--text-dim, #64748b);">Updated: ${new Date().toLocaleDateString()}</span>
+      </div>
+      
+    </div>
+  `;
+}
+//////////////////////////////////////////
 
 // ======================================
 // DISPLAY CHART 
 // ======================================
 // ======================================
-// FULL SCREEN PLAY WHE CHART VIEW 
+// FULL SCREEN PLAY WHE CHART VIEW v1
 // ======================================
 function playWheChartOnly(weeksData) {
     // Define variables inside the function
@@ -10196,7 +27386,7 @@ function playWheChartOnly(weeksData) {
         .playwhe-chart-wrapper th,
         .playwhe-chart-wrapper td {
             padding: 2px 1px;
-            border: 1px solid #cccccc !important;
+            border: none !important;
             text-align: center;
             font-weight: 700;
             overflow: hidden;
@@ -10212,38 +27402,44 @@ function playWheChartOnly(weeksData) {
             font-weight: 800;
             font-size: 8px;
             background: #f5f5f5 !important;
-            border: 1px solid #cccccc !important;
+            border: none !important;
         }
         .playwhe-chart-wrapper td.week-label {
             font-size: 8px;
             background: #f0f0f0 !important;
             padding: 2px 1px;
             width: 8%;
-            border: 1px solid #cccccc !important;
+            border: none !important;
             color: #000000 !important;
         }
-        .playwhe-chart-wrapper td.day-border {
-            border-left: 3px solid #000000 !important;
-        }
-        .playwhe-chart-wrapper td.holiday {
-            color: #ff0000 !important;
-            font-weight: bold;
+
+        /* ================================
+           HOLIDAY - RED CELLS so holidays
+           clearly stand out to the viewer
+           ================================ */
+        .playwhe-chart-wrapper td.holiday-cell {
+            background: #ffc9c9 !important;
+            color: #cc0000 !important;
+            border: none !important;
             font-size: 8px;
-            background: #fff5f5 !important;
+            font-weight: 900 !important;
             text-align: center;
-            border: 1px solid #cccccc !important;
         }
+
+        /* ================================
+           ZEBRA STRIPES (VISIBLE CONTRAST)
+           ================================ */
         .playwhe-chart-wrapper .row-odd td {
-            background: #fafafa !important;
+            background: #f1f1f1 !important;
         }
         .playwhe-chart-wrapper .row-even td {
             background: #ffffff !important;
         }
         .playwhe-chart-wrapper .row-odd td.week-label {
-            background: #f0f0f0 !important;
+            background: #e4e4e4 !important;
         }
         .playwhe-chart-wrapper .row-even td.week-label {
-            background: #f0f0f0 !important;
+            background: #eeeeee !important;
         }
         .playwhe-chart-wrapper .row-current td {
             background: #fff70f !important;
@@ -10252,14 +27448,56 @@ function playWheChartOnly(weeksData) {
             background: #53f736 !important;
             color: #000000 !important;
         }
-        .playwhe-chart-wrapper td.leaving-highlight {
+
+        /* ============================================
+           DAY COLOR SEPARATION (GREY) - Mon, Wed, Fri
+           ============================================ */
+        .playwhe-chart-wrapper th.day-mon,
+        .playwhe-chart-wrapper th.day-wed,
+        .playwhe-chart-wrapper th.day-fri {
+            background: #cfcfcf !important;
+            color: #000000 !important;
+        }
+
+        .playwhe-chart-wrapper .row-odd td.day-mon,
+        .playwhe-chart-wrapper .row-odd td.day-wed,
+        .playwhe-chart-wrapper .row-odd td.day-fri {
+            background: #dcdcdc !important;
+        }
+
+        .playwhe-chart-wrapper .row-even td.day-mon,
+        .playwhe-chart-wrapper .row-even td.day-wed,
+        .playwhe-chart-wrapper .row-even td.day-fri {
+            background: #e7e7e7 !important;
+        }
+
+        .playwhe-chart-wrapper .row-current td.day-mon,
+        .playwhe-chart-wrapper .row-current td.day-wed,
+        .playwhe-chart-wrapper .row-current td.day-fri {
+            background: #ffeb70 !important;
+        }
+
+        /* Holiday cells keep their RED look even inside separated days / current week */
+        .playwhe-chart-wrapper tr.row-odd td.holiday-cell,
+        .playwhe-chart-wrapper tr.row-even td.holiday-cell,
+        .playwhe-chart-wrapper tr.row-current td.holiday-cell {
+            background: #ffc9c9 !important;
+            color: #cc0000 !important;
+        }
+
+        /* HIGHLIGHTS - boosted specificity so they always win over zebra/day backgrounds */
+        .playwhe-chart-wrapper tr.row-odd td.leaving-highlight,
+        .playwhe-chart-wrapper tr.row-even td.leaving-highlight,
+        .playwhe-chart-wrapper tr.row-current td.leaving-highlight {
             background: #00f2ff !important;
             color: #000000 !important;
             font-weight: 900 !important;
             box-shadow: inset 0 0 20px rgba(0, 242, 255, 0.3);
             border: 1px solid #00d4e6 !important;
         }
-        .playwhe-chart-wrapper td.meeting-highlight {
+        .playwhe-chart-wrapper tr.row-odd td.meeting-highlight,
+        .playwhe-chart-wrapper tr.row-even td.meeting-highlight,
+        .playwhe-chart-wrapper tr.row-current td.meeting-highlight {
             background: #ff9d00 !important;
             color: #000000 !important;
             font-weight: 900 !important;
@@ -10402,10 +27640,6 @@ function playWheChartOnly(weeksData) {
             .playwhe-chart-wrapper .lm-box {
                 padding: 4px 6px;
             }
-            .playwhe-chart-wrapper th.day-border,
-            .playwhe-chart-wrapper td.day-border {
-                border-left: 2px solid #000000 !important;
-            }
         }
         @media (max-width: 380px) {
             .playwhe-chart-wrapper table {
@@ -10474,8 +27708,11 @@ function playWheChartOnly(weeksData) {
     
     // Day headers
     for (let i = 0; i < dayShort.length; i++) {
-        const borderClass = i > 0 ? 'day-border' : '';
-        html += `<th colspan="4" class="${borderClass}">${dayShort[i]}</th>`;
+        let dayClass = '';
+        if (i === 1) dayClass = 'day-mon';
+        else if (i === 3) dayClass = 'day-wed';
+        else if (i === 5) dayClass = 'day-fri';
+        html += `<th colspan="4" class="${dayClass}">${dayShort[i]}</th>`;
     }
     
     html += `</tr></thead><tbody>`;
@@ -10493,7 +27730,10 @@ function playWheChartOnly(weeksData) {
             const dayName = daysOfWeek[d];
             const day = week.days.find(dy => dy.dayName === dayName);
             
-            const borderClass = d > 0 ? 'day-border' : '';
+            let dayClass = '';
+            if (d === 1) dayClass = 'day-mon';
+            else if (d === 3) dayClass = 'day-wed';
+            else if (d === 5) dayClass = 'day-fri';
             
             // Check if day is a holiday or has no draws
             let isHoliday = false;
@@ -10509,7 +27749,10 @@ function playWheChartOnly(weeksData) {
             }
             
             if (isHoliday) {
-                html += `<td colspan="4" class="holiday ${borderClass}">HOLIDAY</td>`;
+                // 4 separate RED cells so the holiday is unmistakable
+                for (let s = 0; s < timeOrder.length; s++) {
+                    html += `<td class="holiday-cell ${dayClass}">-</td>`;
+                }
                 continue;
             }
             
@@ -10529,8 +27772,7 @@ function playWheChartOnly(weeksData) {
                     }
                 }
                 
-                const cellClass = s === 0 && d > 0 ? borderClass : '';
-                const combinedClass = [cellClass, highlightClass].filter(c => c).join(' ');
+                const combinedClass = [dayClass, highlightClass].filter(c => c).join(' ');
                 
                 if (isCurrent && !isValid) {
                     if (isDayPassed(week.startDate, d)) {
@@ -10563,6 +27805,7 @@ function playWheChartOnly(weeksData) {
     
     return html;
 }
+
 
 // ======================================
 // HELPER FOR PLAY WHE CHART ONLY
@@ -10724,6 +27967,1535 @@ function isDayPassed(weekStartDate, dayIndex) {
 
 ///////////////////////////////////////////
 // ======================================
+// FULL SCREEN PLAY WHE CHART VIEW v2
+// WITH SHELF MARKS & DOUBLES/TRIPLES/QUADRUPLES
+// ======================================
+function playWheChartOnlyv2(weeksData) {
+    // Define variables inside the function
+    const dayShort = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
+    const daysOfWeek = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+    const timeOrder = ["MOR", "MID", "NON", "EVE"];
+    const doubleNumbers = [8, 11, 22, 33];
+    
+    if (!weeksData || weeksData.length === 0) {
+        return '<div style="text-align:center;padding:40px;color:#999;">No data available</div>';
+    }
+    
+    // Get last 30 weeks
+    const sortedWeeks = [...weeksData].sort((a, b) => {
+        let pa = a.startDate.split(" ");
+        let pb = b.startDate.split(" ");
+        return new Date(pa[2] + "-" + pa[1] + "-" + pa[0]) - new Date(pb[2] + "-" + pb[1] + "-" + pb[0]);
+    });
+    const displayWeeks = sortedWeeks.slice(-30);
+    const currentWeek = displayWeeks[displayWeeks.length - 1];
+    const previousWeek = displayWeeks.length >= 2 ? displayWeeks[displayWeeks.length - 2] : currentWeek;
+    
+    // Helper to trim leading zeros
+    function trimLeadingZeros(str) {
+        if (!str) return "";
+        const num = parseInt(str, 10);
+        return !isNaN(num) ? num.toString() : str;
+    }
+
+    // Helper to get draw number
+    function getDrawNumber(week, dayName, slot) {
+        if (!week) return null;
+        const day = week.days.find(d => d.dayName === dayName);
+        if (!day) return null;
+        const val = day.draws[slot];
+        if (!val || val === "-" || val === "PENDING" || val === "HOLIDAY") return null;
+        const num = parseInt(val, 10);
+        return !isNaN(num) && num >= 1 && num <= 36 ? num : null;
+    }
+
+    // Helper to check if a draw has actually occurred
+    function hasDrawOccurred(weekStartDate, dayIndex, slotIndex) {
+        if (!weekStartDate) return false;
+        const parts = weekStartDate.split(" ");
+        const monthMap = {"Jan":0,"Feb":1,"Mar":2,"Apr":3,"May":4,"Jun":5,"Jul":6,"Aug":7,"Sep":8,"Oct":9,"Nov":10,"Dec":11};
+        const startDate = new Date(parts[2], monthMap[parts[1]], parseInt(parts[0]));
+        const targetDate = new Date(startDate);
+        targetDate.setDate(startDate.getDate() + dayIndex);
+        const timeOffsets = [9, 12, 15, 18];
+        targetDate.setHours(timeOffsets[slotIndex] || 12);
+        return targetDate < new Date();
+    }
+
+    // Helper to get the date of a specific draw
+    function getDrawDate(weekStartDate, dayIndex, slotIndex) {
+        if (!weekStartDate) return null;
+        const parts = weekStartDate.split(" ");
+        const monthMap = {"Jan":0,"Feb":1,"Mar":2,"Apr":3,"May":4,"Jun":5,"Jul":6,"Aug":7,"Sep":8,"Oct":9,"Nov":10,"Dec":11};
+        const startDate = new Date(parts[2], monthMap[parts[1]], parseInt(parts[0]));
+        const targetDate = new Date(startDate);
+        targetDate.setDate(startDate.getDate() + dayIndex);
+        return targetDate;
+    }
+
+    // Helper to check if a day has passed
+    function isDayPassed(weekStartDate, dayIndex) {
+        if (!weekStartDate) return false;
+        const parts = weekStartDate.split(" ");
+        const monthMap = {"Jan":0,"Feb":1,"Mar":2,"Apr":3,"May":4,"Jun":5,"Jul":6,"Aug":7,"Sep":8,"Oct":9,"Nov":10,"Dec":11};
+        const startDate = new Date(parts[2], monthMap[parts[1]], parseInt(parts[0]));
+        const targetDate = new Date(startDate);
+        targetDate.setDate(startDate.getDate() + dayIndex);
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        return targetDate < today;
+    }
+
+    // SCAN ALL WEEKS to find the LAST occurrence of each number
+    const lastOccurrence = {};
+    
+    // Get today's information
+    const today = new Date();
+    const todayDay = today.getDay();
+    const todayHour = today.getHours();
+    
+    // Determine current slot
+    let currentSlot = -1;
+    if (todayHour >= 9 && todayHour < 12) currentSlot = 0;
+    else if (todayHour >= 12 && todayHour < 15) currentSlot = 1;
+    else if (todayHour >= 15 && todayHour < 18) currentSlot = 2;
+    else if (todayHour >= 18) currentSlot = 3;
+    
+    // SCAN BACKWARDS from current moment
+    // First scan current week from current day backwards
+    for (let d = todayDay; d >= 0; d--) {
+        const maxSlot = (d === todayDay) ? currentSlot : timeOrder.length - 1;
+        for (let s = maxSlot; s >= 0; s--) {
+            if (hasDrawOccurred(currentWeek.startDate, d, s)) {
+                const num = getDrawNumber(currentWeek, daysOfWeek[d], timeOrder[s]);
+                if (num && !lastOccurrence[num]) {
+                    lastOccurrence[num] = {
+                        week: currentWeek,
+                        weekIndex: displayWeeks.length - 1,
+                        day: daysOfWeek[d],
+                        slot: timeOrder[s],
+                        dayIndex: d,
+                        slotIndex: s,
+                        date: getDrawDate(currentWeek.startDate, d, s)
+                    };
+                }
+            }
+        }
+    }
+    
+    // Then scan previous weeks from last to first
+    for (let w = sortedWeeks.length - 2; w >= 0; w--) {
+        const week = sortedWeeks[w];
+        for (let d = daysOfWeek.length - 1; d >= 0; d--) {
+            for (let s = timeOrder.length - 1; s >= 0; s--) {
+                if (hasDrawOccurred(week.startDate, d, s)) {
+                    const num = getDrawNumber(week, daysOfWeek[d], timeOrder[s]);
+                    if (num && !lastOccurrence[num]) {
+                        lastOccurrence[num] = {
+                            week: week,
+                            weekIndex: w,
+                            day: daysOfWeek[d],
+                            slot: timeOrder[s],
+                            dayIndex: d,
+                            slotIndex: s,
+                            date: getDrawDate(week.startDate, d, s)
+                        };
+                    }
+                }
+            }
+        }
+    }
+
+    // Calculate days since last played for each number
+function getDaysSince(num) {
+  if (!lastOccurrence[num]) return 999;
+  const lastDate = lastOccurrence[num].date;
+  if (!lastDate) return 999;
+  
+  // Create a date at midnight for the last occurrence
+  const lastMidnight = new Date(lastDate);
+  lastMidnight.setHours(0, 0, 0, 0);
+  
+  // Create a date at midnight for today
+  const todayMidnight = new Date();
+  todayMidnight.setHours(0, 0, 0, 0);
+  
+  // Calculate the difference in days
+  const diffTime = todayMidnight.getTime() - lastMidnight.getTime();
+  const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+  
+  return Math.max(0, diffDays);
+}
+
+    // Get the date string for display
+    function getDateString(num) {
+        if (!lastOccurrence[num]) return "Never";
+        const last = lastOccurrence[num];
+        if (!last.date) return "Never";
+        const date = new Date(last.date);
+        const day = date.getDate();
+        const month = date.toLocaleString('default', { month: 'short' });
+        const year = date.getFullYear();
+        return `${day} ${month} ${year}`;
+    }
+
+    // Get current week draws (only occurred)
+    const currentWeekDraws = [];
+    for (let d = 0; d < daysOfWeek.length; d++) {
+        for (let s = 0; s < timeOrder.length; s++) {
+            if (hasDrawOccurred(currentWeek.startDate, d, s)) {
+                const draw = getDrawNumber(currentWeek, daysOfWeek[d], timeOrder[s]);
+                if (draw) currentWeekDraws.push(draw);
+            }
+        }
+    }
+
+    // Get previous week draws
+    const previousWeekDraws = [];
+    for (const day of daysOfWeek) {
+        for (const slot of timeOrder) {
+            const draw = getDrawNumber(previousWeek, day, slot);
+            if (draw) previousWeekDraws.push(draw);
+        }
+    }
+
+    // Count occurrences in previous and current week
+    const prevWeekCounts = {};
+    const currWeekCounts = {};
+    for (let i = 1; i <= 36; i++) {
+        prevWeekCounts[i] = 0;
+        currWeekCounts[i] = 0;
+    }
+    previousWeekDraws.forEach(num => { prevWeekCounts[num] = (prevWeekCounts[num] || 0) + 1; });
+    currentWeekDraws.forEach(num => { currWeekCounts[num] = (currWeekCounts[num] || 0) + 1; });
+
+    // Determine if a number is a shelf mark
+    function isShelfMark(num) {
+        const days = getDaysSince(num);
+        if (days === "Never") return false;
+        if (days === 0) return false;
+        
+        // If played in current week, NOT a shelf mark
+        if (currentWeekDraws.includes(num)) return false;
+        
+        // Check if scheduled for future in current week
+        for (let d = 0; d < daysOfWeek.length; d++) {
+            for (let s = 0; s < timeOrder.length; s++) {
+                if (d < todayDay || (d === todayDay && s <= currentSlot)) continue;
+                const draw = getDrawNumber(currentWeek, daysOfWeek[d], timeOrder[s]);
+                if (draw === num) {
+                    return false; // Scheduled for future
+                }
+            }
+        }
+        
+        // Shelf mark if over 14 days
+        return days > 14;
+    }
+
+    // Get shelf marks with their data
+    const shelfMarksData = [];
+    for (let i = 1; i <= 36; i++) {
+        if (isShelfMark(i)) {
+            const days = getDaysSince(i);
+            const dateStr = getDateString(i);
+            shelfMarksData.push({
+                number: i,
+                days: days,
+                lastPlayed: dateStr,
+                displayNum: trimLeadingZeros(String(i))
+            });
+        }
+    }
+    
+    // Sort shelf marks by days (most overdue first)
+    shelfMarksData.sort((a, b) => b.days - a.days);
+
+    // --- Calculate Combined Categories (HIDE COMPLETED) ---
+    
+    // DOUBLES CATEGORY (Only 8, 11, 22, 33) - Hide completed
+    const doubles = [];
+    doubleNumbers.forEach(num => {
+        const prevCount = prevWeekCounts[num] || 0;
+        const currCount = currWeekCounts[num] || 0;
+        
+        // SKIP if already completed (currCount >= 2)
+        if (currCount >= 2) return;
+        
+        let status = 0;
+        let label = 'Missing';
+        let color = '#ffffff';
+        let textColor = '#000000';
+        
+        if (prevCount === 1 && currCount === 0) {
+            status = 1;
+            label = 'Pending (LW)';
+            color = '#7c02b5';
+            textColor = '#ffffff';
+        } else if (currCount === 1) {
+            status = 2;
+            label = '1 Hit (CW)';
+            color = '#32d74b';
+            textColor = '#000000';
+        }
+        
+        doubles.push({
+            num: num,
+            status: status,
+            label: label,
+            color: color,
+            textColor: textColor,
+            display: trimLeadingZeros(String(num))
+        });
+    });
+
+    // TRIPLES CATEGORY - Hide completed (currCount >= 3)
+    const triples = [];
+    for (let i = 1; i <= 36; i++) {
+        const prevCount = prevWeekCounts[i] || 0;
+        const currCount = currWeekCounts[i] || 0;
+        
+        // SKIP if already completed (currCount >= 3)
+        if (currCount >= 3) continue;
+        
+        let include = false;
+        let status = 0;
+        let label = 'Pending';
+        let color = '#7c02b5';
+        let textColor = '#ffffff';
+        
+        if (prevCount === 2 && currCount === 0) {
+            include = true;
+            status = 1;
+            label = 'Pending (LW)';
+            color = '#7c02b5';
+            textColor = '#ffffff';
+        } else if (currCount === 2) {
+            include = true;
+            status = 2;
+            label = '2 Hits (CW)';
+            color = '#32d74b';
+            textColor = '#000000';
+        }
+        
+        if (include) {
+            triples.push({
+                num: i,
+                status: status,
+                label: label,
+                color: color,
+                textColor: textColor,
+                display: trimLeadingZeros(String(i))
+            });
+        }
+    }
+    triples.sort((a, b) => a.num - b.num);
+
+    // QUADRUPLES CATEGORY - Hide completed (currCount >= 4)
+    const quadruples = [];
+    for (let i = 1; i <= 36; i++) {
+        const prevCount = prevWeekCounts[i] || 0;
+        const currCount = currWeekCounts[i] || 0;
+        
+        // SKIP if already completed (currCount >= 4)
+        if (currCount >= 4) continue;
+        
+        let include = false;
+        let status = 0;
+        let label = 'Pending';
+        let color = '#7c02b5';
+        let textColor = '#ffffff';
+        
+        if (prevCount === 3 && currCount === 0) {
+            include = true;
+            status = 1;
+            label = 'Pending (LW)';
+            color = '#7c02b5';
+            textColor = '#ffffff';
+        } else if (currCount === 3) {
+            include = true;
+            status = 2;
+            label = '3 Hits (CW)';
+            color = '#32d74b';
+            textColor = '#000000';
+        }
+        
+        if (include) {
+            quadruples.push({
+                num: i,
+                status: status,
+                label: label,
+                color: color,
+                textColor: textColor,
+                display: trimLeadingZeros(String(i))
+            });
+        }
+    }
+    quadruples.sort((a, b) => a.num - b.num);
+
+    // Build category HTML with centered layout and count
+    function buildCategoryBalls(categoryData, title, icon, colorClass) {
+        if (!categoryData || categoryData.length === 0) {
+            return `
+                <div class="category-group ${colorClass}">
+                    <div class="category-title">${icon} ${title}</div>
+                    <div class="category-balls"><span style="color:#999; font-size:8px;">None</span></div>
+                    <div class="category-count">(0)</div>
+                </div>
+            `;
+        }
+        
+        let ballsHtml = categoryData.map(item => {
+            let borderStyle = '1px solid #2d8a4e';
+            if (item.status === 0) {
+                borderStyle = '1px solid #999';
+            } else if (item.status === 1) {
+                borderStyle = '2px solid #7c02b5';
+            } else if (item.status === 2) {
+                borderStyle = '2px solid #32d74b';
+            }
+            
+            return `
+                <div class="category-ball" style="
+                    display: inline-flex;
+                    flex-direction: column;
+                    align-items: center;
+                    margin: 0 1px;
+                ">
+                    <div style="
+                        width: 14px;
+                        height: 14px;
+                        background: ${item.color};
+                        border-radius: 50%;
+                        display: flex;
+                        align-items: center;
+                        justify-content: center;
+                        font-size: 11px;
+                        font-weight: 900;
+                        color: ${item.textColor};
+                        border: ${borderStyle};
+                        line-height: 14px;
+                    ">${item.display}</div>
+                </div>
+            `;
+        }).join('');
+        
+        return `
+            <div class="category-group ${colorClass}">
+                <div class="category-title">${icon} ${title} <span class="category-count">(${categoryData.length})</span></div>
+                <div class="category-balls">${ballsHtml}</div>
+            </div>
+        `;
+    }
+
+    // ===================================
+    // ENHANCED LEAVING/MEETING LOGIC 
+    // This searches across multiple weeks if needed
+    // ===================================
+    function getLeavingMeetingNumbers(weeks) {
+        let leavingNumber = null;
+        let leavingSlot = null;
+        let leavingDate = null;
+        let meetingNumber = null;
+        let meetingSlot = null;
+        let meetingDate = null;
+        
+        if (!weeks || weeks.length === 0) {
+            return { leavingNumber, leavingSlot, leavingDate, meetingNumber, meetingSlot, meetingDate };
+        }
+        
+        const sortedWeeks = [...weeks].sort((a, b) => {
+            let pa = a.startDate.split(" ");
+            let pb = b.startDate.split(" ");
+            return new Date(pa[2] + "-" + pa[1] + "-" + pa[0]) - new Date(pb[2] + "-" + pb[1] + "-" + pb[0]);
+        });
+        
+        const currentWeek = sortedWeeks[sortedWeeks.length - 1];
+        const now = new Date();
+        const todayIdx = now.getDay();
+        
+        function getDraw(week, dayName, slot) {
+            if (!week) return null;
+            const day = week.days.find(d => d.dayName === dayName);
+            if (!day) return null;
+            const val = day.draws[slot];
+            return val && val !== "-" && val !== "PENDING" && val !== "HOLIDAY" ? parseInt(val, 10) : null;
+        }
+        
+        function getDateForDraw(week, dayName) {
+            if (!week || !week.startDate) return null;
+            const parts = week.startDate.split(" ");
+            const monthMap = {"Jan":0,"Feb":1,"Mar":2,"Apr":3,"May":4,"Jun":5,"Jul":6,"Aug":7,"Sep":8,"Oct":9,"Nov":10,"Dec":11};
+            const startDate = new Date(parts[2], monthMap[parts[1]], parseInt(parts[0]));
+            const dayIndex = daysOfWeek.indexOf(dayName);
+            if (dayIndex === -1) return null;
+            const drawDate = new Date(startDate);
+            drawDate.setDate(startDate.getDate() + dayIndex);
+            return drawDate;
+        }
+        
+        // STEP 1: Find LEAVING number - Search current week first
+        let leavingDayIdx = -1;
+        let leavingSlotIdx = -1;
+        
+        for (let d = todayIdx; d >= 0; d--) {
+            for (let s = timeOrder.length - 1; s >= 0; s--) {
+                const draw = getDraw(currentWeek, daysOfWeek[d], timeOrder[s]);
+                if (draw) {
+                    leavingNumber = draw;
+                    leavingDayIdx = d;
+                    leavingSlotIdx = s;
+                    leavingSlot = timeOrder[s];
+                    leavingDate = getDateForDraw(currentWeek, daysOfWeek[d]);
+                    break;
+                }
+            }
+            if (leavingNumber) break;
+        }
+        
+        // STEP 2: If no leaving number in current week, search ALL previous weeks
+        if (!leavingNumber) {
+            for (let w = sortedWeeks.length - 2; w >= 0; w--) {
+                const week = sortedWeeks[w];
+                for (let d = daysOfWeek.length - 1; d >= 0; d--) {
+                    for (let s = timeOrder.length - 1; s >= 0; s--) {
+                        const draw = getDraw(week, daysOfWeek[d], timeOrder[s]);
+                        if (draw) {
+                            leavingNumber = draw;
+                            leavingDayIdx = d;
+                            leavingSlotIdx = s;
+                            leavingSlot = timeOrder[s];
+                            leavingDate = getDateForDraw(week, daysOfWeek[d]);
+                            break;
+                        }
+                    }
+                    if (leavingNumber) break;
+                }
+                if (leavingNumber) break;
+            }
+        }
+        
+        // STEP 3: Find MEETING number (next slot after leaving)
+        if (leavingDayIdx !== -1 && leavingSlotIdx !== -1) {
+            let nextDayIdx = leavingDayIdx;
+            let nextSlotIdx = leavingSlotIdx + 1;
+            
+            if (nextSlotIdx >= timeOrder.length) {
+                nextSlotIdx = 0;
+                nextDayIdx = leavingDayIdx + 1;
+            }
+            
+            if (nextDayIdx >= daysOfWeek.length) {
+                nextDayIdx = 0;
+            }
+            
+            if (nextDayIdx >= 0 && nextDayIdx < daysOfWeek.length) {
+                const targetDay = daysOfWeek[nextDayIdx];
+                const targetSlot = timeOrder[nextSlotIdx];
+                
+                // Find the most recent non-holiday previous week with valid draws
+                let previousWeek = null;
+                for (let i = sortedWeeks.length - 2; i >= 0; i--) {
+                    const week = sortedWeeks[i];
+                    let hasValidDraw = false;
+                    if (week && week.days) {
+                        for (const day of week.days) {
+                            if (day && day.draws) {
+                                for (const slot of timeOrder) {
+                                    const val = day.draws[slot];
+                                    if (val && val !== "-" && val !== "PENDING" && val !== "HOLIDAY") {
+                                        hasValidDraw = true;
+                                        break;
+                                    }
+                                }
+                            }
+                            if (hasValidDraw) break;
+                        }
+                    }
+                    if (hasValidDraw) {
+                        previousWeek = week;
+                        break;
+                    }
+                }
+                
+                if (!previousWeek) {
+                    previousWeek = currentWeek;
+                }
+                
+                // FIRST: Try previous week (preferred source)
+                meetingNumber = getDraw(previousWeek, targetDay, targetSlot);
+                if (meetingNumber) {
+                    meetingSlot = targetSlot;
+                    meetingDate = getDateForDraw(previousWeek, targetDay);
+                }
+                
+                // SECOND: If not found in previous week, search backwards through ALL weeks
+                if (!meetingNumber) {
+                    for (let w = sortedWeeks.length - 2; w >= 0; w--) {
+                        const week = sortedWeeks[w];
+                        const draw = getDraw(week, targetDay, targetSlot);
+                        if (draw) {
+                            meetingNumber = draw;
+                            meetingSlot = targetSlot;
+                            meetingDate = getDateForDraw(week, targetDay);
+                            break;
+                        }
+                    }
+                }
+                
+                // THIRD: If still not found, try current week as absolute fallback
+                if (!meetingNumber) {
+                    const draw = getDraw(currentWeek, targetDay, targetSlot);
+                    if (draw) {
+                        meetingNumber = draw;
+                        meetingSlot = targetSlot;
+                        meetingDate = getDateForDraw(currentWeek, targetDay);
+                    }
+                }
+            }
+        }
+        
+        return { leavingNumber, leavingSlot, leavingDate, meetingNumber, meetingSlot, meetingDate };
+    }
+    
+    // Calculate leaving and meeting numbers using the enhanced logic
+    const { leavingNumber, meetingNumber, leavingSlot, meetingSlot, leavingDate, meetingDate } = getLeavingMeetingNumbers(displayWeeks);
+    
+    // Helper function to format short date
+    function formatShortDate(dateStr) {
+        if (!dateStr) return "";
+        const parts = dateStr.split(" ");
+        const monthMap = {"Jan":1,"Feb":2,"Mar":3,"Apr":4,"May":5,"Jun":6,"Jul":7,"Aug":8,"Sep":9,"Oct":10,"Nov":11,"Dec":12};
+        const day = parseInt(parts[0]);
+        const month = monthMap[parts[1]];
+        const year = parts[2].slice(-2);
+        return `${day}/${month}/${year}`;
+    }
+    
+ // Helper function to format date display
+    function formatDateDisplay(date) {
+        if (!date) return "";
+        const days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+        const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+        return `${days[date.getDay()]} ${date.getDate()} ${months[date.getMonth()]} '${date.getFullYear().toString().slice(-2)}`;
+    }
+    
+    // Determine which day is current/highlighted
+    const now = new Date();
+    const todayIdx = now.getDay();
+    let highlightDayName = daysOfWeek[todayIdx];
+    let isAfterEvening = false;
+    
+    // Check if we're after evening for the current day
+    const currentHour = now.getHours();
+    if (currentHour >= 18) {
+        isAfterEvening = true;
+        // If after 6pm, highlight tomorrow's day
+        const nextDayIdx = (todayIdx + 1) % 7;
+        highlightDayName = daysOfWeek[nextDayIdx];
+    }
+    
+//////////////////////////////////////////
+    // Build the chart HTML
+    let html = `
+    <style>
+        /* FORCE LIGHT MODE - Override any inherited dark mode styles */
+        .playwhe-chart-wrapper,
+        .playwhe-chart-wrapper * {
+            color-scheme: light !important;
+        }
+        
+        .playwhe-chart-wrapper {
+            background: #ffffff !important;
+            border-radius: 6px;
+            padding: 8px;
+            border: 1px solid #dddddd !important;
+            position: relative;
+            overflow: hidden;
+            max-width: 100%;
+            box-sizing: border-box;
+        }
+        .playwhe-chart-wrapper table {
+            width: 100%;
+            border-collapse: collapse;
+            table-layout: fixed;
+            font-size: 10px;
+            background: #ffffff !important;
+        }
+        .playwhe-chart-wrapper th,
+        .playwhe-chart-wrapper td {
+            padding: 2px 1px;
+            border: none !important;
+            text-align: center;
+            font-weight: 700;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            box-sizing: border-box;
+            background: #ffffff !important;
+            color: #000000 !important;
+        }
+        .playwhe-chart-wrapper th {
+            padding: 3px 1px;
+            color: #000000 !important;
+            font-weight: 800;
+            font-size: 8px;
+            background: #f5f5f5 !important;
+            border: none !important;
+        }
+        .playwhe-chart-wrapper td.week-label {
+            font-size: 8px;
+            background: #f0f0f0 !important;
+            padding: 2px 1px;
+            width: 8%;
+            border: none !important;
+            color: #000000 !important;
+        }
+        /* HOLIDAY - GREYED OUT CELLS WITH NO TEXT */
+        .playwhe-chart-wrapper td.holiday-cell {
+            background: #e8e8e8 !important;
+            color: #cccccc !important;
+            border: none !important;
+            font-size: 8px;
+            text-align: center;
+        }
+
+        /* ================================
+           ZEBRA STRIPES (VISIBLE CONTRAST)
+           ================================ */
+        .playwhe-chart-wrapper .row-odd td {
+            background: #f1f1f1 !important;
+        }
+        .playwhe-chart-wrapper .row-even td {
+            background: #ffffff !important;
+        }
+        .playwhe-chart-wrapper .row-odd td.week-label {
+            background: #e4e4e4 !important;
+        }
+        .playwhe-chart-wrapper .row-even td.week-label {
+            background: #eeeeee !important;
+        }
+        .playwhe-chart-wrapper .row-current td {
+            background: #fff70f !important;
+        }
+        .playwhe-chart-wrapper .row-current td.week-label {
+            background: #53f736 !important;
+            color: #000000 !important;
+        }
+
+        /* ============================================
+           DAY COLOR SEPARATION (GREY) - Mon, Wed, Fri
+           ============================================ */
+        .playwhe-chart-wrapper th.day-mon,
+        .playwhe-chart-wrapper th.day-wed,
+        .playwhe-chart-wrapper th.day-fri {
+            background: #cfcfcf !important;
+            color: #000000 !important;
+        }
+
+        .playwhe-chart-wrapper .row-odd td.day-mon,
+        .playwhe-chart-wrapper .row-odd td.day-wed,
+        .playwhe-chart-wrapper .row-odd td.day-fri {
+            background: #dcdcdc !important;
+        }
+
+        .playwhe-chart-wrapper .row-even td.day-mon,
+        .playwhe-chart-wrapper .row-even td.day-wed,
+        .playwhe-chart-wrapper .row-even td.day-fri {
+            background: #e7e7e7 !important;
+        }
+
+        .playwhe-chart-wrapper .row-current td.day-mon,
+        .playwhe-chart-wrapper .row-current td.day-wed,
+        .playwhe-chart-wrapper .row-current td.day-fri {
+            background: #ffeb70 !important;
+        }
+
+        /* Holiday cells keep their grey look even inside separated days */
+        .playwhe-chart-wrapper tr.row-odd td.holiday-cell,
+        .playwhe-chart-wrapper tr.row-even td.holiday-cell,
+        .playwhe-chart-wrapper tr.row-current td.holiday-cell {
+            background: #e8e8e8 !important;
+            color: #cccccc !important;
+        }
+
+        /* HIGHLIGHTS - boosted specificity so they always win over zebra/day backgrounds */
+        .playwhe-chart-wrapper tr.row-odd td.leaving-highlight,
+        .playwhe-chart-wrapper tr.row-even td.leaving-highlight,
+        .playwhe-chart-wrapper tr.row-current td.leaving-highlight {
+            background: #00f2ff !important;
+            color: #000000 !important;
+            font-weight: 900 !important;
+            box-shadow: inset 0 0 20px rgba(0, 242, 255, 0.3);
+            border: 1px solid #00d4e6 !important;
+        }
+        .playwhe-chart-wrapper tr.row-odd td.meeting-highlight,
+        .playwhe-chart-wrapper tr.row-even td.meeting-highlight,
+        .playwhe-chart-wrapper tr.row-current td.meeting-highlight {
+            background: #ff9d00 !important;
+            color: #000000 !important;
+            font-weight: 900 !important;
+            box-shadow: inset 0 0 20px rgba(255, 157, 0, 0.3);
+            border: 1px solid #e68a00 !important;
+        }
+        .playwhe-chart-wrapper tr.row-odd td.shelf-mark,
+        .playwhe-chart-wrapper tr.row-even td.shelf-mark,
+        .playwhe-chart-wrapper tr.row-current td.shelf-mark {
+            color: #ff0000 !important;
+            font-weight: 900 !important;
+        }
+        .playwhe-chart-wrapper .lm-container {
+            display: flex;
+            justify-content: center;
+            align-items: stretch;
+            gap: 12px;
+            margin: 4px 0 4px 0;
+            position: relative;
+            z-index: 2;
+            padding: 0 2px;
+        }
+        .playwhe-chart-wrapper .lm-box {
+            flex: 1;
+            max-width: 160px;
+            border-radius: 8px;
+            padding: 6px 8px;
+            text-align: center;
+            border: 1px solid #dddddd !important;
+            background: #fafafa !important;
+        }
+        .playwhe-chart-wrapper .lm-box .label {
+            font-size: 7px;
+            font-weight: 800;
+            color: #666666 !important;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .playwhe-chart-wrapper .lm-box .number {
+            font-size: 18px;
+            font-weight: 900;
+            margin: 2px 0;
+            color: #000000 !important;
+        }
+        .playwhe-chart-wrapper .lm-box .date {
+            font-size: 7px;
+            color: #666666 !important;
+        }
+        .playwhe-chart-wrapper .lm-box.leaving {
+            border-color: #00f2ff !important;
+            background: rgba(0, 242, 255, 0.12) !important;
+        }
+        .playwhe-chart-wrapper .lm-box.leaving .number {
+            color: #0099aa !important;
+        }
+        .playwhe-chart-wrapper .lm-box.meeting {
+            border-color: #ff9d00 !important;
+            background: rgba(255, 157, 0, 0.12) !important;
+        }
+        .playwhe-chart-wrapper .lm-box.meeting .number {
+            color: #cc7d00 !important;
+        }
+        .playwhe-chart-wrapper .lm-box.empty {
+            border-color: #eeeeee !important;
+            background: #f8f8f8 !important;
+        }
+        .playwhe-chart-wrapper .lm-box.empty .number {
+            color: #cccccc !important;
+            font-size: 14px;
+        }
+        .playwhe-chart-wrapper .chart-header {
+            text-align: center;
+            margin-bottom: 2px;
+            position: relative;
+            z-index: 2;
+        }
+        .playwhe-chart-wrapper .chart-header h1 {
+            font-size: 14px;
+            color: #000000 !important;
+            font-weight: 900;
+            letter-spacing: 1px;
+            margin: 0;
+        }
+        .playwhe-chart-wrapper .chart-header .sub-date {
+            font-size: 9px;
+            color: #666666 !important;
+            margin-top: 2px;
+        }
+        .playwhe-chart-wrapper .footer {
+            margin-top: 6px;
+            padding-top: 6px;
+            border-top: 1px solid #dddddd !important;
+            display: flex;
+            justify-content: space-between;
+            font-size: 7px;
+            color: #666666 !important;
+            position: relative;
+            z-index: 2;
+        }
+        .playwhe-chart-wrapper .watermark {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%) rotate(-30deg);
+            font-size: 24px;
+            font-weight: 900;
+            color: rgba(0,0,0,0.04) !important;
+            letter-spacing: 9px;
+            pointer-events: none;
+            white-space: nowrap;
+            z-index: 1;
+        }
+        .playwhe-chart-wrapper .table-wrap {
+            overflow-x: auto;
+            -webkit-overflow-scrolling: touch;
+            position: relative;
+            z-index: 2;
+        }
+        
+        /* Categories Container - Centered */
+        .playwhe-chart-wrapper .categories-container {
+            background: #fafafa;
+            padding: 6px 4px;
+            border: 1px solid #dddddd;
+            border-top: none;
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            align-items: stretch;
+            gap: 6px 10px;
+            font-family: 'Courier New', monospace;
+        }
+        
+        .playwhe-chart-wrapper .categories-container .category-group {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 3px;
+            padding: 4px 8px;
+            background: rgba(255,255,255,0.4);
+            border-radius: 6px;
+            border: 1px solid rgba(45, 138, 78, 0.15);
+            min-width: 80px;
+            flex: 0 1 auto;
+            text-align: center;
+        }
+        
+        .playwhe-chart-wrapper .categories-container .category-group.doubles {
+            border-top: 3px solid #32d74b;
+        }
+        
+        .playwhe-chart-wrapper .categories-container .category-group.triples {
+            border-top: 3px solid #ff9d00;
+        }
+        
+        .playwhe-chart-wrapper .categories-container .category-group.quadruples {
+            border-top: 3px solid #ff375f;
+        }
+        
+        .playwhe-chart-wrapper .categories-container .category-title {
+            font-size: 9px;
+            font-weight: 800;
+            color: #000000;
+            letter-spacing: 0.5px;
+        }
+        
+        .playwhe-chart-wrapper .categories-container .category-title .category-count {
+            font-size: 8px;
+            color: #666;
+            font-weight: normal;
+        }
+        
+        .playwhe-chart-wrapper .categories-container .category-balls {
+            display: flex;
+            flex-wrap: wrap;
+            justify-content: center;
+            align-items: center;
+            gap: 2px;
+        }
+        
+        /* Category Legend */
+        .playwhe-chart-wrapper .category-legend {
+            background: #fafafa;
+            padding: 2px 6px;
+            border: 1px solid #dddddd;
+            border-top: none;
+            display: flex;
+            flex-wrap: wrap;
+            align-items: center;
+            gap: 4px 8px;
+            font-family: 'Courier New', monospace;
+            font-size: 7px;
+        }
+        
+        .playwhe-chart-wrapper .category-legend .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 3px;
+            color: #000000;
+        }
+        
+        .playwhe-chart-wrapper .category-legend .legend-ball {
+            display: inline-block;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            border: 1px solid #2d8a4e;
+            flex-shrink: 0;
+        }
+        
+        .playwhe-chart-wrapper .category-legend .legend-ball.white {
+            background: #ffffff;
+            border-color: #999;
+        }
+        
+        .playwhe-chart-wrapper .category-legend .legend-ball.purple {
+            background: #7c02b5;
+            border-color: #7c02b5;
+        }
+        
+        .playwhe-chart-wrapper .category-legend .legend-ball.green {
+            background: #32d74b;
+            border-color: #32d74b;
+        }
+        
+        /* Shelf Marks Table */
+        .playwhe-chart-wrapper .shelf-marks-table-wrapper {
+            background: #fafafa;
+            border: 1px solid #dddddd;
+            border-top: none;
+            padding: 4px 6px;
+            font-family: 'Courier New', monospace;
+        }
+        
+        .playwhe-chart-wrapper .shelf-marks-table-wrapper .shelf-title {
+            font-size: 8px;
+            font-weight: bold;
+            color: #000000;
+            margin-bottom: 4px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .playwhe-chart-wrapper .shelf-marks-table-wrapper .shelf-title .count {
+            color: #ff0000;
+            font-size: 10px;
+        }
+        
+        .playwhe-chart-wrapper .shelf-marks-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 8px;
+        }
+        
+        .playwhe-chart-wrapper .shelf-marks-table th {
+            background: #2d8a4e;
+            color: #ffffff;
+            padding: 3px 4px;
+            text-align: left;
+            font-weight: bold;
+            font-size: 7px;
+            border: 1px solid #1a6b3a;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        
+        .playwhe-chart-wrapper .shelf-marks-table td {
+            padding: 3px 4px;
+            border: 1px solid #2d8a4e;
+            font-size: 8px;
+            color: #000000;
+            background: #ffffff;
+        }
+        
+        .playwhe-chart-wrapper .shelf-marks-table .mark-cell {
+            font-weight: 900;
+            font-size: 10px;
+            color: #ff0000;
+            text-align: center;
+            width: 15%;
+        }
+        
+        .playwhe-chart-wrapper .shelf-marks-table .last-played-cell {
+            text-align: center;
+            width: 50%;
+            font-size: 7px;
+            color: #333;
+        }
+        
+        .playwhe-chart-wrapper .shelf-marks-table .days-cell {
+            text-align: center;
+            width: 35%;
+            font-weight: bold;
+        }
+        
+        .playwhe-chart-wrapper .shelf-marks-table .days-cell .days-badge {
+            display: inline-block;
+            padding: 1px 6px;
+            border-radius: 10px;
+            font-size: 8px;
+            font-weight: 900;
+        }
+        
+        .playwhe-chart-wrapper .shelf-marks-table .days-cell .days-badge.critical {
+            background: #ff453a;
+            color: #ffffff;
+        }
+        
+        .playwhe-chart-wrapper .shelf-marks-table .days-cell .days-badge.warning {
+            background: #ff9f0a;
+            color: #ffffff;
+        }
+        
+        .playwhe-chart-wrapper .shelf-marks-table .days-cell .days-badge.monitor {
+            background: #ffd60a;
+            color: #000000;
+        }
+        
+        .playwhe-chart-wrapper .shelf-marks-table .no-data {
+            text-align: center;
+            padding: 10px;
+            color: #32d74b;
+            font-weight: bold;
+            font-size: 9px;
+        }
+        
+        /* Leaving/Meeting Legend Items */
+        .playwhe-chart-wrapper .green-chart-legend .legend-dot.leaving {
+            background: #00f2ff;
+            border-color: #00d4e6;
+        }
+        
+        .playwhe-chart-wrapper .green-chart-legend .legend-dot.meeting {
+            background: #ff9d00;
+            border-color: #e68a00;
+        }
+        
+        /* Legend - Compact */
+        .playwhe-chart-wrapper .green-chart-legend {
+            display: flex;
+            align-items: center;
+            gap: 4px;
+            padding: 2px 4px;
+            background: #fafafa;
+            border: 1px solid #dddddd;
+            border-top: none;
+            font-size: 7px;
+            font-family: 'Courier New', monospace;
+            flex-wrap: wrap;
+            color: #000000;
+        }
+        
+        .playwhe-chart-wrapper .green-chart-legend .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 2px;
+            color: #000000;
+        }
+        
+        .playwhe-chart-wrapper .green-chart-legend .legend-dot {
+            display: inline-block;
+            width: 6px;
+            height: 6px;
+            border-radius: 1px;
+            border: 1px solid #2d8a4e;
+            flex-shrink: 0;
+        }
+        
+        .playwhe-chart-wrapper .green-chart-legend .legend-dot.shelf {
+            background: #ffffff;
+            border-color: #ff0000;
+        }
+        
+        .playwhe-chart-wrapper .green-chart-legend .legend-dot.normal {
+            background: #ffffff;
+        }
+        
+        .playwhe-chart-wrapper .green-chart-legend .legend-dot.holiday-dot {
+            background: #e8e8e8;
+            border-color: #ccc;
+        }
+        
+        .playwhe-chart-wrapper .green-chart-legend .legend-dot.pending-dot {
+            background: #ffffff;
+            border-color: #ccc;
+        }
+        
+        .playwhe-chart-wrapper .green-chart-legend .legend-spacer {
+            color: #999;
+        }
+        
+        /* RESPONSIVE BREAKPOINTS */
+        @media (max-width: 480px) {
+            .playwhe-chart-wrapper table {
+                font-size: 8px;
+            }
+            .playwhe-chart-wrapper td {
+                padding: 1px 0px;
+                font-size: 8px;
+            }
+            .playwhe-chart-wrapper th {
+                font-size: 6px;
+                padding: 1px 0px;
+            }
+            .playwhe-chart-wrapper td.week-label {
+                font-size: 6px;
+                padding: 1px 0px;
+            }
+            .playwhe-chart-wrapper .chart-header h1 {
+                font-size: 12px;
+            }
+            .playwhe-chart-wrapper .watermark {
+                font-size: 16px;
+            }
+            .playwhe-chart-wrapper .lm-box .number {
+                font-size: 16px;
+            }
+            .playwhe-chart-wrapper .lm-box {
+                padding: 4px 6px;
+            }
+            .playwhe-chart-wrapper .categories-container {
+                padding: 4px 3px;
+                gap: 4px 6px;
+            }
+            .playwhe-chart-wrapper .categories-container .category-group {
+                padding: 3px 6px;
+                min-width: 60px;
+            }
+            .playwhe-chart-wrapper .categories-container .category-title {
+                font-size: 9px;
+            }
+            .playwhe-chart-wrapper .category-legend {
+                font-size: 6px;
+                padding: 2px 4px;
+                gap: 3px 5px;
+            }
+            .playwhe-chart-wrapper .category-legend .legend-ball {
+                width: 8px;
+                height: 8px;
+            }
+            .playwhe-chart-wrapper .shelf-marks-table {
+                font-size: 8px;
+            }
+            .playwhe-chart-wrapper .shelf-marks-table th {
+                font-size: 8px;
+                padding: 2px 3px;
+            }
+            .playwhe-chart-wrapper .shelf-marks-table td {
+                font-size: 8px;
+                padding: 2px 3px;
+            }
+            .playwhe-chart-wrapper .shelf-marks-table .mark-cell {
+                font-size: 8px;
+            }
+            .playwhe-chart-wrapper .shelf-marks-table .last-played-cell {
+                font-size: 8px;
+            }
+            .playwhe-chart-wrapper .shelf-marks-table .days-cell .days-badge {
+                font-size: 8px;
+                padding: 1px 4px;
+            }
+        }
+        @media (max-width: 380px) {
+            .playwhe-chart-wrapper table {
+                font-size: 6px;
+            }
+            .playwhe-chart-wrapper td {
+                font-size: 6px;
+                padding: 1px 0px;
+            }
+            .playwhe-chart-wrapper th {
+                font-size: 5px;
+                padding: 1px 0px;
+            }
+            .playwhe-chart-wrapper .categories-container .category-title {
+                font-size: 7px;
+            }
+            .playwhe-chart-wrapper .categories-container .category-balls .category-ball div {
+                width: 12px !important;
+                height: 12px !important;
+                font-size: 9px !important;
+            }
+            .playwhe-chart-wrapper .category-legend {
+                font-size: 5px;
+                padding: 2px 3px;
+                gap: 2px 4px;
+            }
+            .playwhe-chart-wrapper .category-legend .legend-ball {
+                width: 7px;
+                height: 7px;
+            }
+            .playwhe-chart-wrapper .shelf-marks-table-wrapper {
+                padding: 2px 3px;
+            }
+            .playwhe-chart-wrapper .shelf-marks-table-wrapper .shelf-title {
+                font-size: 7px;
+            }
+            .playwhe-chart-wrapper .shelf-marks-table {
+                font-size: 6px;
+            }
+            .playwhe-chart-wrapper .shelf-marks-table th {
+                font-size: 5px;
+                padding: 2px 2px;
+            }
+            .playwhe-chart-wrapper .shelf-marks-table td {
+                font-size: 6px;
+                padding: 2px 2px;
+            }
+            .playwhe-chart-wrapper .shelf-marks-table .mark-cell {
+                font-size: 8px;
+            }
+            .playwhe-chart-wrapper .shelf-marks-table .last-played-cell {
+                font-size: 5px;
+            }
+            .playwhe-chart-wrapper .shelf-marks-table .days-cell .days-badge {
+                font-size: 6px;
+                padding: 1px 3px;
+            }
+            .playwhe-chart-wrapper .green-chart-legend {
+                padding: 2px 3px;
+                gap: 3px;
+                font-size: 6px;
+            }
+            .playwhe-chart-wrapper .green-chart-legend .legend-dot {
+                width: 4px;
+                height: 4px;
+            }
+        }
+        @media (min-width: 768px) {
+            .playwhe-chart-wrapper table {
+                font-size: 11px;
+            }
+            .playwhe-chart-wrapper td {
+                padding: 4px 2px;
+                font-size: 12px;
+            }
+            .playwhe-chart-wrapper th {
+                font-size: 9px;
+                padding: 4px 2px;
+            }
+            .playwhe-chart-wrapper td.week-label {
+                font-size: 9px;
+                padding: 4px 2px;
+            }
+            .playwhe-chart-wrapper .lm-box .number {
+                font-size: 24px;
+            }
+        }
+    </style>
+    
+    <div class="playwhe-chart-wrapper">
+        <div class="watermark">CODEWITHGLASGOW</div>
+        
+        <div class="chart-header">
+            <h1>♠️ PLAY WHE CHART</h1>
+            <div class="sub-date">${new Date().toLocaleDateString('en-US', { weekday: 'short', day: 'numeric', month: 'short', year: 'numeric' })}</div>
+        </div>
+        
+        <!-- Leaving/Meeting Boxes -->
+        <div class="lm-container">
+            <div class="lm-box leaving">
+                <div class="label">LEAVING • ${leavingSlot || ''}</div>
+                <div class="number">${leavingNumber ? `#${leavingNumber}` : '—'}</div>
+                <div class="date">${leavingDate ? formatDateDisplay(leavingDate) : 'No data available'}</div>
+            </div>
+            <div class="lm-box meeting">
+                <div class="label">MEETING • ${meetingSlot || ''}</div>
+                <div class="number">${meetingNumber ? `#${meetingNumber}` : '—'}</div>
+                <div class="date">${meetingDate ? formatDateDisplay(meetingDate) : 'No data available'}</div>
+            </div>
+        </div>
+        
+        <!-- Chart Table -->
+        <div class="table-wrap">
+            <table>
+                <thead>
+                    <tr>
+                        <th style="width: 8%;"></th>
+    `;
+    
+    // Day headers
+    for (let i = 0; i < dayShort.length; i++) {
+        let dayClass = '';
+        if (i === 1) dayClass = 'day-mon';
+        else if (i === 3) dayClass = 'day-wed';
+        else if (i === 5) dayClass = 'day-fri';
+        html += `<th colspan="4" class="${dayClass}">${dayShort[i]}</th>`;
+    }
+    
+    html += `</tr></thead><tbody>`;
+    
+    // Loop through weeks
+    displayWeeks.forEach((week, weekIndex) => {
+        const isCurrent = week.isCurrentWeek === true;
+        const rowClass = isCurrent ? 'row-current' : (weekIndex % 2 === 0 ? 'row-odd' : 'row-even');
+        const weekDate = formatShortDate(week.startDate);
+        
+        html += `<tr class="${rowClass}">`;
+        html += `<td class="week-label">${weekDate}</td>`;
+        
+        for (let d = 0; d < daysOfWeek.length; d++) {
+            const dayName = daysOfWeek[d];
+            const day = week.days.find(dy => dy.dayName === dayName);
+            
+            let dayClass = '';
+            if (d === 1) dayClass = 'day-mon';
+            else if (d === 3) dayClass = 'day-wed';
+            else if (d === 5) dayClass = 'day-fri';
+            
+            // Check if day is a holiday or has no draws
+            let isHoliday = false;
+            let hasDraw = false;
+            if (day) {
+                hasDraw = timeOrder.some(slot => {
+                    const val = day.draws[slot];
+                    return val && val !== "-" && val !== "PENDING";
+                });
+            }
+            if (!hasDraw && isDayPassed(week.startDate, d)) {
+                isHoliday = true;
+            }
+            
+            if (isHoliday) {
+                // Replace merged HOLIDAY cell with 4 separate greyed out cells
+                for (let s = 0; s < timeOrder.length; s++) {
+                    html += `<td class="holiday-cell ${dayClass}">-</td>`;
+                }
+                continue;
+            }
+            
+            for (let s = 0; s < timeOrder.length; s++) {
+                const slot = timeOrder[s];
+                const val = day ? day.draws[slot] : null;
+                const isValid = val && val !== "-" && val !== "PENDING";
+                const num = isValid ? parseInt(val, 10) : null;
+                
+                // Check for Leaving/Meeting highlight
+                let highlightClass = "";
+                if (isValid) {
+                    const valStr = val.toString().trim();
+                    if (valStr === (leavingNumber ? leavingNumber.toString() : "")) {
+                        highlightClass = 'leaving-highlight';
+                    } else if (valStr === (meetingNumber ? meetingNumber.toString() : "")) {
+                        highlightClass = 'meeting-highlight';
+                    }
+                }
+                
+                // Check if this is a shelf mark
+                let shelfClass = "";
+                if (num && isShelfMark(num)) {
+                    // Check if this is the LAST occurrence of this number
+                    const isLast = lastOccurrence[num] && 
+                                   lastOccurrence[num].week === week && 
+                                   lastOccurrence[num].day === dayName &&
+                                   lastOccurrence[num].slot === slot;
+                    if (isLast) {
+                        shelfClass = 'shelf-mark';
+                    }
+                }
+                
+                const combinedClass = [dayClass, highlightClass, shelfClass].filter(c => c).join(' ');
+                
+                if (isCurrent && !isValid) {
+                    if (isDayPassed(week.startDate, d)) {
+                        html += `<td class="${combinedClass}" style="color:#999999;">...</td>`;
+                    } else {
+                        html += `<td class="${combinedClass}" style="color:#dddddd;">—</td>`;
+                    }
+                } else if (isValid) {
+                    const display = val;
+                    html += `<td class="${combinedClass}">${display}</td>`;
+                } else {
+                    html += `<td class="${combinedClass}" style="color:#dddddd;">—</td>`;
+                }
+            }
+        }
+        html += `</tr>`;
+    });
+    
+    html += `
+                    </tbody>
+                </table>
+            </div>
+            
+            <!-- Categories: Doubles, Triples, Quadruples (Centered with Count) -->
+            <div class="categories-container">
+                ${buildCategoryBalls(doubles, 'DOUBLES', '🟢', 'doubles')}
+                ${buildCategoryBalls(triples, 'TRIPLES', '🟠', 'triples')}
+                ${buildCategoryBalls(quadruples, 'QUADRUPLES', '🔴', 'quadruples')}
+            </div>
+            
+            <!-- Category Legend -->
+            <div class="category-legend">
+                <span style="font-weight:bold; color:#000000;">STATUS:</span>
+                <div class="legend-item">
+                    <span class="legend-ball white"></span>
+                    <span>Missing</span>
+                </div>
+                <div class="legend-item">
+                    <span class="legend-ball purple"></span>
+                    <span>Pending (LW)</span>
+                </div>
+                <div class="legend-item">
+                    <span class="legend-ball green"></span>
+                    <span>Hit Current Week</span>
+                </div>
+                <span style="color:#999; font-size:5px; margin-left:auto;">${new Date().toLocaleDateString()}</span>
+            </div>
+            
+            <!-- Shelf Marks Table -->
+            <div class="shelf-marks-table-wrapper">
+                <div class="shelf-title">
+                    <span>🔴 SHELF MARKS</span>
+                    <span class="count">${shelfMarksData.length} marks • ${shelfMarksData.filter(m => m.days > 21).length} overdue</span>
+                </div>
+                <table class="shelf-marks-table">
+                    <thead>
+                        <tr>
+                            <th>MARK</th>
+                            <th>LAST PLAYED</th>
+                            <th>DAYS AGO</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${shelfMarksData.length > 0 ? shelfMarksData.map(m => {
+                            let badgeClass = 'monitor';
+                            if (m.days > 21) badgeClass = 'critical';
+                            else if (m.days > 14) badgeClass = 'warning';
+                            
+                            return `
+                                <tr>
+                                    <td class="mark-cell">${m.displayNum}</td>
+                                    <td class="last-played-cell">${m.lastPlayed}</td>
+                                    <td class="days-cell"><span class="days-badge ${badgeClass}">${m.days}d</span></td>
+                                </tr>
+                            `;
+                        }).join('') : `
+                            <tr>
+                                <td colspan="3" class="no-data">✅ No shelf marks</td>
+                            </tr>
+                        `}
+                    </tbody>
+                </table>
+            </div>
+            
+            <div class="footer">
+                <span>♠️ ${displayWeeks.length} weeks</span>
+<span> CWG Charts Analysis ©️ ${new Date().toLocaleString('en-US', { 
+    month: 'short', 
+    day: 'numeric', 
+    hour: '2-digit', 
+    minute: '2-digit',
+})}</span>
+            </div>
+        </div>
+    `;
+    
+    return html;
+}
+
+//////////////////////////////////////////
+// ======================================
 // CAROUSEL RENDER FUNCTIONS FOR EACH GAME
 // ======================================
 function renderCarouselWithCurrentPW(weeks, containerId) {
@@ -10792,6 +29564,1053 @@ let tableHtml = buildTable([wk], "P2WHE", currentWeek);
   return carouselHtml + currentTableHtml;
 }
 
+/////////////////////////////////////////
+// ======================================
+// PICK 2 HOT & COLD MARKS WITH MISSING PLAYS
+// Analyzes 200 draws and 20 draws for Hot/Cold
+// Shows missing plays from current cycle and last 12 weeks
+// ======================================
+function renderPick2HotColdMissing(weeksData) {
+  if (!weeksData || weeksData.length === 0) {
+    return `
+      <div style="background: linear-gradient(135deg, #0f172a, #1e293b); border-radius: 16px; padding: 16px; margin-bottom: 15px; border: 1px solid #58a6ff; text-align:center;">
+        📊 Loading Pick 2 data...
+      </div>
+    `;
+  }
+
+  // ======================================
+  // HELPER FUNCTIONS
+  // ======================================
+
+  const dayNames = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+  const slots = ["MOR", "MID", "NON", "EVE"];
+  const now = new Date();
+
+  function getDraw(week, dayName, slot) {
+    if (!week) return null;
+    const day = week.days.find(d => d.dayName === dayName);
+    if (!day) return null;
+    const val = day.draws[slot];
+    return val && val !== "-" && val !== "PENDING" && val !== "HOLIDAY" ? val.toString() : null;
+  }
+
+  function parsePick2Draw(val) {
+    if (!val || val === "-" || val === "PENDING") return null;
+    const strVal = String(val);
+    const parts = strVal.split(/[,/ ]+/);
+    if (parts.length < 2) return null;
+    const num1 = parseInt(parts[0], 10);
+    const num2 = parseInt(parts[1], 10);
+    if (isNaN(num1) || isNaN(num2)) return null;
+    return { num1, num2 };
+  }
+
+  // Sort weeks chronologically
+  const sortedWeeks = [...weeksData].sort((a, b) => {
+    let pa = a.startDate.split(" ");
+    let pb = b.startDate.split(" ");
+    return new Date(pa[2] + "-" + pa[1] + "-" + pa[0]) - new Date(pb[2] + "-" + pb[1] + "-" + pb[0]);
+  });
+
+  const currentWeek = sortedWeeks[sortedWeeks.length - 1];
+
+  // ======================================
+  // BUILD PICK 2 TIMELINE FOR CYCLE ANALYSIS
+  // ======================================
+  const p2Timeline = [];
+  sortedWeeks.forEach(wk => 
+    wk.days.forEach(day => 
+      slots.forEach(t => {
+        const raw = String(getDraw(wk, day.dayName, t));
+        if(raw && raw !== "PENDING" && raw !== "-" && raw !== "HOLIDAY") {
+          const parsed = parsePick2Draw(raw);
+          if (parsed) {
+            p2Timeline.push({ 
+              num1: parsed.num1, 
+              num2: parsed.num2,
+              date: wk.startDate 
+            });
+          }
+        }
+      })
+    )
+  );
+
+  // ======================================
+  // FIND CYCLE MISSING NUMBERS
+  // ======================================
+  let cycleNumbers = new Set();
+  let cycleStartIndex = 0;
+
+  for (let i = 0; i < p2Timeline.length; i++) {
+    cycleNumbers.add(p2Timeline[i].num1);
+    cycleNumbers.add(p2Timeline[i].num2);
+
+    if (cycleNumbers.size === 36) {
+      cycleStartIndex = i + 1;
+      cycleNumbers.clear();
+    }
+  }
+
+  // Get numbers in current cycle
+  const currentCycleNumbers = new Set();
+  for (let i = cycleStartIndex; i < p2Timeline.length; i++) {
+    currentCycleNumbers.add(p2Timeline[i].num1);
+    currentCycleNumbers.add(p2Timeline[i].num2);
+  }
+
+  // Find missing numbers (1-36 not in current cycle)
+  const missingCycleNumbers = [];
+  for (let i = 1; i <= 36; i++) {
+    if (!currentCycleNumbers.has(i)) {
+      missingCycleNumbers.push(i);
+    }
+  }
+
+  // ======================================
+  // ANALYZE LAST 12 WEEKS FOR MISSING PLAYS
+  // ======================================
+  const last12Weeks = sortedWeeks.slice(-12);
+  const playedInLast12Weeks = new Set();
+  const playedInCurrentWeek = new Set();
+
+  // Track what's been played in last 12 weeks
+  last12Weeks.forEach(week => {
+    const weekStart = new Date(week.startDate);
+    for (let d = 0; d < dayNames.length; d++) {
+      for (let s = 0; s < slots.length; s++) {
+        const draw = getDraw(week, dayNames[d], slots[s]);
+        if (draw) {
+          const parsed = parsePick2Draw(draw);
+          if (parsed) {
+            const key = `${parsed.num1}/${parsed.num2}`;
+            playedInLast12Weeks.add(key);
+          }
+        }
+      }
+    }
+  });
+
+  // Track what's been played in current week
+  for (let d = 0; d < dayNames.length; d++) {
+    for (let s = 0; s < slots.length; s++) {
+      const draw = getDraw(currentWeek, dayNames[d], slots[s]);
+      if (draw) {
+        const parsed = parsePick2Draw(draw);
+        if (parsed) {
+          const key = `${parsed.num1}/${parsed.num2}`;
+          playedInCurrentWeek.add(key);
+        }
+      }
+    }
+  }
+
+  // ======================================
+  // GENERATE TOP 20 MISSING PLAYS
+  // ======================================
+  const candidatePlays = [];
+  
+  // 1. Generate plays from missing cycle numbers
+  const missingCyclePlays = [];
+  for (let i = 0; i < missingCycleNumbers.length; i++) {
+    for (let j = i; j < missingCycleNumbers.length; j++) {
+      const num1 = missingCycleNumbers[i];
+      const num2 = missingCycleNumbers[j];
+      const key = `${num1}/${num2}`;
+      if (!playedInLast12Weeks.has(key)) {
+        missingCyclePlays.push({
+          key: key,
+          num1: num1,
+          num2: num2,
+          priority: 1,
+          reason: `Missing cycle number${num1 === num2 ? '' : 's'}`,
+          isPlayed: playedInCurrentWeek.has(key)
+        });
+      }
+    }
+  }
+
+  // 2. Generate plays from numbers that haven't been played in 12 weeks
+  // Get numbers that haven't appeared in 12 weeks
+  const numbersNotIn12Weeks = new Set();
+  for (let i = 1; i <= 36; i++) {
+    let found = false;
+    for (const play of playedInLast12Weeks) {
+      const parts = play.split('/');
+      if (parseInt(parts[0]) === i || parseInt(parts[1]) === i) {
+        found = true;
+        break;
+      }
+    }
+    if (!found) {
+      numbersNotIn12Weeks.add(i);
+    }
+  }
+
+  const missing12WeeksPlays = [];
+  const numbersArray = Array.from(numbersNotIn12Weeks);
+  for (let i = 0; i < numbersArray.length; i++) {
+    for (let j = i; j < numbersArray.length; j++) {
+      const num1 = numbersArray[i];
+      const num2 = numbersArray[j];
+      const key = `${num1}/${num2}`;
+      if (!playedInLast12Weeks.has(key) && !missingCyclePlays.some(p => p.key === key)) {
+        missing12WeeksPlays.push({
+          key: key,
+          num1: num1,
+          num2: num2,
+          priority: 2,
+          reason: `Not in 12 weeks`,
+          isPlayed: playedInCurrentWeek.has(key)
+        });
+      }
+    }
+  }
+
+  // 3. Get plays that are in current cycle but not played in 12 weeks
+  const currentCyclePlays = [];
+  const cycleNumbersArray = Array.from(currentCycleNumbers);
+  for (let i = 0; i < cycleNumbersArray.length; i++) {
+    for (let j = i; j < cycleNumbersArray.length; j++) {
+      const num1 = cycleNumbersArray[i];
+      const num2 = cycleNumbersArray[j];
+      const key = `${num1}/${num2}`;
+      if (!playedInLast12Weeks.has(key) && 
+          !missingCyclePlays.some(p => p.key === key) &&
+          !missing12WeeksPlays.some(p => p.key === key)) {
+        currentCyclePlays.push({
+          key: key,
+          num1: num1,
+          num2: num2,
+          priority: 3,
+          reason: `Current cycle`,
+          isPlayed: playedInCurrentWeek.has(key)
+        });
+      }
+    }
+  }
+
+  // Combine all candidates
+  candidatePlays.push(...missingCyclePlays);
+  candidatePlays.push(...missing12WeeksPlays);
+  candidatePlays.push(...currentCyclePlays);
+
+  // Sort by priority (lower is better) and take top 20
+  const sortedCandidates = candidatePlays.sort((a, b) => a.priority - b.priority);
+  const top20Plays = sortedCandidates.slice(0, 20);
+
+  // ======================================
+  // COLLECT LAST 200 DRAWS - SPLIT INTO INDIVIDUAL NUMBERS
+  // ======================================
+  const allDraws200 = [];
+  const numberFrequency200 = {};
+  const lastPlayed200 = {};
+  
+  for (let i = 1; i <= 36; i++) {
+    numberFrequency200[i] = 0;
+    lastPlayed200[i] = null;
+  }
+  
+  for (let w = sortedWeeks.length - 1; w >= 0 && allDraws200.length < 200; w--) {
+    const week = sortedWeeks[w];
+    const weekStart = new Date(week.startDate);
+    
+    for (let d = dayNames.length - 1; d >= 0 && allDraws200.length < 200; d--) {
+      const drawDate = new Date(weekStart);
+      drawDate.setDate(weekStart.getDate() + d);
+      
+      for (let s = slots.length - 1; s >= 0 && allDraws200.length < 200; s--) {
+        const draw = getDraw(week, dayNames[d], slots[s]);
+        if (draw) {
+          const parsed = parsePick2Draw(draw);
+          if (parsed) {
+            numberFrequency200[parsed.num1] = (numberFrequency200[parsed.num1] || 0) + 1;
+            numberFrequency200[parsed.num2] = (numberFrequency200[parsed.num2] || 0) + 1;
+            
+            if (!lastPlayed200[parsed.num1] || drawDate > lastPlayed200[parsed.num1]) {
+              lastPlayed200[parsed.num1] = drawDate;
+            }
+            if (!lastPlayed200[parsed.num2] || drawDate > lastPlayed200[parsed.num2]) {
+              lastPlayed200[parsed.num2] = drawDate;
+            }
+            
+            allDraws200.push({
+              num1: parsed.num1,
+              num2: parsed.num2,
+              date: drawDate,
+              day: dayNames[d],
+              slot: slots[s],
+              fullDraw: draw
+            });
+          }
+        }
+      }
+    }
+  }
+
+  const totalDraws200 = allDraws200.length;
+
+  // Sort numbers by frequency for 200 draws
+  const sortedNumbers200 = Object.entries(numberFrequency200)
+    .map(([num, count]) => ({ 
+      num: parseInt(num), 
+      count,
+      lastDate: lastPlayed200[parseInt(num)]
+    }))
+    .filter(item => item.count > 0)
+    .sort((a, b) => b.count - a.count);
+
+  const hotNumbers200 = sortedNumbers200.slice(0, 9);
+  const coldNumbers200 = sortedNumbers200.slice(-9).reverse();
+
+  // ======================================
+  // COLLECT LAST 20 DRAWS - SPLIT INTO INDIVIDUAL NUMBERS
+  // ======================================
+  const allDraws20 = [];
+  const numberFrequency20 = {};
+  
+  for (let i = 1; i <= 36; i++) {
+    numberFrequency20[i] = 0;
+  }
+  
+  for (let w = sortedWeeks.length - 1; w >= 0 && allDraws20.length < 20; w--) {
+    const week = sortedWeeks[w];
+    const weekStart = new Date(week.startDate);
+    
+    for (let d = dayNames.length - 1; d >= 0 && allDraws20.length < 20; d--) {
+      const drawDate = new Date(weekStart);
+      drawDate.setDate(weekStart.getDate() + d);
+      
+      for (let s = slots.length - 1; s >= 0 && allDraws20.length < 20; s--) {
+        const draw = getDraw(week, dayNames[d], slots[s]);
+        if (draw) {
+          const parsed = parsePick2Draw(draw);
+          if (parsed) {
+            numberFrequency20[parsed.num1] = (numberFrequency20[parsed.num1] || 0) + 1;
+            numberFrequency20[parsed.num2] = (numberFrequency20[parsed.num2] || 0) + 1;
+            
+            allDraws20.push({
+              num1: parsed.num1,
+              num2: parsed.num2,
+              date: drawDate,
+              day: dayNames[d],
+              slot: slots[s],
+              fullDraw: draw
+            });
+          }
+        }
+      }
+    }
+  }
+
+  const totalDraws20 = allDraws20.length;
+
+  // Sort numbers by frequency for 20 draws
+  const sortedNumbers20 = Object.entries(numberFrequency20)
+    .map(([num, count]) => ({ 
+      num: parseInt(num), 
+      count
+    }))
+    .filter(item => item.count > 0)
+    .sort((a, b) => b.count - a.count);
+
+  const hotNumbers20 = sortedNumbers20.slice(0, 9);
+  const coldNumbers20 = sortedNumbers20.slice(-9).reverse();
+
+  // ======================================
+  // RENDER FUNCTIONS
+  // ======================================
+
+  function formatDate(date) {
+    if (!date) return '—';
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    return `${date.getDate()} ${months[date.getMonth()]}`;
+  }
+
+  function renderNumberRow(numbers, title, titleColor, showDate = true) {
+    if (!numbers || numbers.length === 0) {
+      return `
+        <div style="text-align: center; padding: 6px; color: var(--text-dim, #64748b); font-size: 10px;">
+          No numbers available
+        </div>
+      `;
+    }
+
+    const numbersHtml = numbers.map(item => {
+      const count = item.count;
+      const lastDate = item.lastDate ? formatDate(item.lastDate) : '—';
+      
+      return `
+        <div style="display: flex; flex-direction: column; align-items: center; min-width: 32px; padding: 2px 3px; background: var(--card-bg, rgba(255,255,255,0.03)); border-radius: 4px; border: 1px solid var(--border-color, rgba(255,255,255,0.04)); flex: 0 1 auto;">
+          <span style="font-size: 16px; font-weight: 900; color: ${titleColor}; line-height: 1.2;">${item.num}</span>
+          <span style="font-size: 8px; color: var(--text-dim, #94a3b8); font-weight: 600; margin-top: 1px;">${count}x</span>
+          ${showDate ? `<span style="font-size: 7px; color: var(--text-dim, #64748b); margin-top: 1px; border-top: 1px solid var(--border-color, rgba(255,255,255,0.06)); padding-top: 1px; width: 100%; text-align: center;">${lastDate}</span>` : ''}
+        </div>
+      `;
+    }).join('');
+
+    return `
+      <div style="margin-bottom: 4px;">
+        <div style="display: flex; align-items: center; gap: 4px; margin-bottom: 3px;">
+          <span style="font-size: 10px; font-weight: 800; color: ${titleColor}; letter-spacing: 0.3px;">${title}</span>
+          <span style="font-size: 6px; color: var(--text-dim, #64748b); background: var(--card-bg, rgba(255,255,255,0.05)); padding: 1px 5px; border-radius: 6px;">${numbers.length}</span>
+        </div>
+        <div style="display: flex; justify-content: center; align-items: center; gap: 3px; flex-wrap: nowrap; overflow-x: auto; background: var(--card-bg, rgba(255,255,255,0.02)); border-radius: 6px; padding: 2px 4px; border: 1px solid var(--border-color, rgba(255,255,255,0.04)); min-height: 42px; -webkit-overflow-scrolling: touch;">
+          ${numbersHtml}
+        </div>
+      </div>
+    `;
+  }
+
+  function renderMissingPlays() {
+    if (top20Plays.length === 0) {
+      return `
+        <div style="margin-top: 6px; padding-top: 6px; border-top: 1px dashed var(--border-color, rgba(255,255,255,0.06));">
+          <div style="font-size: 10px; font-weight: 800; color: var(--text-main, #32d74b); margin-bottom: 4px; text-align: center; letter-spacing: 0.3px;">
+     ✅ MISSING PLAYS - CURRENT CYCLE
+          </div>
+          <div style="text-align: center; padding: 8px; color: #32d74b; font-size: 10px; font-weight: bold;">✅ No missing plays!</div>
+        </div>
+      `;
+    }
+
+    // Show missing cycle numbers first
+    const missingNumbersHtml = missingCycleNumbers.map(num => `
+      <span style="display: inline-flex; align-items: center; gap: 2px; background: var(--card-bg, rgba(255,215,0,0.08)); padding: 2px 8px; border-radius: 4px; border: 1px solid rgba(255,215,0,0.2);">
+        <span style="font-size: 14px; font-weight: 900; color: #ffd700;">${num}</span>
+      </span>
+    `).join('');
+
+    // Show top 20 missing plays
+    const playsHtml = top20Plays.map(play => {
+      const isPlayed = play.isPlayed;
+      const priorityColors = {
+        1: 'rgba(255,215,0,0.15)',
+        2: 'rgba(88,166,255,0.1)',
+        3: 'rgba(255,255,255,0.03)'
+      };
+      const borderColors = {
+        1: 'rgba(255,215,0,0.3)',
+        2: 'rgba(88,166,255,0.2)',
+        3: 'rgba(255,255,255,0.05)'
+      };
+      
+      const priorityIndicator = play.priority === 1 ? '⚡️' : play.priority === 2 ? '🔵' : '';
+      
+      return `
+        <span style="display: inline-flex; align-items: center; gap: 2px; background: ${isPlayed ? 'var(--card-bg, rgba(100,100,100,0.1))' : priorityColors[play.priority]}; padding: 2px 8px; border-radius: 4px; border: 1px solid ${isPlayed ? 'var(--border-color, rgba(100,100,100,0.2))' : borderColors[play.priority]}; opacity: ${isPlayed ? '0.4' : '1'};">
+          ${priorityIndicator}
+          <span style="font-size: 14px; font-weight: ${isPlayed ? '400' : '900'}; color: ${isPlayed ? 'var(--text-dim, #666)' : 'var(--text-main, #ffd700)'}; text-decoration: ${isPlayed ? 'line-through' : 'none'};">
+            ${play.key}
+          </span>
+          ${isPlayed ? '<span style="font-size: 8px; color: #32d74b; margin-left: 2px;">✓</span>' : ''}
+        </span>
+      `;
+    }).join('');
+
+    const totalMissing = top20Plays.length;
+    const playedCount = top20Plays.filter(p => p.isPlayed).length;
+    const remainingCount = totalMissing - playedCount;
+
+    return `
+      <div style="margin-top: 6px; padding-top: 6px; border-top: 1px dashed var(--border-color, rgba(255,255,255,0.06));">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+          <span style="font-size: 10px; font-weight: 800; color: var(--text-main, #ff9d00); letter-spacing: 0.3px;">⏳ TOP 20 MISSING PLAYS</span>
+          <span style="font-size: 8px; color: var(--text-dim, #64748b);">
+            ${remainingCount} remaining • ${playedCount} played ✓
+          </span>
+        </div>
+        
+        <!-- Missing Numbers -->
+        ${missingCycleNumbers.length > 0 ? `
+        <div style="display: flex; align-items: center; gap: 6px; background: var(--card-bg, rgba(255,215,0,0.03)); border-radius: 4px; padding: 4px 6px; border: 1px solid rgba(255,215,0,0.08); margin-bottom: 4px; flex-wrap: wrap;">
+          <span style="font-size: 8px; font-weight: 700; color: #ffd700;">⚡️ Cycle Missing:</span>
+          ${missingNumbersHtml}
+          <span style="font-size: 7px; color: var(--text-dim, #64748b);">(${missingCycleNumbers.length} numbers)</span>
+        </div>
+        ` : ''}
+        
+        <!-- Top 20 Plays -->
+        <div style="display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 4px; background: var(--card-bg, rgba(255,255,255,0.02)); border-radius: 6px; padding: 6px 8px; border: 1px solid var(--border-color, rgba(255,255,255,0.04)); max-height: 200px; overflow-y: auto; -webkit-overflow-scrolling: touch;">
+          ${playsHtml}
+        </div>
+        <div style="font-size: 6px; color: var(--text-dim, #64748b); text-align: center; margin-top: 3px;">
+          ⚡️ = Missing cycle number • 🔵 = Not in 12 weeks • Greyed/strikethrough = played in current week
+        </div>
+      </div>
+    `;
+  }
+
+  // ======================================
+  // BUILD THE MAIN HTML
+  // ======================================
+
+  const hotHtml200 = renderNumberRow(hotNumbers200, '🔥 HOT NUMBERS (200 DRAWS)', '#ff6b6b', true);
+  const coldHtml200 = renderNumberRow(coldNumbers200, '❄️ COLD NUMBERS (200 DRAWS)', '#58a6ff', true);
+  const hotHtml20 = renderNumberRow(hotNumbers20, '🔥 HOT NUMBERS (20 DRAWS)', '#ff6b6b', false);
+  const coldHtml20 = renderNumberRow(coldNumbers20, '❄️ COLD NUMBERS (20 DRAWS)', '#58a6ff', false);
+  const missingHtml = renderMissingPlays();
+
+  return `
+    <div style="
+      background: var(--bg-start, linear-gradient(135deg, #0f172a, #1e293b));
+      border-radius: 16px; 
+      padding: 10px; 
+      margin-bottom: 15px; 
+      border: 1px solid var(--border-color, #ff9d00);
+    ">
+      
+      <!-- Header -->
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 2px; flex-wrap: wrap; gap: 4px;">
+        <div style="font-size: 13px; font-weight: 800; color: var(--text-main, #ff9d00); letter-spacing: 0.3px;">
+          ♠️ PICK 2 HOT & COLD ANALYSIS ♠️
+        </div>
+      </div>
+      <div style="font-size: 7px; color: var(--text-dim, #64748b); margin-bottom: 6px;">
+        TODAY: ${now.toLocaleDateString('en-US', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }).toUpperCase()}
+      </div>
+      
+      <!-- Section 1: Top 9 Hot & Cold (200 draws) -->
+      <div style="font-size: 12px; font-weight: 800; color: var(--text-main, #ff9d00); letter-spacing: 0.3px;">
+
+      </div>
+      <div style="font-size: 7px; color: var(--text-dim, #64748b); margin-top: 1px; margin-bottom: 4px;">
+        Based on last ${totalDraws200} draws • Top 9 most & least frequent
+      </div>
+      ${hotHtml200}
+      ${coldHtml200}
+      
+      <!-- Separator -->
+      <div style="margin: 4px 0; border-top: 1px solid var(--border-color, #000000);"></div>
+      
+      <!-- Section 2: Hot & Cold (20 draws) -->
+      <div style="font-size: 12px; font-weight: 800; color: var(--text-main, #ff9d00); letter-spacing: 0.3px; margin-bottom: 4px;">
+
+      </div>
+      ${hotHtml20}
+      ${coldHtml20}
+      
+      <!-- Separator -->
+      <div style="margin: 4px 0; border-top: 1px solid var(--border-color, #000000);"></div>
+      
+  <!-- Section 3: Top 20 Missing Plays -->
+      ${missingHtml}
+      
+      <!-- Footer -->
+      <div style="margin-top: 4px; padding-top: 4px; border-top: 1px solid var(--border-color, rgba(255,255,255,0.02)); display: flex; justify-content: center; align-items: center; gap: 6px; flex-wrap: wrap;">
+        <span style="font-size: 10px; color: var(--text-main, #00000);">CodeWithGlasgow • CWG Chart Analysis ©️</span>
+        <span style="color: var(--text-main, #00000); font-size: 10px;">Last: ${globalLastDraw}</span>
+      </div>
+      
+    </div>
+  `;
+}
+//////////////////////////////////////////
+// ======================================
+// PICK 4 HOT & COLD MARKS WITH MISSING PLAYS
+// Analyzes 200 draws and 20 draws for Hot/Cold digits
+// Shows missing plays based on 24-week analysis with 12-week window
+// ======================================
+function renderPick4HotColdMissing(weeksData) {
+  if (!weeksData || weeksData.length === 0) {
+    return `
+      <div style="background: linear-gradient(135deg, #0f172a, #1e293b); border-radius: 16px; padding: 16px; margin-bottom: 15px; border: 1px solid #58a6ff; text-align:center;">
+        📊 Loading Pick 4 data...
+      </div>
+    `;
+  }
+
+  // ======================================
+  // HELPER FUNCTIONS
+  // ======================================
+
+  const dayNames = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+  const slots = ["MOR", "MID", "NON", "EVE"];
+  const now = new Date();
+
+  function getDraw(week, dayName, slot) {
+    if (!week) return null;
+    const day = week.days.find(d => d.dayName === dayName);
+    if (!day) return null;
+    const val = day.draws[slot];
+    return val && val !== "-" && val !== "PENDING" && val !== "HOLIDAY" ? val.toString() : null;
+  }
+
+  function parsePick4Draw(val) {
+    if (!val || val === "-" || val === "PENDING") return null;
+    const cleanVal = val.replace(/\D/g, '');
+    if (cleanVal.length < 4) return null;
+    const digits = cleanVal.slice(-4).padStart(4, '0').split('').map(Number);
+    return { digits, full: digits.join('') };
+  }
+
+  // Sort weeks chronologically
+  const sortedWeeks = [...weeksData].sort((a, b) => {
+    let pa = a.startDate.split(" ");
+    let pb = b.startDate.split(" ");
+    return new Date(pa[2] + "-" + pa[1] + "-" + pa[0]) - new Date(pb[2] + "-" + pb[1] + "-" + pb[0]);
+  });
+
+  const currentWeek = sortedWeeks[sortedWeeks.length - 1];
+
+  // ======================================
+  // ANALYZE 24-WEEK CHART WITH 12-WEEK WINDOW
+  // ======================================
+  
+  const last24Weeks = sortedWeeks.slice(-24);
+  const last12Weeks = sortedWeeks.slice(-12);
+  
+  const playedIn24Weeks = new Set();
+  const playedIn12Weeks = new Set();
+  const playedInCurrentWeek = new Set();
+
+  const digitFrequency24 = {};
+  const firstDigitFrequency = {};
+  const lastDigitFrequency = {};
+  
+  for (let i = 0; i <= 9; i++) {
+    digitFrequency24[i] = 0;
+    firstDigitFrequency[i] = 0;
+    lastDigitFrequency[i] = 0;
+  }
+
+  last24Weeks.forEach(week => {
+    const weekStart = new Date(week.startDate);
+    for (let d = 0; d < dayNames.length; d++) {
+      for (let s = 0; s < slots.length; s++) {
+        const draw = getDraw(week, dayNames[d], slots[s]);
+        if (draw) {
+          const parsed = parsePick4Draw(draw);
+          if (parsed) {
+            const key = parsed.full;
+            playedIn24Weeks.add(key);
+            
+            for (const digit of parsed.digits) {
+              digitFrequency24[digit] = (digitFrequency24[digit] || 0) + 1;
+            }
+            firstDigitFrequency[parsed.digits[0]] = (firstDigitFrequency[parsed.digits[0]] || 0) + 1;
+            lastDigitFrequency[parsed.digits[3]] = (lastDigitFrequency[parsed.digits[3]] || 0) + 1;
+          }
+        }
+      }
+    }
+  });
+
+  last12Weeks.forEach(week => {
+    const weekStart = new Date(week.startDate);
+    for (let d = 0; d < dayNames.length; d++) {
+      for (let s = 0; s < slots.length; s++) {
+        const draw = getDraw(week, dayNames[d], slots[s]);
+        if (draw) {
+          const parsed = parsePick4Draw(draw);
+          if (parsed) {
+            const key = parsed.full;
+            playedIn12Weeks.add(key);
+          }
+        }
+      }
+    }
+  });
+
+  for (let d = 0; d < dayNames.length; d++) {
+    for (let s = 0; s < slots.length; s++) {
+      const draw = getDraw(currentWeek, dayNames[d], slots[s]);
+      if (draw) {
+        const parsed = parsePick4Draw(draw);
+        if (parsed) {
+          const key = parsed.full;
+          playedInCurrentWeek.add(key);
+        }
+      }
+    }
+  }
+
+  // ======================================
+  // GENERATE MISSING PLAYS
+  // ======================================
+  
+  const missingPlays = [];
+  
+  const sortedFirstDigits = Object.entries(firstDigitFrequency)
+    .sort((a, b) => b[1] - a[1])
+    .map(item => parseInt(item[0]));
+  
+  const sortedLastDigits = Object.entries(lastDigitFrequency)
+    .sort((a, b) => b[1] - a[1])
+    .map(item => parseInt(item[0]));
+  
+  const commonFirstDigits = sortedFirstDigits.slice(0, 5);
+  const commonLastDigits = sortedLastDigits.slice(0, 5);
+  
+  let count = 0;
+  const maxPlays = 24;
+
+  const prefixFrequency = {};
+  for (const play of playedIn24Weeks) {
+    const prefix = play.substring(0, 2);
+    prefixFrequency[prefix] = (prefixFrequency[prefix] || 0) + 1;
+  }
+  
+  const sortedPrefixes = Object.entries(prefixFrequency)
+    .sort((a, b) => b[1] - a[1])
+    .map(item => item[0]);
+  
+  const commonPrefixes = sortedPrefixes.slice(0, 3);
+  
+  const sortedDigits = Object.entries(digitFrequency24)
+    .sort((a, b) => b[1] - a[1])
+    .map(item => parseInt(item[0]));
+
+  for (const prefix of commonPrefixes) {
+    if (count >= maxPlays) break;
+    for (let i = 0; i < sortedDigits.length && count < maxPlays; i++) {
+      for (let j = 0; j < sortedDigits.length && count < maxPlays; j++) {
+        const combo = prefix + sortedDigits[i] + sortedDigits[j];
+        if (!playedIn24Weeks.has(combo) && combo.length === 4) {
+          if (!missingPlays.some(p => p.key === combo)) {
+            const isPlayedIn12 = playedIn12Weeks.has(combo);
+            const isPlayedInCurrent = playedInCurrentWeek.has(combo);
+            if (!isPlayedIn12 || isPlayedInCurrent) {
+              missingPlays.push({
+                key: combo,
+                digits: combo.split('').map(Number),
+                isPlayed: isPlayedInCurrent,
+                priority: isPlayedInCurrent ? 3 : (combo.includes(sortedDigits[0]) ? 1 : 2)
+              });
+              count++;
+            }
+          }
+        }
+      }
+    }
+  }
+
+  if (missingPlays.length < maxPlays) {
+    for (const firstDigit of commonFirstDigits) {
+      if (count >= maxPlays) break;
+      for (const lastDigit of commonLastDigits) {
+        if (count >= maxPlays) break;
+        for (let i = 0; i < sortedDigits.length && count < maxPlays; i++) {
+          for (let j = 0; j < sortedDigits.length && count < maxPlays; j++) {
+            const combo = firstDigit.toString() + sortedDigits[i] + sortedDigits[j] + lastDigit.toString();
+            if (!playedIn24Weeks.has(combo) && combo.length === 4) {
+              if (!missingPlays.some(p => p.key === combo)) {
+                const isPlayedIn12 = playedIn12Weeks.has(combo);
+                const isPlayedInCurrent = playedInCurrentWeek.has(combo);
+                if (!isPlayedIn12 || isPlayedInCurrent) {
+                  missingPlays.push({
+                    key: combo,
+                    digits: combo.split('').map(Number),
+                    isPlayed: isPlayedInCurrent,
+                    priority: isPlayedInCurrent ? 3 : 2
+                  });
+                  count++;
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  missingPlays.sort((a, b) => {
+    if (a.priority !== b.priority) return a.priority - b.priority;
+    return a.key.localeCompare(b.key);
+  });
+
+  // ======================================
+  // COLLECT LAST 200 DRAWS - DIGIT FREQUENCY
+  // ======================================
+  const digitFrequency200 = {};
+  const lastPlayed200 = {};
+  
+  for (let i = 0; i <= 9; i++) {
+    digitFrequency200[i] = 0;
+    lastPlayed200[i] = null;
+  }
+  
+  const allDraws200 = [];
+  for (let w = sortedWeeks.length - 1; w >= 0 && allDraws200.length < 200; w--) {
+    const week = sortedWeeks[w];
+    const weekStart = new Date(week.startDate);
+    
+    for (let d = dayNames.length - 1; d >= 0 && allDraws200.length < 200; d--) {
+      const drawDate = new Date(weekStart);
+      drawDate.setDate(weekStart.getDate() + d);
+      
+      for (let s = slots.length - 1; s >= 0 && allDraws200.length < 200; s--) {
+        const draw = getDraw(week, dayNames[d], slots[s]);
+        if (draw) {
+          const parsed = parsePick4Draw(draw);
+          if (parsed) {
+            for (const digit of parsed.digits) {
+              digitFrequency200[digit] = (digitFrequency200[digit] || 0) + 1;
+              if (!lastPlayed200[digit] || drawDate > lastPlayed200[digit]) {
+                lastPlayed200[digit] = drawDate;
+              }
+            }
+            allDraws200.push({
+              digits: parsed.digits,
+              date: drawDate,
+              fullDraw: draw
+            });
+          }
+        }
+      }
+    }
+  }
+
+  const totalDraws200 = allDraws200.length;
+
+  // Sort digits by frequency for 200 draws - HIGHEST to LOWEST
+  const sortedDigitsByFrequency200 = Object.entries(digitFrequency200)
+    .map(([digit, count]) => ({ 
+      digit: parseInt(digit), 
+      count,
+      lastDate: lastPlayed200[parseInt(digit)]
+    }))
+    .filter(item => item.count > 0)
+    .sort((a, b) => b.count - a.count);
+
+  // HOT = Top 9 most frequent (HIGHEST counts)
+  const hotDigits200 = sortedDigitsByFrequency200.slice(0, 9);
+  
+  // COLD = Bottom 9 least frequent (LOWEST counts) - these should be the opposite of hot
+  // Sort by count ascending (lowest first) to get the true cold digits
+  const coldDigits200 = sortedDigitsByFrequency200
+    .slice(-9)  // Take the bottom 9
+    .reverse(); // Reverse so highest count of the low group is first
+
+  // ======================================
+  // COLLECT LAST 20 DRAWS - DIGIT FREQUENCY
+  // ======================================
+  const digitFrequency20 = {};
+  for (let i = 0; i <= 9; i++) {
+    digitFrequency20[i] = 0;
+  }
+  
+  const allDraws20 = [];
+  for (let w = sortedWeeks.length - 1; w >= 0 && allDraws20.length < 20; w--) {
+    const week = sortedWeeks[w];
+    const weekStart = new Date(week.startDate);
+    
+    for (let d = dayNames.length - 1; d >= 0 && allDraws20.length < 20; d--) {
+      const drawDate = new Date(weekStart);
+      drawDate.setDate(weekStart.getDate() + d);
+      
+      for (let s = slots.length - 1; s >= 0 && allDraws20.length < 20; s--) {
+        const draw = getDraw(week, dayNames[d], slots[s]);
+        if (draw) {
+          const parsed = parsePick4Draw(draw);
+          if (parsed) {
+            for (const digit of parsed.digits) {
+              digitFrequency20[digit] = (digitFrequency20[digit] || 0) + 1;
+            }
+            allDraws20.push({
+              digits: parsed.digits,
+              date: drawDate,
+              fullDraw: draw
+            });
+          }
+        }
+      }
+    }
+  }
+
+  const totalDraws20 = allDraws20.length;
+
+  // Sort digits by frequency for 20 draws - HIGHEST to LOWEST
+  const sortedDigitsByFrequency20 = Object.entries(digitFrequency20)
+    .map(([digit, count]) => ({ 
+      digit: parseInt(digit), 
+      count
+    }))
+    .filter(item => item.count > 0)
+    .sort((a, b) => b.count - a.count);
+
+  // HOT = Top 9 most frequent (HIGHEST counts)
+  const hotDigits20 = sortedDigitsByFrequency20.slice(0, 9);
+  
+  // COLD = Bottom 9 least frequent (LOWEST counts)
+  const coldDigits20 = sortedDigitsByFrequency20
+    .slice(-9)
+    .reverse();
+
+  // ======================================
+  // RENDER FUNCTIONS
+  // ======================================
+
+  function formatDate(date) {
+    if (!date) return '—';
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    return `${date.getDate()} ${months[date.getMonth()]}`;
+  }
+
+  function renderDigitRow(digits, title, titleColor, showDate = true) {
+    if (!digits || digits.length === 0) {
+      return `
+        <div style="text-align: center; padding: 6px; color: var(--text-dim, #64748b); font-size: 10px;">
+          No digits available
+        </div>
+      `;
+    }
+
+    const digitsHtml = digits.map(item => {
+      const count = item.count;
+      const lastDate = item.lastDate ? formatDate(item.lastDate) : '—';
+      
+      return `
+        <div style="display: flex; flex-direction: column; align-items: center; min-width: 28px; padding: 2px 3px; background: var(--card-bg, rgba(255,255,255,0.03)); border-radius: 4px; border: 1px solid var(--border-color, rgba(255,255,255,0.04)); flex: 0 1 auto;">
+          <span style="font-size: 18px; font-weight: 900; color: ${titleColor}; line-height: 1.2;">${item.digit}</span>
+          <span style="font-size: 8px; color: var(--text-dim, #94a3b8); font-weight: 600; margin-top: 1px;">${count}x</span>
+          ${showDate ? `<span style="font-size: 7px; color: var(--text-dim, #64748b); margin-top: 1px; border-top: 1px solid var(--border-color, rgba(255,255,255,0.06)); padding-top: 1px; width: 100%; text-align: center;">${lastDate}</span>` : ''}
+        </div>
+      `;
+    }).join('');
+
+    return `
+      <div style="margin-bottom: 4px;">
+        <div style="display: flex; align-items: center; gap: 4px; margin-bottom: 3px;">
+          <span style="font-size: 10px; font-weight: 800; color: ${titleColor}; letter-spacing: 0.3px;">${title}</span>
+          <span style="font-size: 6px; color: var(--text-dim, #64748b); background: var(--card-bg, rgba(255,255,255,0.05)); padding: 1px 5px; border-radius: 6px;">${digits.length}</span>
+        </div>
+        <div style="display: flex; justify-content: center; align-items: center; gap: 3px; flex-wrap: nowrap; overflow-x: auto; background: var(--card-bg, rgba(255,255,255,0.02)); border-radius: 6px; padding: 2px 4px; border: 1px solid var(--border-color, rgba(255,255,255,0.04)); min-height: 42px; -webkit-overflow-scrolling: touch;">
+          ${digitsHtml}
+        </div>
+      </div>
+    `;
+  }
+
+  function renderMissingPlays() {
+    if (missingPlays.length === 0) {
+      return `
+        <div style="margin-top: 6px; padding-top: 6px; border-top: 1px dashed var(--border-color, rgba(255,255,255,0.06));">
+          <div style="font-size: 10px; font-weight: 800; color: var(--text-main, #32d74b); margin-bottom: 4px; text-align: center; letter-spacing: 0.3px;">
+            ✅ NUMBERS LEFT
+          </div>
+          <div style="text-align: center; padding: 8px; color: #32d74b; font-size: 10px; font-weight: bold;">✅ No numbers left!</div>
+        </div>
+      `;
+    }
+
+    const playsHtml = missingPlays.map(play => {
+      const isPlayed = play.isPlayed;
+      const priorityColors = {
+        1: 'rgba(255,215,0,0.15)',
+        2: 'rgba(88,166,255,0.1)',
+        3: 'rgba(50,215,75,0.1)'
+      };
+      const borderColors = {
+        1: 'rgba(255,215,0,0.3)',
+        2: 'rgba(88,166,255,0.2)',
+        3: 'rgba(50,215,75,0.2)'
+      };
+      
+      return `
+        <span style="display: inline-flex; align-items: center; gap: 2px; background: ${isPlayed ? 'var(--card-bg, rgba(100,100,100,0.1))' : priorityColors[play.priority]}; padding: 2px 10px; border-radius: 4px; border: 1px solid ${isPlayed ? 'var(--border-color, rgba(100,100,100,0.2))' : borderColors[play.priority]}; opacity: ${isPlayed ? '0.4' : '1'}; font-family: monospace; letter-spacing: 0.5px;">
+          <span style="font-size: 14px; font-weight: ${isPlayed ? '400' : '900'}; color: ${isPlayed ? 'var(--text-dim, #666)' : 'var(--text-main, #ffd700)'}; text-decoration: ${isPlayed ? 'line-through' : 'none'};">
+            ${play.key}
+          </span>
+          ${isPlayed ? '<span style="font-size: 8px; color: #32d74b; margin-left: 2px;">✓</span>' : ''}
+        </span>
+      `;
+    }).join('');
+
+    const totalMissing = missingPlays.length;
+    const playedCount = missingPlays.filter(p => p.isPlayed).length;
+    const remainingCount = totalMissing - playedCount;
+
+    return `
+      <div style="margin-top: 6px; padding-top: 6px; border-top: 1px dashed var(--border-color, rgba(255,255,255,0.06));">
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+          <span style="font-size: 10px; font-weight: 800; color: var(--text-main, #ff9d00); letter-spacing: 0.3px;">📊 NUMBERS LEFT</span>
+          <span style="font-size: 8px; color: var(--text-dim, #64748b);">
+            ${remainingCount} left • ${playedCount} played ✓
+          </span>
+        </div>
+        
+        <div style="display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: 4px; background: var(--card-bg, rgba(255,255,255,0.02)); border-radius: 6px; padding: 8px 8px; border: 1px solid var(--border-color, rgba(255,255,255,0.04)); max-height: 250px; overflow-y: auto; -webkit-overflow-scrolling: touch;">
+          ${playsHtml}
+        </div>
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 3px; padding: 0 4px;">
+          <span style="font-size: 6px; color: var(--text-dim, #64748b);">
+            Based on 24-week analysis with 12-week window
+          </span>
+          <span style="font-size: 6px; color: var(--text-dim, #64748b);">
+            ${totalMissing} total numbers
+          </span>
+        </div>
+      </div>
+    `;
+  }
+
+  // ======================================
+  // BUILD THE MAIN HTML
+  // ======================================
+
+  const hotHtml200 = renderDigitRow(hotDigits200, '🔥 HOT DIGITS (200 DRAWS)', '#ff6b6b', true);
+  const coldHtml200 = renderDigitRow(coldDigits200, '❄️ COLD DIGITS (200 DRAWS)', '#58a6ff', true);
+  const hotHtml20 = renderDigitRow(hotDigits20, '🔥 HOT DIGITS (20 DRAWS)', '#ff6b6b', false);
+  const coldHtml20 = renderDigitRow(coldDigits20, '❄️ COLD DIGITS (20 DRAWS)', '#58a6ff', false);
+  const missingHtml = renderMissingPlays();
+
+  return `
+    <div style="
+      background: var(--bg-start, linear-gradient(135deg, #0f172a, #1e293b));
+      border-radius: 16px; 
+      padding: 10px; 
+      margin-bottom: 15px; 
+      border: 1px solid var(--border-color, #ff9d00);
+    ">
+      
+      <!-- Header -->
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 2px; flex-wrap: wrap; gap: 4px;">
+        <div style="font-size: 13px; font-weight: 800; color: var(--text-main, #ff9d00); letter-spacing: 0.3px;">
+          ♠️ PICK 4 HOT & COLD ANALYSIS ♠️
+        </div>
+      </div>
+      <div style="font-size: 7px; color: var(--text-dim, #64748b); margin-bottom: 6px;">
+        TODAY: ${now.toLocaleDateString('en-US', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' }).toUpperCase()}
+      </div>
+      
+      <!-- Section 1: Top 9 Hot & Cold Digits (200 draws) -->
+      <div style="font-size: 12px; font-weight: 800; color: var(--text-main, #ff9d00); letter-spacing: 0.3px;">
+
+      </div>
+      <div style="font-size: 7px; color: var(--text-dim, #64748b); margin-top: 1px; margin-bottom: 4px;">
+        Based on last ${totalDraws200} draws • Top 9 most & least frequent digits
+      </div>
+      ${hotHtml200}
+      ${coldHtml200}
+      
+      <!-- Separator -->
+      <div style="margin: 4px 0; border-top: 1px solid var(--border-color, #000000);"></div>
+      
+      <!-- Section 2: Hot & Cold Digits (20 draws) -->
+      <div style="font-size: 12px; font-weight: 800; color: var(--text-main, #ff9d00); letter-spacing: 0.3px; margin-bottom: 4px;">
+
+      </div>
+      ${hotHtml20}
+      ${coldHtml20}
+      
+      <!-- Separator -->
+      <div style="margin: 4px 0; border-top: 1px solid var(--border-color, #000000);"></div>
+      
+      <!-- Section 3: Numbers Left -->
+      ${missingHtml}
+      
+      <!-- Footer -->
+      <div style="margin-top: 4px; padding-top: 4px; border-top: 1px solid var(--border-color, rgba(255,255,255,0.02)); display: flex; justify-content: center; align-items: center; gap: 6px; flex-wrap: wrap;">
+        <span style="font-size: 10px; color: var(--text-main, #00000);">CodeWithGlasgow • CWG Chart Analysis ©️</span>
+        <span style="color: var(--text-main, #00000); font-size: 10px;">Last: ${globalLastDraw}</span>
+      </div>
+      
+    </div>
+  `;
+}
+/////////////////////////////////////////
 // ======================================
 // REPLACEMENT BLOCK: MATCH HIGHLIGHTING BASED ON CURRENT WEEK SWIPE 
 // =======================================
@@ -10880,6 +30699,7 @@ let tableHtml = buildTableWithColorMap([wk], "PIKII", colorMap, currentWeek);
   return carouselHtml + currentTableHtml;
 }
 
+//////////////////////////////////////////
 function renderCarouselWithCurrentP4(weeks, containerId) {
   if (!weeks || weeks.length === 0) return "";
   
@@ -10963,9 +30783,10 @@ let tableHtml = buildTableWithColorMap([wk], "PIKIV", colorMap, currentWeek);
   return carouselHtml + currentTableHtml;
 }
 
-// =========================================
+//////////////////////////////////////////
+// =====================================
 // ADD THIS NEW FUNCTION - Same as buildTable but with colorMap parameter
-// =========================================
+// =====================================
 function buildTableWithColorMap(weeks, gameType, colorMap, currentWeekDataParam = null) {
   const isPickGame = (gameType === "PIKII" || gameType === "PIKIV");
   
