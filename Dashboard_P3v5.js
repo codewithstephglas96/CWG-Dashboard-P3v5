@@ -1,8 +1,8 @@
 // =====================================
 // DASHBOARD: CWG WEBAPPS
 // Theme: Electric Navy & Support Orange
-// Version 6.3.1
-// Last Modified Sept 18 2026 11:11 am
+// Version 6.3.6
+// Last Modified Sept 29 2026 5:59 am
 // =====================================
 
 const BRANDING = "CODEWITHGLASGOW";
@@ -7125,6 +7125,15 @@ ${renderLSChart(
   </div>
   <br>
   ${generatePlayWheReadout(pwData.data.weeks)}
+  <br>
+  <!- PW (Spirit • Partner • Mirror) ->
+     ${renderWhePlayMarksContainer()}
+  <br>
+  <!-- WHE PLAY LINE & SUITE CHARTS -->
+   ${renderWheLineAndSuiteCharts(pwData.data.weeks)}
+  <br>
+  <!-- 🧊 TOP 10 SHELF MARKS (COLDEST) -->
+   ${renderTop10ShelfMarksChart(pwData.data.weeks)}
   <br>
   <!--Hot and Overdue Chart-->
   ${renderHotAndOverdue(pwData.data.weeks)}
@@ -22266,7 +22275,7 @@ const coldMarks20 = sortedNumbers20
     const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
     return `${days[date.getDay()]} ${date.getDate()} ${months[date.getMonth()]} '${date.getFullYear().toString().slice(-2)}`;
   }
-
+///////////////////////////////////////////
 // Render Today Draws - Centered with auto-switch at 6:16 PM
 function renderTodayDraws() {
   // Get current time
@@ -22325,7 +22334,7 @@ function renderTodayDraws() {
     </div>
   `;
 }
-
+///////////////////////////////////////////
   // Render Leaving/Meeting
   function renderLeavingMeeting() {
     const leavingDisplay = leavingNumber ? `#${leavingNumber}` : '—';
@@ -22348,7 +22357,7 @@ function renderTodayDraws() {
       </div>
     `;
   }
-
+///////////////////////////////////////////
   // Render Mark Row (for Top 9 Hot/Cold)
   function renderMarkRow(marks, title, titleColor, isHot = true) {
     if (!marks || marks.length === 0) {
@@ -22385,7 +22394,7 @@ function renderTodayDraws() {
       </div>
     `;
   }
-
+///////////////////////////////////////////
 // Render 20 Draw Marks with last played date
 function render20DrawMarks(marks, title, titleColor) {
   if (!marks || marks.length === 0) {
@@ -22422,7 +22431,7 @@ function render20DrawMarks(marks, title, titleColor) {
     </div>
   `;
 }
-
+///////////////////////////////////////////
   // Render Weekly Streak Insight (Original Logic with Details)
   function renderWeeklyStreakInsight() {
     function buildCategoryBalls(categoryData, title, icon, colorClass, maxPerRow = 3) {
@@ -24562,6 +24571,578 @@ function generateChartData(chartType) {
       })();
     </script>
   `;
+}
+//////////////////////////////////////////
+// =====================================
+// WHE PLAY MARKS (Spirit • Partner • Mirror)
+// Self-contained — no external constants (avoids TDZ issues)
+// =====================================
+function renderWhePlayMarksContainer() {
+  const PLAY_WHE_MASTER_DATA = {
+    1: { name: "CENTIPEDE", spirit: 2, partner: 16, mirror: 36, emoji: "🐛" },
+    2: { name: "OLD LADY", spirit: 24, partner: 17, mirror: 35, emoji: "👵" },
+    3: { name: "CARRIAGE", spirit: 19, partner: 18, mirror: 34, emoji: "🚗" },
+    4: { name: "DEADMAN", spirit: 3, partner: 19, mirror: 33, emoji: "💀" },
+    5: { name: "PARSON MAN", spirit: 1, partner: 20, mirror: 32, emoji: "🧍🏽‍♂️" },
+    6: { name: "BELLY", spirit: 15, partner: 21, mirror: 31, emoji: "🤰" },
+    7: { name: "HOG", spirit: 13, partner: 22, mirror: 30, emoji: "🐗" },
+    8: { name: "TIGER", spirit: 29, partner: 23, mirror: 29, emoji: "🐅" },
+    9: { name: "CATTLE", spirit: 33, partner: 24, mirror: 28, emoji: "🐄" },
+    10: { name: "MONKEY", spirit: 28, partner: 25, mirror: 27, emoji: "🐒" },
+    11: { name: "CORBEAU", spirit: 11, partner: 26, mirror: 26, emoji: "🐦‍🔥" },
+    12: { name: "KING", spirit: 32, partner: 27, mirror: 25, emoji: "👑" },
+    13: { name: "CRAPAUD", spirit: 7, partner: 28, mirror: 24, emoji: "🐸" },
+    14: { name: "MONEY", spirit: 25, partner: 29, mirror: 23, emoji: "💰" },
+    15: { name: "SICK WOMAN", spirit: 9, partner: 30, mirror: 22, emoji: "🤧" },
+    16: { name: "JAMETTE", spirit: 17, partner: 31, mirror: 21, emoji: "💃" },
+    17: { name: "PIGEON", spirit: 18, partner: 32, mirror: 20, emoji: "🦜" },
+    18: { name: "WATER BOAT", spirit: 30, partner: 33, mirror: 19, emoji: "🚤" },
+    19: { name: "HORSE", spirit: 5, partner: 34, mirror: 18, emoji: "🐎" },
+    20: { name: "DOG", spirit: 22, partner: 35, mirror: 17, emoji: "🐕" },
+    21: { name: "MOUTH", spirit: 23, partner: 36, mirror: 16, emoji: "👄" },
+    22: { name: "RAT", spirit: 20, partner: 1, mirror: 15, emoji: "🐀" },
+    23: { name: "HOUSE", spirit: 21, partner: 2, mirror: 14, emoji: "🏠" },
+    24: { name: "QUEEN", spirit: 2, partner: 3, mirror: 13, emoji: "👑" },
+    25: { name: "MOROCOY", spirit: 14, partner: 4, mirror: 12, emoji: "🐢" },
+    26: { name: "FOWL", spirit: 27, partner: 5, mirror: 11, emoji: "🐓" },
+    27: { name: "LITTLE SNAKE", spirit: 16, partner: 6, mirror: 10, emoji: "🐍" },
+    28: { name: "FISH", spirit: 10, partner: 7, mirror: 9, emoji: "🐟" },
+    29: { name: "OPIUM MAN", spirit: 4, partner: 8, mirror: 8, emoji: "🥴" },
+    30: { name: "HOUSE CAT", spirit: 12, partner: 9, mirror: 7, emoji: "🐈" },
+    31: { name: "PARSON WIFE", spirit: 34, partner: 10, mirror: 6, emoji: "👰" },
+    32: { name: "SHRIMPS", spirit: 8, partner: 11, mirror: 5, emoji: "🦐" },
+    33: { name: "SPIDER", spirit: 26, partner: 12, mirror: 4, emoji: "🕷️" },
+    34: { name: "BLIND MAN", spirit: 31, partner: 13, mirror: 3, emoji: "👨‍🦯" },
+    35: { name: "BIG SNAKE", spirit: 4, partner: 14, mirror: 2, emoji: "🐍" },
+    36: { name: "DONKEY", spirit: 11, partner: 15, mirror: 1, emoji: "🫏" }
+  };
+
+  const colorMap = {
+    "01":"#ff6b6b","02":"#ffa94d","03":"#ffd43b","04":"#69db7c","05":"#38d9a9",
+    "06":"#4dabf7","07":"#9775fa","08":"#f783ac","09":"#ff922b","10":"#fab005",
+    "11":"#82c91e","12":"#20c997","13":"#339af0","14":"#845ef7","15":"#e599f7",
+    "16":"#ff8787","17":"#ffc078","18":"#ffe066","19":"#8ce99a","20":"#63e6be",
+    "21":"#74c0fc","22":"#b197fc","23":"#faa2c1","24":"#ffa8a8","25":"#ffec99",
+    "26":"#c0eb75","27":"#96f2d7","28":"#a5d8ff","29":"#d0bfff","30":"#fcc2d7",
+    "31":"#ff6b6b","32":"#ffa94d","33":"#ffd43b","34":"#69db7c","35":"#4dabf7",
+    "36":"#9775fa"
+  };
+
+  const containerId = 'wpm-' + Date.now();
+  const safeId = containerId.replace(/[^a-zA-Z0-9]/g, '_');
+
+  const css = `
+    <style>
+      #marksContainer-${containerId}.marks-container {
+        display: flex;
+        flex-direction: row;
+        gap: 0px;
+        background: #0a0a0a;
+        border-radius: 12px;
+        padding: 8px;
+        margin: 6px 0;
+        border: 1px solid #333;
+      }
+      #marksContainer-${containerId} .marks-column {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        gap: 3px;
+      }
+      #marksContainer-${containerId} .mark-row {
+        display: flex;
+        align-items: center;
+        padding: 6px 6px;
+        border-radius: 6px;
+        cursor: pointer;
+        transition: background 0.2s;
+        margin: 1px 0;
+      }
+      #marksContainer-${containerId} .mark-row:hover {
+        background: rgba(255, 255, 255, 0.05);
+      }
+      #marksContainer-${containerId} .ball {
+        width: 25px;
+        height: 25px;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-weight: 900;
+        color: #000;
+        font-size: 0.8rem;
+        box-shadow: inset -2px -2px 4px rgba(0,0,0,0.2);
+        margin-right: 10px;
+        flex-shrink: 0;
+      }
+      #marksContainer-${containerId} .m-info {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        min-width: 0;
+      }
+      #marksContainer-${containerId} .m-name {
+        font-size: 0.85rem;
+        font-weight: 800;
+        letter-spacing: -0.5px;
+        color: #fff;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+      #marksContainer-${containerId} .m-meta {
+        display: flex;
+        gap: 7px;
+        margin-top: 2px;
+        align-items: center;
+        flex-wrap: wrap;
+      }
+      #marksContainer-${containerId} .spirit-tag {
+        font-size: 0.7rem;
+        background: rgba(88, 166, 255, 0.2);
+        color: #58a6ff;
+        padding: 1px 5px;
+        border-radius: 3px;
+        font-weight: bold;
+      }
+      #marksContainer-${containerId} .partner-tag {
+        font-size: 0.7rem;
+        background: rgba(255, 107, 107, 0.2);
+        color: #ff6b6b;
+        padding: 1px 5px;
+        border-radius: 3px;
+        font-weight: bold;
+      }
+      #marksContainer-${containerId} .mirror-text {
+        font-size: 0.7rem;
+        color: #444;
+        display: flex;
+        align-items: center;
+        gap: 2px;
+      }
+      #marksContainer-${containerId} .mirror-ball {
+        width: 18px;
+        height: 18px;
+        border-radius: 50%;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 0.6rem;
+        color: #000;
+        font-weight: bold;
+      }
+    </style>
+  `;
+
+  const html = `
+    <div style="border-left: 4px solid #ff00ff; background:#ffffff; border-radius:12px; padding:12px; margin: 6px 0; border: 1px solid #dddddd; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
+      <h4 style="margin:0 0 10px 0; color:#ff00ff; text-align:center; font-size:14px; font-weight:900;">WHE PLAY MARKS (Spirit • Partner • Mirror)</h4>
+      <div id="marksContainer-${containerId}" class="marks-container"></div>
+      <div style="margin-top:6px; padding-top:6px; border-top:1px solid #dddddd; text-align:center;">
+        <span style="font-size:7px; color:#666;">⚡ Spirit • Partner • Mirror Reference • CodeWithGlasgow ©️ CWG</span>
+      </div>
+    </div>
+  `;
+
+  const js = `
+    <script>
+      (function() {
+        var containerId = "${containerId}";
+        var masterData = ${JSON.stringify(PLAY_WHE_MASTER_DATA)};
+        var colorMap = ${JSON.stringify(colorMap)};
+        var marksContainer = document.getElementById('marksContainer-' + containerId);
+        if (!marksContainer) return;
+
+        marksContainer.innerHTML =
+          '<div class="marks-column" id="left-marks-' + containerId + '"></div>' +
+          '<div class="marks-column" id="right-marks-' + containerId + '"></div>';
+
+        var leftCol = document.getElementById('left-marks-' + containerId);
+        var rightCol = document.getElementById('right-marks-' + containerId);
+
+        for (var i = 1; i <= 36; i++) {
+          var data = masterData[i];
+          var color = colorMap[String(i).padStart(2, '0')];
+          var mirrorColor = colorMap[String(data.mirror).padStart(2, '0')];
+          var row = '<div class="mark-row" data-num="' + i + '">' +
+              '<div class="ball" style="background-color: ' + color + '">' + i + '</div>' +
+              '<div class="m-info">' +
+                '<span class="m-name">' + data.emoji + ' ' + data.name + '</span>' +
+                '<div class="m-meta">' +
+                  '<span class="spirit-tag">S:' + data.spirit + '</span>' +
+                  '<span class="partner-tag">P:' + data.partner + '</span>' +
+                  '<span class="mirror-text">🪞<span class="mirror-ball" style="background:' + mirrorColor + '">' + data.mirror + '</span></span>' +
+                '</div>' +
+              '</div>' +
+            '</div>';
+          if (i <= 18) leftCol.innerHTML += row;
+          else rightCol.innerHTML += row;
+        }
+
+        marksContainer.querySelectorAll('.mark-row').forEach(function(el) {
+          el.addEventListener('click', function() {
+            marksContainer.querySelectorAll('.mark-row').forEach(function(r) {
+              r.style.background = 'transparent';
+            });
+            el.style.background = 'rgba(255, 0, 255, 0.15)';
+            el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          });
+        });
+      })();
+    </script>
+  `;
+
+  return css + html + js;
+}
+//////////////////////////////////////////
+// =====================================
+// TOP 10 SHELF MARKS (COLDEST) — Standalone Chart
+// Style-matched to the PlayWhe Shelf design system
+// =====================================
+function renderTop10ShelfMarksChart(weeksData) {
+  if (!weeksData || weeksData.length === 0) {
+    return `<div style="background:#ffffff; border-radius:10px; padding:20px; border:1px solid #dddddd; text-align:center; color:#999;">📊 No shelf data available</div>`;
+  }
+
+  const dayOrder = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+  const timeOrder = ["MOR", "MID", "NON", "EVE"];
+  const timeNames = { MOR: "Morning", MID: "Midday", NON: "Afternoon", EVE: "Evening" };
+
+  const numberColors = {
+    "01":"#ff6b6b","02":"#ffa94d","03":"#ffd43b","04":"#69db7c","05":"#38d9a9",
+    "06":"#4dabf7","07":"#9775fa","08":"#f783ac","09":"#ff922b","10":"#fab005",
+    "11":"#82c91e","12":"#20c997","13":"#339af0","14":"#845ef7","15":"#e599f7",
+    "16":"#ff8787","17":"#ffc078","18":"#ffe066","19":"#8ce99a","20":"#63e6be",
+    "21":"#74c0fc","22":"#b197fc","23":"#faa2c1","24":"#ffa8a8","25":"#ffec99",
+    "26":"#c0eb75","27":"#96f2d7","28":"#a5d8ff","29":"#d0bfff","30":"#fcc2d7",
+    "31":"#ff6b6b","32":"#ffa94d","33":"#ffd43b","34":"#69db7c","35":"#4dabf7",
+    "36":"#9775fa"
+  };
+
+  const spirits = {
+    1:"Centipede",2:"Old Lady",3:"Carriage",4:"Dead Man",5:"Parson Man",6:"Belly",
+    7:"Hog",8:"Tiger",9:"Cattle",10:"Monkey",11:"Corbeau",12:"King",13:"Crapaud",
+    14:"Money",15:"Sick Woman",16:"Jamette",17:"Pigeon",18:"Water Boat",19:"Horse",
+    20:"Dog",21:"Mouth",22:"Rat",23:"House",24:"Queen",25:"Morrocoy",26:"Fowl",
+    27:"Little Snake",28:"Red Fish",29:"Opium Man",30:"House Cat",31:"Parson Wife",
+    32:"Shrimp",33:"Spider",34:"Blind Man",35:"Big Snake",36:"Donkey"
+  };
+
+  let lastSeenDate = {}, lastSeenTime = {}, frequency = {};
+  let currentWeekHits = {};
+  const now = new Date();
+
+  // Process all weeks
+  for (let week of weeksData) {
+    let isCurrentWeek = week.isCurrentWeek === true;
+
+    let parts = week.startDate.split(" ");
+    const monthMap = {"Jan":0,"Feb":1,"Mar":2,"Apr":3,"May":4,"Jun":5,"Jul":6,"Aug":7,"Sep":8,"Oct":9,"Nov":10,"Dec":11};
+    let startDate = new Date(parts[2], monthMap[parts[1]], parseInt(parts[0]));
+
+    for (let day of week.days) {
+      let drawDate = new Date(startDate);
+      drawDate.setDate(drawDate.getDate() + dayOrder.indexOf(day.dayName));
+
+      for (let t of timeOrder) {
+        let n = day.draws[t];
+        if (!n || n === "-" || n === "PENDING" || n === "HOLIDAY") continue;
+        let num = parseInt(n);
+        if (num < 1 || num > 36) continue;
+
+        if (isCurrentWeek) {
+          currentWeekHits[num] = (currentWeekHits[num] || 0) + 1;
+        }
+
+        frequency[num] = (frequency[num] || 0) + 1;
+        lastSeenDate[num] = drawDate;
+        lastSeenTime[num] = timeNames[t];
+      }
+    }
+  }
+
+  // Build marks list (exclude current week hits)
+  let marks = [];
+  for (let n = 1; n <= 36; n++) {
+    if (!lastSeenDate[n] || currentWeekHits[n]) continue;
+
+    let daysAgo = Math.floor((now - lastSeenDate[n]) / 86400000);
+    let dateStr = lastSeenDate[n]
+      .toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "2-digit" })
+      .toUpperCase()
+      .replace(" ", "-");
+
+    let weeksAgo = Math.floor(daysAgo / 7);
+
+    marks.push({
+      num: n,
+      spirit: spirits[n] || "Unknown",
+      date: dateStr,
+      time: lastSeenTime[n],
+      days: daysAgo,
+      weeks: weeksAgo,
+      freq: frequency[n] || 0
+    });
+  }
+
+  marks.sort((a, b) => b.days - a.days);
+  let top10 = marks.slice(0, 10).reverse(); // oldest at bottom
+
+  // Weekly repeats (HITS THIS WEEK)
+  let weeklyHits = Object.entries(currentWeekHits)
+    .filter(([_, count]) => count > 1)
+    .sort((a, b) => b[1] - a[1]);
+
+  // ---------- BUILD HTML ----------
+  let html = `
+    <style>
+      .t10-container { background: #ffffff; border-radius: 10px; padding: 12px; border: 1px solid #dddddd; margin: 6px 0; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
+      .t10-header { display:flex; justify-content:space-between; align-items:center; margin-bottom: 10px; padding-bottom: 8px; border-bottom: 3px solid #000; }
+      .t10-title { font-weight: 900; font-size: 14px; color: #000; letter-spacing: 0.4px; }
+      .t10-count { font-size: 9px; color: #666; }
+      .t10-hits { text-align: center; font-size: 10px; font-weight: 800; color: #d90f0f; margin-bottom: 8px; background: #fff5f5; padding: 6px 8px; border-radius: 6px; border: 1px solid #ffdddd; }
+      .t10-hits-row { display: flex; justify-content: center; flex-wrap: wrap; gap: 6px; margin-top: 4px; }
+      .t10-hit-ball { width: 26px; height: 26px; border-radius: 50%; color: #fff; font-weight: 900; display: flex; align-items: center; justify-content: center; font-size: 12px; box-shadow: 0 2px 4px rgba(0,0,0,0.15); }
+      .t10-head-row { display: flex; padding: 8px 6px; background: #f5f5f5; border-radius: 6px; margin-bottom: 6px; border-bottom: 2px solid #000; }
+      .t10-head-row > div { text-align: center; color: #000; font-weight: 800; font-size: 9px; letter-spacing: 0.4px; text-transform: uppercase; }
+      .t10-row { display: flex; padding: 8px 6px; border-radius: 8px; margin-bottom: 5px; align-items: center; }
+      .t10-row > div { text-align: center; color: #000; }
+      .t10-ball-wrap { display: flex; align-items: center; justify-content: center; gap: 5px; }
+      .t10-ball { width: 28px; height: 28px; border-radius: 50%; color: #000; font-weight: 900; display: flex; align-items: center; justify-content: center; font-size: 13px; flex-shrink: 0; box-shadow: 0 2px 4px rgba(0,0,0,0.12); }
+      .t10-spirit { font-size: 8px; color: #666; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .t10-days-pill { display: inline-block; padding: 2px 6px; border-radius: 10px; color: #fff; font-weight: 800; font-size: 10px; }
+      .t10-footer { text-align: center; margin-top: 10px; color: #999; font-size: 9px; padding-top: 6px; border-top: 1px solid #eee; }
+    </style>
+
+    <div class="t10-container">
+      <div class="t10-header">
+        <span class="t10-title">🧊 TOP 10 SHELF MARKS (Coldest)</span>
+        <span class="t10-count">${marks.length} cold • ${top10.length} shown</span>
+      </div>
+  `;
+
+  // HITS THIS WEEK banner
+  if (weeklyHits.length > 0) {
+    html += `<div class="t10-hits">
+      📍 HITS THIS WEEK: 🔵 x2 | 🟠 x3 | 🔴 x4
+      <div class="t10-hits-row">`;
+    for (let [num, count] of weeklyHits) {
+      let color = count >= 4 ? "#d90f0f" : count === 3 ? "#ed9907" : "#0c10f2";
+      html += `<div class="t10-hit-ball" style="background:${color};">${String(num).padStart(2,'0')}</div>`;
+    }
+    html += `</div></div>`;
+  }
+
+  // Table Header
+  html += `
+    <div class="t10-head-row">
+      <div style="width: 72px;">MARK</div>
+      <div style="width: 88px;">LAST DRAW</div>
+      <div style="width: 80px;">TIME</div>
+      <div style="width: 78px;">DAYS AGO</div>
+      <div style="flex: 1;">FREQ</div>
+    </div>
+  `;
+
+  // Rows
+  for (let item of top10) {
+    let bg = item.days >= 30 ? "rgba(217,15,15,0.12)" 
+           : item.days >= 15 ? "rgba(176,114,7,0.12)" 
+           : "rgba(4,133,51,0.12)";
+    let pillColor = item.days >= 30 ? "#d90f0f" 
+                  : item.days >= 15 ? "#b07207" 
+                  : "#048533";
+    let wkLabel = item.weeks === 1 ? "wk" : "wks";
+    let ballColor = numberColors[String(item.num).padStart(2,'0')] || "#ffffff";
+
+    html += `
+      <div class="t10-row" style="background:${bg}; border-left: 4px solid ${pillColor};">
+        <div style="width: 72px;">
+          <div class="t10-ball-wrap">
+            <div class="t10-ball" style="background:${ballColor};">${String(item.num).padStart(2,'0')}</div>
+          </div>
+          <div class="t10-spirit">${item.spirit.substring(0, 10)}</div>
+        </div>
+        <div style="width: 88px; font-weight: 700; font-size: 11px;">${item.date}</div>
+        <div style="width: 80px; font-size: 10px; color: #444; font-weight: 600;">${item.time}</div>
+        <div style="width: 78px;">
+          <span class="t10-days-pill" style="background:${pillColor};">${item.days}d • ${item.weeks}${wkLabel}</span>
+        </div>
+        <div style="flex: 1; font-weight: 800; font-size: 12px;">${item.freq}x</div>
+      </div>
+    `;
+  }
+
+  // Footer
+  const dayNum = String(now.getDate()).padStart(2, "0");
+  const month = now.toLocaleString("en-GB", { month: "short" }).toUpperCase();
+  const timeStr = now.toLocaleString("en-US", { hour: "numeric", minute: "2-digit", hour12: true });
+
+  html += `
+      <div class="t10-footer">
+        ⚡ Coldest marks analysis • Updated ${dayNum}-${month} ${timeStr} • CodeWithGlasgow ©️ CWG
+      </div>
+    </div>
+  `;
+
+  return html;
+}
+//////////////////////////////////////////
+// ======================================
+// WHE PLAY — LINE & SUITE CHART
+// Extracted from FSP SAGi Dashboard by CODEWITHGLASGOW
+// ======================================
+function renderWheLineAndSuiteCharts(weeksData) {
+  if (!weeksData || weeksData.length === 0) {
+    return `<div style="background: #ffffff; border-radius: 12px; padding: 20px; border: 1px solid #dddddd; text-align:center; color:#999;">📊 No chart data available</div>`;
+  }
+
+  // Use last 12 weeks (matches dashboard behavior)
+  const weeks12 = weeksData.slice(-12);
+
+  return `
+    <div class="card" style="background:#ffffff; border-radius:12px; padding:12px; margin:6px 0; border:1px solid #dddddd; box-shadow:0 1px 3px rgba(0,0,0,0.05); border-left: 4px solid #58a6ff;">
+      <h4 style="margin:0 0 10px 0; color:#58a6ff; text-align:center; font-size:14px; font-weight:900;">WHE PLAY LINE CHART</h4>
+      <div id="lineChartContainer">${generateLineChartHTML(weeks12)}</div>
+    </div>
+
+    <div class="card" style="background:#ffffff; border-radius:12px; padding:12px; margin:6px 0; border:1px solid #dddddd; box-shadow:0 1px 3px rgba(0,0,0,0.05); border-left: 4px solid #ffd43b;">
+      <h4 style="margin:0 0 10px 0; color:#ffd43b; text-align:center; font-size:14px; font-weight:900;">WHE PLAY SUITE CHART</h4>
+      <div id="suiteChartContainer">${generateSuiteChartHTML(weeks12)}</div>
+    </div>
+  `;
+}
+
+function generateLineChartHTML(weeks) {
+  if (!weeks || weeks.length === 0)
+    return "<div style='text-align:center;color:#666;padding:20px'>No data</div>";
+
+  const lineNumbers = {
+    1:[1,10,19,28], 2:[2,11,20,29], 3:[3,12,21,30],
+    4:[4,13,22,31], 5:[5,14,23,32], 6:[6,15,24,33],
+    7:[7,16,25,34], 8:[8,17,26,35], 9:[9,18,27,36]
+  };
+
+  let activeTwoWeeks = new Set(), currentWeekRepeats = {}, lastWeekHitsMap = {};
+  let currentWeek = weeks.find(w => w.isCurrentWeek);
+  let currentIndex = weeks.indexOf(currentWeek);
+  let lastWeek = weeks[currentIndex - 1];
+
+  function processWeek(week, isCurrent) {
+    if (!week) return;
+    week.days.forEach(d => {
+      Object.values(d.draws).forEach(v => {
+        let n = parseInt(v);
+        if (n >= 1 && n <= 36) {
+          activeTwoWeeks.add(n);
+          if (isCurrent) currentWeekRepeats[n] = (currentWeekRepeats[n] || 0) + 1;
+          else lastWeekHitsMap[n] = (lastWeekHitsMap[n] || 0) + 1;
+        }
+      });
+    });
+  }
+  processWeek(currentWeek, true);
+  processWeek(lastWeek, true);
+
+  let html = `<div style="font-size:12px; font-family: sans-serif;">
+    <div style="display:flex; justify-content:space-between; padding: 0 8px 5px 8px; border-bottom: 1px solid #30363d; margin-bottom: 5px; color: #58a6ff; font-weight: bold; font-size: 10px; text-transform: uppercase;">
+      <span style="width:34px;">Line</span>
+      <span style="width:84px; text-align:center;">Marks</span>
+      <span style="width:70px; text-align:center;">Played</span>
+      <span style="width:48px; text-align:right;">Trend</span>
+    </div>`;
+
+  for (let ln = 1; ln <= 9; ln++) {
+    let nums = lineNumbers[ln];
+    let played = nums.filter(n => activeTwoWeeks.has(n)).sort((a,b)=>a-b);
+    let currentHits = nums.reduce((sum, n) => sum + (currentWeekRepeats[n] || 0), 0);
+    let lastHits    = nums.reduce((sum, n) => sum + (lastWeekHitsMap[n] || 0), 0);
+    let diff = currentHits - lastHits;
+
+    let trend = diff > 0 ? `↑${currentHits}×` : diff < 0 ? `↓${currentHits}×` : `${currentHits}×`;
+    let trendColor = diff > 0 ? "#ff4444" : diff < 0 ? "#69db7c" : "#ff6b6b";
+
+    let playedDisplay = "";
+    if (played.length === nums.length) {
+      playedDisplay = `<span style="color:#000; font-weight:bold; font-size:10px;">ALL PLAYED</span>`;
+    } else {
+      playedDisplay = `<span style="color:#000; font-weight:bold;">${played.length > 0 ? played.map(n=>String(n).padStart(2,'0')).join(' ') : '—'}</span>`;
+    }
+
+    html += `<div style="display:flex; justify-content:space-between; align-items:center; padding:5px 8px; background:${played.length===0?'#ff000040':played.length<=1?'#ff6b6b30':''}; border-radius:4px; margin:3px 0;">
+      <span style="width:34px; font-weight:bold; color:#000; font-size:13px;">${ln}</span>
+      <span style="width:84px; color:#666; font-size:10px; text-align:center;">${nums.map(n=>String(n).padStart(2,'0')).join(' ')}</span>
+      <span style="width:70px; text-align:center;">${playedDisplay}</span>
+      <span style="width:48px; color:${trendColor}; font-weight:bold; text-align:right;">${trend}</span>
+    </div>`;
+  }
+  return html + `</div>`;
+}
+
+function generateSuiteChartHTML(weeks) {
+  if (!weeks || weeks.length === 0)
+    return "<div style='text-align:center;color:#666;padding:20px'>No data</div>";
+
+  const suites = {
+    0:[10,20,30], 1:[1,11,21,31], 2:[2,12,22,32], 3:[3,13,23,33],
+    4:[4,14,24,34], 5:[5,15,25,35], 6:[6,16,26,36],
+    7:[7,17,27], 8:[8,18,28], 9:[9,19,29]
+  };
+
+  let activeTwoWeeks = new Set(), currentWeekRepeats = {}, lastWeekHitsMap = {};
+  let currentWeek = weeks.find(w => w.isCurrentWeek);
+  let currentIndex = weeks.indexOf(currentWeek);
+  let lastWeek = weeks[currentIndex - 1];
+
+  function processWeek(week, isCurrent) {
+    if (!week) return;
+    week.days.forEach(d => {
+      Object.values(d.draws).forEach(v => {
+        let n = parseInt(v);
+        if (n >= 1 && n <= 36) {
+          activeTwoWeeks.add(n);
+          if (isCurrent) currentWeekRepeats[n] = (currentWeekRepeats[n] || 0) + 1;
+          else lastWeekHitsMap[n] = (lastWeekHitsMap[n] || 0) + 1;
+        }
+      });
+    });
+  }
+  processWeek(currentWeek, true);
+  processWeek(lastWeek, true);
+
+  let html = `<div style="font-size:12px; font-family: sans-serif;">
+    <div style="display:flex; justify-content:space-between; padding: 0 8px 5px 8px; border-bottom: 1px solid #30363d; margin-bottom: 5px; color: #58a6ff; font-weight: bold; font-size: 10px; text-transform: uppercase;">
+      <span style="width:38px;">Suite</span>
+      <span style="width:88px; text-align:center;">Mark</span>
+      <span style="width:70px; text-align:center;">Played</span>
+      <span style="width:48px; text-align:right;">Trend</span>
+    </div>`;
+
+  for (let s = 0; s <= 9; s++) {
+    let nums = suites[s] || [];
+    let played = nums.filter(n => activeTwoWeeks.has(n)).sort((a,b)=>a-b);
+    let currentHits = nums.reduce((sum, n) => sum + (currentWeekRepeats[n] || 0), 0);
+    let lastHits    = nums.reduce((sum, n) => sum + (lastWeekHitsMap[n] || 0), 0);
+    let diff = currentHits - lastHits;
+
+    let trend = diff > 0 ? `↑${currentHits}×` : diff < 0 ? `↓${currentHits}×` : `${currentHits}×`;
+    let trendColor = diff > 0 ? "#ff4444" : diff < 0 ? "#69db7c" : "#ff6b6b";
+
+    let playedDisplay = "";
+    if (played.length === nums.length) {
+      playedDisplay = `<span style="color:#000; font-weight:bold; font-size:10px;">ALL PLAYED</span>`;
+    } else {
+      playedDisplay = `<span style="color:#000; font-weight:bold;">${played.length > 0 ? played.map(n=>String(n).padStart(2,'0')).join(' ') : '—'}</span>`;
+    }
+
+    html += `<div style="display:flex; justify-content:space-between; align-items:center; padding:5px 8px; background:${played.length===0?'#ff000040':(played.length<=1&&nums.length>2)?'#ff6b6b30':''}; border-radius:4px; margin:3px 0;">
+      <span style="width:38px; font-weight:bold; color:#b8860b; font-size:13px;">S${s}</span>
+      <span style="width:88px; color:#666; font-size:10px; text-align:center;">${nums.map(n=>String(n).padStart(2,'0')).join(' ')}</span>
+      <span style="width:70px; text-align:center;">${playedDisplay}</span>
+      <span style="width:48px; color:${trendColor}; font-weight:bold; text-align:right;">${trend}</span>
+    </div>`;
+  }
+  return html + `</div>`;
 }
 //////////////////////////////////////////
 // ======================================
